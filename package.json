@@ -1,0 +1,24 @@
+{
+  "name": "opencode-reflection-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "OpenCode plugin that implements a reflection/judge layer to verify task completion",
+  "main": "reflection.ts",
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "reflection",
+    "ai",
+    "agent"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@opencode-ai/plugin": "latest",
+    "typescript": "^5.0.0"
+  }
+}
