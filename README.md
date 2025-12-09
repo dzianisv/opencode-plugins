@@ -100,12 +100,6 @@ mkdir -p ~/.config/opencode/plugin && curl -fsSL -o ~/.config/opencode/plugin/re
 mkdir -p .opencode/plugin && curl -fsSL -o .opencode/plugin/reflection.ts https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts
 ```
 
-### Alternative: Clone and copy
-
-```bash
-git clone https://github.com/dzianisv/opencode-reflection-plugin.git && cp opencode-reflection-plugin/reflection.ts .opencode/plugin/
-```
-
 ## Usage
 
 Once installed, the plugin works automatically:
