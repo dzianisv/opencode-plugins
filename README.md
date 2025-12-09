@@ -88,38 +88,22 @@ A plugin for [OpenCode](https://github.com/sst/opencode) that implements a **ref
 
 ## Installation
 
-### Option 1: Download directly
+### One-line install (global)
 
 ```bash
-# Create plugin directory if it doesn't exist
-mkdir -p .opencode/plugin
-
-# Download the plugin
-curl -o .opencode/plugin/reflection.ts \
-  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts
+mkdir -p ~/.config/opencode/plugin && curl -fsSL -o ~/.config/opencode/plugin/reflection.ts https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts
 ```
 
-### Option 2: Clone and copy
+### One-line install (project-specific)
 
 ```bash
-# Clone this repo
-git clone https://github.com/dzianisv/opencode-reflection-plugin.git
-
-# Copy to your project
-cp opencode-reflection-plugin/reflection.ts .opencode/plugin/
+mkdir -p .opencode/plugin && curl -fsSL -o .opencode/plugin/reflection.ts https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts
 ```
 
-### Option 3: Global installation
-
-To use the plugin across all your projects:
+### Alternative: Clone and copy
 
 ```bash
-# Create global plugin directory
-mkdir -p ~/.config/opencode/plugin
-
-# Download the plugin
-curl -o ~/.config/opencode/plugin/reflection.ts \
-  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts
+git clone https://github.com/dzianisv/opencode-reflection-plugin.git && cp opencode-reflection-plugin/reflection.ts .opencode/plugin/
 ```
 
 ## Usage
