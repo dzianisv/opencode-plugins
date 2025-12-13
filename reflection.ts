@@ -34,6 +34,9 @@ interface ReflectionContext {
 // Track sessions we're currently reflecting on to avoid infinite loops
 const reflectingSessions = new Set<string>()
 
+// Track judge sessions to exclude them from reflection
+const judgeSessions = new Set<string>()
+
 // Track reflection attempts per session to limit retries
 const reflectionAttempts = new Map<string, number>()
 const MAX_REFLECTION_ATTEMPTS = 3
@@ -64,14 +67,22 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
 
   /**
    * Extract the initial task from session messages
+   * Returns null if this looks like a judge session (task starts with judge prompt)
    */
-  function extractInitialTask(messages: any[]): string {
+  function extractInitialTask(messages: any[]): string | null {
     // Find the first user message
     for (const msg of messages) {
       if (msg.info?.role === "user") {
         for (const part of msg.parts || []) {
           if (part.type === "text" && part.text) {
-            return part.text
+            const text = part.text
+            // Skip if this looks like a judge prompt (recursive detection)
+            if (text.includes("You are a strict task verification judge") ||
+                text.includes("VERDICT:") ||
+                text.includes("## YOUR TASK\n\nEvaluate whether")) {
+              return null // This is a judge session, not a real task
+            }
+            return text
           }
         }
       }
@@ -225,6 +236,12 @@ FEEDBACK: [If FAIL, specific actionable feedback for the agent to continue. If P
    * Main reflection logic - called when a session becomes idle
    */
   async function runReflection(sessionID: string): Promise<void> {
+    // Skip judge sessions (defense in depth - should already be caught in event handler)
+    if (judgeSessions.has(sessionID)) {
+      console.log(`[Reflection] Session ${sessionID} is a judge session, skipping`)
+      return
+    }
+
     // Prevent infinite loops
     if (reflectingSessions.has(sessionID)) {
       console.log(`[Reflection] Already reflecting on session ${sessionID}, skipping`)
@@ -239,8 +256,14 @@ FEEDBACK: [If FAIL, specific actionable feedback for the agent to continue. If P
       return
     }
 
+    // Mark as reflecting BEFORE any async operations
+    reflectingSessions.add(sessionID)
+
+    // Track judge session ID for cleanup
+    let judgeSessionID: string | undefined
+
     try {
-      reflectingSessions.add(sessionID)
+      // Log after marking as reflecting to reduce spurious logs
       console.log(`[Reflection] Starting reflection for session ${sessionID} (attempt ${attempts + 1})`)
 
       // Get session messages
@@ -254,9 +277,16 @@ FEEDBACK: [If FAIL, specific actionable feedback for the agent to continue. If P
         return
       }
 
+      // Extract initial task - returns null if this looks like a judge session
+      const initialTask = extractInitialTask(messages)
+      if (initialTask === null) {
+        console.log(`[Reflection] Session ${sessionID} detected as judge session by content, skipping`)
+        return
+      }
+
       // Build reflection context
       const context: ReflectionContext = {
-        initialTask: extractInitialTask(messages),
+        initialTask,
         agentInstructions: await getAgentInstructions(),
         toolCalls: extractToolCalls(messages, 10),
         thoughts: extractThoughts(messages),
@@ -272,60 +302,69 @@ FEEDBACK: [If FAIL, specific actionable feedback for the agent to continue. If P
 
       // Create a new session for the judge
       const judgeSessionResponse = await client.session.create({})
-      const judgeSessionID = judgeSessionResponse.data?.id
+      judgeSessionID = judgeSessionResponse.data?.id
 
       if (!judgeSessionID) {
         console.error("[Reflection] Failed to create judge session")
         return
       }
 
+      // Mark this as a judge session IMMEDIATELY to prevent recursive reflection
+      judgeSessions.add(judgeSessionID)
       console.log(`[Reflection] Created judge session: ${judgeSessionID}`)
 
-      // Send the judge prompt
+      // Send the judge prompt and wait for response
+      // session.prompt returns the assistant's response directly
       const judgePrompt = buildJudgePrompt(context)
-      await client.session.prompt({
-        path: { id: judgeSessionID },
-        body: {
-          parts: [{ type: "text", text: judgePrompt }],
-        },
-      })
-
-      // Poll for judge response (session.prompt starts async processing)
       let judgeResponseText = ""
-      const maxPolls = 60 // 60 seconds max wait
-      for (let poll = 0; poll < maxPolls; poll++) {
-        await new Promise(resolve => setTimeout(resolve, 1000))
 
-        const judgeMessages = await client.session.messages({
+      try {
+        const promptResponse = await client.session.prompt({
           path: { id: judgeSessionID },
+          body: {
+            parts: [{ type: "text", text: judgePrompt }],
+          },
         })
 
-        const judgeData = judgeMessages.data || []
-        for (let i = judgeData.length - 1; i >= 0; i--) {
-          const msg = judgeData[i]
-          if (msg.info?.role === "assistant") {
-            for (const part of msg.parts || []) {
-              if (part.type === "text" && part.text) {
-                judgeResponseText = part.text
-                break
-              }
+        // Extract response text from the prompt response
+        const responseData = promptResponse.data as any
+        if (responseData?.parts) {
+          for (const part of responseData.parts) {
+            if (part.type === "text" && part.text) {
+              judgeResponseText = part.text
+              break
             }
-            if (judgeResponseText) break
           }
         }
 
-        if (judgeResponseText) {
-          console.log(`[Reflection] Got judge response after ${poll + 1}s`)
-          break
-        }
+        // If response not in expected format, try fetching messages
+        if (!judgeResponseText) {
+          console.log("[Reflection] Response not in expected format, fetching messages...")
+          const judgeMessages = await client.session.messages({
+            path: { id: judgeSessionID },
+          })
 
-        if (poll % 5 === 0) {
-          console.log(`[Reflection] Waiting for judge response... (${poll}s)`)
+          const judgeData = judgeMessages.data || []
+          for (let i = judgeData.length - 1; i >= 0; i--) {
+            const msg = judgeData[i]
+            if (msg.info?.role === "assistant") {
+              for (const part of msg.parts || []) {
+                if (part.type === "text" && part.text) {
+                  judgeResponseText = part.text
+                  break
+                }
+              }
+              if (judgeResponseText) break
+            }
+          }
         }
+      } catch (error) {
+        console.error("[Reflection] Error getting judge response:", error)
+        return
       }
 
       if (!judgeResponseText) {
-        console.log("[Reflection] Timeout waiting for judge response")
+        console.log("[Reflection] No judge response received")
         return
       }
 
@@ -373,7 +412,54 @@ Please address the feedback above and complete the original task fully.`
       console.error(`[Reflection] Error during reflection:`, error)
     } finally {
       reflectingSessions.delete(sessionID)
+      // Clean up judge session tracking after reflection is fully complete
+      if (judgeSessionID) {
+        judgeSessions.delete(judgeSessionID)
+      }
     }
+  }
+
+  /**
+   * Quick check if a session should be skipped for reflection
+   * Returns: "judge" if it's a judge session, "empty" if too few messages, null if ok to reflect
+   */
+  async function shouldSkipSession(sessionID: string): Promise<"judge" | "empty" | null> {
+    try {
+      const messagesResponse = await client.session.messages({
+        path: { id: sessionID },
+      })
+      const messages = messagesResponse.data || []
+
+      // Skip sessions with too few messages (newly created, possibly judge sessions)
+      // A valid session to reflect on should have at least user message + assistant response
+      const userMessages = messages.filter((m: any) => m.info?.role === "user").length
+      const assistantMessages = messages.filter((m: any) => m.info?.role === "assistant").length
+
+      if (userMessages === 0 || assistantMessages === 0) {
+        return "empty"
+      }
+
+      // Check first user message for judge prompt markers
+      for (const msg of messages) {
+        if (msg.info?.role === "user") {
+          for (const part of msg.parts || []) {
+            if (part.type === "text" && part.text) {
+              const text = part.text
+              if (text.includes("You are a strict task verification judge") ||
+                  text.includes("VERDICT:") ||
+                  text.includes("## YOUR TASK\n\nEvaluate whether")) {
+                return "judge"
+              }
+            }
+          }
+          break // Only check first user message
+        }
+      }
+    } catch {
+      // If we can't fetch messages, skip to be safe
+      return "empty"
+    }
+    return null
   }
 
   return {
@@ -383,17 +469,26 @@ Please address the feedback above and complete the original task fully.`
       if (event.type === "session.idle") {
         const sessionID = (event as any).properties?.sessionID
         if (sessionID) {
-          // Run reflection immediately (await to prevent process exit)
-          await runReflection(sessionID)
-        }
-      }
+          // Skip judge sessions - check set first (fast path)
+          if (judgeSessions.has(sessionID)) {
+            console.log(`[Reflection] Skipping judge session ${sessionID} (in set)`)
+            return
+          }
 
-      // Alternative: trigger on session.status change to idle
-      if (event.type === "session.status") {
-        const props = (event as any).properties
-        if (props?.status?.type === "idle" && props?.sessionID) {
-          // Only use session.status if session.idle doesn't fire
-          // This is a fallback - avoid duplicate triggers
+          // Double-check by examining session content (catches race condition)
+          const skipReason = await shouldSkipSession(sessionID)
+          if (skipReason === "judge") {
+            console.log(`[Reflection] Skipping judge session ${sessionID} (by content)`)
+            judgeSessions.add(sessionID) // Add to set for future checks
+            return
+          }
+          if (skipReason === "empty") {
+            // Silently skip - this is a newly created session with no real content yet
+            return
+          }
+
+          // Run reflection (await to ensure completion before process exit)
+          await runReflection(sessionID)
         }
       }
     },
