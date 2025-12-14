@@ -331,13 +331,6 @@ describe("Reflection Plugin - E2E Integration", { skip: !process.env.OPENCODE_E2
     console.log("[Test] Waiting for session to complete...")
     const result = await waitForSessionIdle(client, sessionId)
 
-    // Handle LLM API failures gracefully
-    if (!result.success && result.error?.includes("LLM")) {
-      console.log(`[Test] SKIPPED: ${result.error}`)
-      console.log("[Test] This test requires a working LLM API. Check your provider configuration.")
-      return // Skip rest of test when API fails
-    }
-
     assert.ok(result.success, `Session did not complete: ${result.error}`)
     console.log(`[Test] Session completed with ${result.messages.length} messages`)
 
@@ -430,13 +423,6 @@ describe("Reflection Plugin - E2E Integration", { skip: !process.env.OPENCODE_E2
       await client.session.delete({ path: { id: testSessionId } })
     } catch {
       // Ignore
-    }
-
-    // Handle LLM API failures gracefully
-    if (!result.success && result.error?.includes("LLM")) {
-      console.log(`[Test] SKIPPED: ${result.error}`)
-      console.log("[Test] This test requires a working LLM API to verify no infinite loop.")
-      return // Skip rest of test when API fails
     }
 
     // Check for stuck behavior in logs

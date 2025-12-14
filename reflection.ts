@@ -41,6 +41,10 @@ const judgeSessions = new Set<string>()
 const reflectionAttempts = new Map<string, number>()
 const MAX_REFLECTION_ATTEMPTS = 3
 
+// Timeout for waiting for judge response (3 minutes - Opus 4.5 can be slow)
+const JUDGE_RESPONSE_TIMEOUT = 180_000
+const POLL_INTERVAL = 2_000
+
 export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   console.log("[Reflection] Plugin initialized")
 
@@ -233,6 +237,69 @@ FEEDBACK: [If FAIL, specific actionable feedback for the agent to continue. If P
   }
 
   /**
+   * Wait for a session to complete and return the assistant's response
+   */
+  async function waitForJudgeResponse(
+    judgeSessionID: string,
+    timeoutMs: number = JUDGE_RESPONSE_TIMEOUT
+  ): Promise<string | null> {
+    const startTime = Date.now()
+    let lastMessageCount = 0
+    let stableCount = 0
+
+    while (Date.now() - startTime < timeoutMs) {
+      try {
+        // Check if session is still busy
+        const statusResponse = await client.session.status({})
+        const statusArray = statusResponse.data as any[] | undefined
+        const isBusy = Array.isArray(statusArray) && statusArray.some(
+          (s: any) => s?.sessionID === judgeSessionID || s?.id === judgeSessionID
+        )
+
+        // Get messages
+        const messagesResponse = await client.session.messages({
+          path: { id: judgeSessionID },
+        })
+        const messages = messagesResponse.data || []
+
+        // Look for assistant response
+        let assistantText = ""
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const msg = messages[i]
+          if (msg.info?.role === "assistant") {
+            for (const part of msg.parts || []) {
+              if (part.type === "text" && part.text) {
+                assistantText = part.text
+                break
+              }
+            }
+            if (assistantText) break
+          }
+        }
+
+        // Check if stable: not busy and messages haven't changed
+        if (!isBusy && messages.length === lastMessageCount && assistantText) {
+          stableCount++
+          if (stableCount >= 3) {
+            return assistantText
+          }
+        } else {
+          stableCount = 0
+        }
+
+        lastMessageCount = messages.length
+        await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL))
+      } catch (error) {
+        console.log("[Reflection] Error polling judge session:", error)
+        await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL))
+      }
+    }
+
+    console.log("[Reflection] Timeout waiting for judge response")
+    return null
+  }
+
+  /**
    * Main reflection logic - called when a session becomes idle
    */
   async function runReflection(sessionID: string): Promise<void> {
@@ -313,51 +380,29 @@ FEEDBACK: [If FAIL, specific actionable feedback for the agent to continue. If P
       judgeSessions.add(judgeSessionID)
       console.log(`[Reflection] Created judge session: ${judgeSessionID}`)
 
-      // Send the judge prompt and wait for response
-      // session.prompt returns the assistant's response directly
+      // Send the judge prompt using async API and poll for completion
+      // This avoids timeout issues with slower models like Opus 4.5
       const judgePrompt = buildJudgePrompt(context)
       let judgeResponseText = ""
 
       try {
-        const promptResponse = await client.session.prompt({
+        // Use promptAsync to avoid blocking timeout
+        const promptResponse = await client.session.promptAsync({
           path: { id: judgeSessionID },
           body: {
             parts: [{ type: "text", text: judgePrompt }],
           },
         })
 
-        // Extract response text from the prompt response
-        const responseData = promptResponse.data as any
-        if (responseData?.parts) {
-          for (const part of responseData.parts) {
-            if (part.type === "text" && part.text) {
-              judgeResponseText = part.text
-              break
-            }
-          }
+        if (promptResponse.error) {
+          console.error("[Reflection] Error sending judge prompt:", promptResponse.error)
+          return
         }
 
-        // If response not in expected format, try fetching messages
-        if (!judgeResponseText) {
-          console.log("[Reflection] Response not in expected format, fetching messages...")
-          const judgeMessages = await client.session.messages({
-            path: { id: judgeSessionID },
-          })
+        console.log("[Reflection] Judge prompt sent, waiting for response...")
 
-          const judgeData = judgeMessages.data || []
-          for (let i = judgeData.length - 1; i >= 0; i--) {
-            const msg = judgeData[i]
-            if (msg.info?.role === "assistant") {
-              for (const part of msg.parts || []) {
-                if (part.type === "text" && part.text) {
-                  judgeResponseText = part.text
-                  break
-                }
-              }
-              if (judgeResponseText) break
-            }
-          }
-        }
+        // Poll for the judge response with extended timeout
+        judgeResponseText = await waitForJudgeResponse(judgeSessionID) || ""
       } catch (error) {
         console.error("[Reflection] Error getting judge response:", error)
         return
@@ -395,13 +440,15 @@ Please address the feedback above and complete the original task fully.`
         // Remove from reflecting set before sending to allow the next reflection
         reflectingSessions.delete(sessionID)
 
-        // Send the feedback to continue the session
-        await client.session.prompt({
+        // Send the feedback to continue the session (use async to avoid timeout)
+        await client.session.promptAsync({
           path: { id: sessionID },
           body: {
             parts: [{ type: "text", text: feedbackMessage }],
           },
         })
+        // Note: We don't wait for this response - the session.idle event will
+        // trigger another reflection when the agent finishes addressing the feedback
       } else {
         // Task passed - clean up
         console.log(`[Reflection] Task completed successfully!`)
