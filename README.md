@@ -117,17 +117,78 @@ await client.tui.publish({
 
 ## Installation
 
-**Global:**
+### Initial Setup
+
+**Global installation** (applies to all projects):
 ```bash
-mkdir -p ~/.config/opencode/plugin && curl -fsSL -o ~/.config/opencode/plugin/reflection.ts https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts
+mkdir -p ~/.config/opencode/plugin && \
+curl -fsSL -o ~/.config/opencode/plugin/reflection.ts \
+  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts
 ```
 
-**Project-specific:**
+**Project-specific installation** (only for current project):
 ```bash
-mkdir -p .opencode/plugin && curl -fsSL -o .opencode/plugin/reflection.ts https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts
+mkdir -p .opencode/plugin && \
+curl -fsSL -o .opencode/plugin/reflection.ts \
+  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts
 ```
 
-Restart opencode after installation.
+### Activating the Plugin
+
+After installation, you must restart OpenCode to load the plugin:
+
+**If you have running tasks:**
+- Wait for tasks to complete
+- Then restart OpenCode
+
+**To restart OpenCode:**
+
+1. **Terminal/TUI mode:**
+   ```bash
+   # Stop current session (Ctrl+C)
+   # Then restart
+   opencode
+   ```
+
+2. **Background/Server mode:**
+   ```bash
+   # Find and stop OpenCode processes
+   pkill opencode
+   
+   # Or restart specific server
+   opencode serve --restart
+   ```
+
+3. **Force restart all OpenCode processes:**
+   ```bash
+   pkill -9 opencode && sleep 2 && opencode
+   ```
+
+### Updating the Plugin
+
+To update to the latest version:
+
+```bash
+# Global update
+curl -fsSL -o ~/.config/opencode/plugin/reflection.ts \
+  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts
+
+# Project-specific update  
+curl -fsSL -o .opencode/plugin/reflection.ts \
+  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts
+
+# Then restart OpenCode (see above)
+```
+
+### Verifying Installation
+
+Check if the plugin is loaded:
+```bash
+# Check plugin file exists
+ls -lh ~/.config/opencode/plugin/reflection.ts
+
+# After starting OpenCode, you should see reflection toasts when tasks complete
+```
 
 ## Features
 
