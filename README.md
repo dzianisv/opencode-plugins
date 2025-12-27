@@ -39,10 +39,15 @@ Restart opencode after installation.
 ## Features
 
 - Automatic trigger on session idle
-- Collects context: last user task, AGENTS.md, last 10 tool calls, last assistant response
+- Collects context: last user task, AGENTS.md (1500 chars), last 10 tool calls, last assistant response (2000 chars)
 - Creates separate judge session for unbiased evaluation
 - Auto-continues agent with feedback if task incomplete
 - Max 3 attempts to prevent infinite loops
+- Skips judge sessions automatically to prevent infinite reflection
+
+## Known Limitations
+
+⚠️ **Timeout with slow models**: The current implementation uses the blocking `client.session.prompt()` API, which has a ~90 second timeout. This may cause failures with slower models like Claude Opus 4.5. See AGENTS.md for the recommended `promptAsync()` + polling solution.
 
 ## Configuration
 

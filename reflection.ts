@@ -47,7 +47,12 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
       // Collect tool calls
       for (const part of msg.parts || []) {
         if (part.type === "tool") {
-          tools.push(`${part.tool}: ${JSON.stringify(part.state?.input || {}).slice(0, 200)}`)
+          try {
+            const input = JSON.stringify(part.state?.input || {})
+            tools.push(`${part.tool}: ${input.slice(0, 200)}`)
+          } catch (e) {
+            tools.push(`${part.tool}: [serialization error]`)
+          }
         }
       }
 
@@ -153,7 +158,10 @@ Is this task COMPLETE? Reply with JSON only:
         attempts.delete(sessionId)
       }
     } catch (e) {
-      console.log("[Reflection] Error:", e)
+      console.log("[Reflection] Error:", e instanceof Error ? e.message : String(e))
+      if (e instanceof Error && e.stack) {
+        console.log("[Reflection] Stack:", e.stack)
+      }
     } finally {
       judgeSessionIds.delete(judgeSession.id)
     }
@@ -163,7 +171,8 @@ Is this task COMPLETE? Reply with JSON only:
     event: async ({ event }) => {
       if (event.type === "session.idle") {
         const sessionId = (event as any).properties?.sessionID
-        if (sessionId && !judgeSessionIds.has(sessionId)) {
+        // Ensure sessionId is a valid string
+        if (sessionId && typeof sessionId === "string" && !judgeSessionIds.has(sessionId)) {
           await judge(sessionId)
         }
       }
