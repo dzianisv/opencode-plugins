@@ -109,8 +109,11 @@ ${extracted.tools || "(none)"}
 ${extracted.result.slice(0, 2000)}
 
 ---
-Is this task COMPLETE? Reply with JSON only:
-{"complete": true/false, "feedback": "specific issues if incomplete, or empty string if complete"}`
+Evaluate if this task is COMPLETE. Reply with JSON only:
+{
+  "complete": true/false,
+  "feedback": "If incomplete: specific issues to fix. If complete: brief summary of what was accomplished."
+}`
 
       // Send prompt and wait for response
       const { data: response } = await client.session.prompt({
@@ -137,30 +140,40 @@ Is this task COMPLETE? Reply with JSON only:
       }
 
       const verdict = JSON.parse(jsonMatch[0])
-      const status = verdict.complete ? "COMPLETE" : "INCOMPLETE"
-      console.log(`[Reflection] Verdict: ${status}`)
+      const feedback = verdict.feedback || (verdict.complete 
+        ? "Task requirements satisfied." 
+        : "No specific issues identified. Review task requirements.")
 
       if (!verdict.complete) {
-        const feedback = verdict.feedback || "No specific feedback provided. Please review the task requirements."
-        console.log(`[Reflection] Feedback: ${feedback}`)
-        
         attempts.set(sessionId, attemptCount + 1)
 
-        // Send feedback to original session
+        // Send actionable feedback to continue the task
         await client.session.prompt({
           path: { id: sessionId },
           body: {
             parts: [{
               type: "text",
-              text: `## Task Incomplete (${attemptCount + 1}/${MAX_ATTEMPTS})\n\n${feedback}\n\nPlease continue and complete the task.`
+              text: `## Reflection: Task Incomplete (Attempt ${attemptCount + 1}/${MAX_ATTEMPTS})
+
+${feedback}
+
+Please address the above issues and continue working on the task.`
             }]
           }
         })
       } else {
-        // Task complete - no feedback needed
-        if (verdict.feedback) {
-          console.log(`[Reflection] Note: ${verdict.feedback}`)
-        }
+        // Task complete - send summary as confirmation
+        await client.session.prompt({
+          path: { id: sessionId },
+          body: {
+            parts: [{
+              type: "text",
+              text: `## Reflection: Task Complete ✓
+
+${feedback}`
+            }]
+          }
+        })
         attempts.delete(sessionId)
       }
     } catch (e) {
