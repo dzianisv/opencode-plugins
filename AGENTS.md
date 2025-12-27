@@ -1,5 +1,30 @@
 # OpenCode Reflection Plugin - Development Guidelines
 
+## Plugin Architecture
+
+### Message Flow
+The plugin integrates seamlessly with OpenCode's chat UI:
+- **Judge evaluation** happens in a separate session (invisible to user)
+- **Reflection feedback** appears as user messages in the main chat
+- **Console logs** are for debugging only (appear in server logs, not chat)
+
+All feedback is delivered via `client.session.prompt()` which:
+- ✅ Appears in the OpenCode chat UI naturally
+- ✅ Is visible in the message history
+- ✅ Triggers the agent to respond
+- ❌ Does NOT disrupt terminal output
+
+### Feedback Design
+The judge ALWAYS provides feedback for both complete and incomplete tasks:
+- **Task Complete**: Brief summary of what was accomplished → appears in chat as "Reflection: Task Complete ✓"
+- **Task Incomplete**: Specific issues that need to be fixed → appears in chat as "Reflection: Task Incomplete"
+
+This provides:
+- ✅ Complete audit trail of all reflections
+- ✅ Explicit confirmation when tasks succeed
+- ✅ Actionable guidance when tasks need work
+- ✅ Better UX - user sees reflection results directly in chat
+
 ## Critical Learnings
 
 ### 1. SDK Timeout Issues - NEVER Use Blocking `prompt()` for Long Operations

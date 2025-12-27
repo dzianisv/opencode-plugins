@@ -23,6 +23,7 @@ interface TaskResult {
   sessionId: string
   messages: any[]
   reflectionFeedback: string[]
+  reflectionComplete: string[]
   files: string[]
   completed: boolean
   duration: number
@@ -58,6 +59,7 @@ async function runTask(
     sessionId: "",
     messages: [],
     reflectionFeedback: [],
+    reflectionComplete: [],
     files: [],
     completed: false,
     duration: 0
@@ -93,10 +95,17 @@ async function runTask(
       for (const msg of result.messages) {
         if (msg.info?.role === "user") {
           for (const part of msg.parts || []) {
-            if (part.type === "text" && part.text?.includes("Task Incomplete")) {
-              if (!result.reflectionFeedback.includes(part.text)) {
-                result.reflectionFeedback.push(part.text)
-                console.log(`[${label}] Reflection feedback received`)
+            if (part.type === "text") {
+              if (part.text?.includes("Task Incomplete")) {
+                if (!result.reflectionFeedback.includes(part.text)) {
+                  result.reflectionFeedback.push(part.text)
+                  console.log(`[${label}] Reflection: Task Incomplete feedback received`)
+                }
+              } else if (part.text?.includes("Task Complete")) {
+                if (!result.reflectionComplete.includes(part.text)) {
+                  result.reflectionComplete.push(part.text)
+                  console.log(`[${label}] Reflection: Task Complete confirmation received`)
+                }
               }
             }
           }
@@ -265,7 +274,8 @@ describe("E2E: OpenCode API with Reflection", { timeout: TIMEOUT * 2 + 120_000 }
     console.log(`Duration: ${pythonResult.duration}ms`)
     console.log(`Files: ${pythonResult.files.join(", ")}`)
     console.log(`Messages: ${pythonResult.messages.length}`)
-    console.log(`Reflection feedback: ${pythonResult.reflectionFeedback.length}`)
+    console.log(`Reflection incomplete: ${pythonResult.reflectionFeedback.length}`)
+    console.log(`Reflection complete: ${pythonResult.reflectionComplete.length}`)
 
     assert.ok(pythonResult.files.some(f => f.endsWith(".py")), "Should create .py files")
   })
@@ -287,7 +297,8 @@ describe("E2E: OpenCode API with Reflection", { timeout: TIMEOUT * 2 + 120_000 }
     console.log(`Duration: ${nodeResult.duration}ms`)
     console.log(`Files: ${nodeResult.files.join(", ")}`)
     console.log(`Messages: ${nodeResult.messages.length}`)
-    console.log(`Reflection feedback: ${nodeResult.reflectionFeedback.length}`)
+    console.log(`Reflection incomplete: ${nodeResult.reflectionFeedback.length}`)
+    console.log(`Reflection complete: ${nodeResult.reflectionComplete.length}`)
 
     assert.ok(nodeResult.files.some(f => f.endsWith(".js")), "Should create .js files")
   })
