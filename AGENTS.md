@@ -73,15 +73,36 @@ The plugin has 5 defense layers against infinite reflection loops. Do not remove
 
 ## Testing Checklist
 
+**CRITICAL: ALWAYS run E2E tests after ANY code changes to reflection.ts. No exceptions.**
+
 Before committing changes to reflection logic:
 
 - [ ] `npm run typecheck` passes
 - [ ] Unit tests pass: `npm test`
-- [ ] E2E tests pass with real LLM: `OPENCODE_E2E=1 npm run test:e2e`
+- [ ] **E2E tests MUST ALWAYS run: `OPENCODE_E2E=1 npm run test:e2e`**
+- [ ] **E2E tests MUST pass - if they fail, you MUST fix the code immediately**
+- [ ] **NEVER skip E2E tests - they are CRITICAL to verify the plugin works**
 - [ ] Check E2E logs for "SKIPPED" (hidden failures)
-- [ ] Manual test with Opus 4.5 (slowest model)
 - [ ] Verify no "Already reflecting" spam in logs
 - [ ] Verify judge sessions are properly skipped
+
+**E2E Test Requirements:**
+- E2E tests use the model specified in `~/.config/opencode/opencode.json`
+- Ensure the configured model has a valid API key before running E2E tests
+- `opencode serve` does NOT support `--model` flag - it reads from config file
+- If E2E test shows `messages: 0` and timeouts, check:
+  1. Is the configured model valid? (`cat ~/.config/opencode/opencode.json`)
+  2. Do you have the API key for that provider?
+  3. Can you run `opencode run "test"` successfully with the same model?
+- If E2E tests fail due to missing API keys, temporarily update the config to use an available model
+- If E2E tests fail for reasons OTHER than API/model config, the plugin is BROKEN
+
+**Why E2E tests are CRITICAL:**
+- Unit tests only validate isolated logic, NOT the full plugin integration
+- The plugin interacts with OpenCode SDK APIs that can break silently
+- E2E tests catch breaking changes that unit tests miss
+- If E2E tests fail, the plugin is BROKEN in production
+- E2E test failures mean you broke something - FIX IT
 
 ## Architecture
 
