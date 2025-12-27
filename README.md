@@ -1,5 +1,6 @@
 # OpenCode Reflection Plugin
 <img width="1250" height="1304" alt="image" src="https://github.com/user-attachments/assets/87485f92-2117-47bd-ace2-b6bf217be800" />
+<img width="1276" height="1403" alt="image" src="https://github.com/user-attachments/assets/7a08c451-b7b3-46b8-b694-6b3f6f4071a5" />
 
 
 A plugin for [OpenCode](https://github.com/sst/opencode) that implements a **reflection/judge layer** to verify task completion and force the agent to continue if work is incomplete.
