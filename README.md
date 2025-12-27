@@ -7,21 +7,113 @@ A plugin for [OpenCode](https://github.com/sst/opencode) that implements a **ref
 
 ## How It Works
 
+### Flow Diagram
+
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
 │  User Task      │────▶│  Agent Works     │────▶│ Session Idle    │
 └─────────────────┘     └──────────────────┘     └────────┬────────┘
                                                           │
                                                           ▼
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│ Agent Continues │◀────│  FAIL + Feedback │◀────│  Judge Reviews  │
-│ (if FAIL)       │     └──────────────────┘     │  - Initial task │
-└─────────────────┘                              │  - AGENTS.md    │
-        │                                        │  - Tool calls   │
-        │              ┌──────────────────┐      │  - Thoughts     │
-        └─────────────▶│  PASS = Done!    │◀─────│  - Final result │
-                       └──────────────────┘      └─────────────────┘
+                                                  ┌─────────────────┐
+                                                  │  Judge Session  │
+                                                  │  (Hidden)       │
+                                                  │                 │
+                                                  │ Evaluates:      │
+                                                  │ • Initial task  │
+                                                  │ • AGENTS.md     │
+                                                  │ • Tool calls    │
+                                                  │ • Agent output  │
+                                                  └────────┬────────┘
+                                                          │
+                                   ┌──────────────────────┴──────────────────────┐
+                                   ▼                                             ▼
+                          ┌──────────────────┐                         ┌──────────────────┐
+                          │ Task Incomplete  │                         │  Task Complete   │
+                          │                  │                         │                  │
+                          │ Toast: ⚠️ (1/3) │                         │ Toast: ✓ Success │
+                          │ Chat: Feedback   │                         │ Chat: Summary    │
+                          └────────┬─────────┘                         └──────────────────┘
+                                   │
+                                   ▼
+                          ┌──────────────────┐
+                          │ Agent Continues  │
+                          │ with guidance    │
+                          └──────────────────┘
 ```
+
+### OpenCode APIs Used
+
+The plugin integrates seamlessly using OpenCode's official plugin APIs:
+
+#### 1. **Plugin Hooks** (`@opencode-ai/plugin`)
+```typescript
+export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
+  // Returns hooks object with event handlers
+  return {
+    event: async ({ event }) => {
+      if (event.type === "session.idle") {
+        // Trigger reflection when session idles
+      }
+    }
+  }
+}
+```
+
+#### 2. **Session Management** (`client.session.*`)
+```typescript
+// Create judge session
+const { data: judgeSession } = await client.session.create({})
+
+// Send prompt to judge
+await client.session.prompt({
+  path: { id: judgeSession.id },
+  body: { parts: [{ type: "text", text: prompt }] }
+})
+
+// Get session messages for context
+const { data: messages } = await client.session.messages({ 
+  path: { id: sessionId } 
+})
+
+// Send feedback to user session
+await client.session.prompt({
+  path: { id: sessionId },
+  body: {
+    parts: [{
+      type: "text",
+      text: "## Reflection: Task Incomplete\n\n..."
+    }]
+  }
+})
+```
+
+#### 3. **Toast Notifications** (`client.tui.publish`)
+```typescript
+// Show non-intrusive status updates in OpenCode UI
+await client.tui.publish({
+  query: { directory },
+  body: {
+    type: "tui.toast.show",
+    properties: {
+      title: "Reflection",
+      message: "Task complete ✓",
+      variant: "success",  // "info" | "success" | "warning" | "error"
+      duration: 5000
+    }
+  }
+})
+```
+
+### Key Design Decisions
+
+1. **Separate Judge Session**: Creates a hidden session for unbiased evaluation, preventing context pollution
+2. **Dual Feedback Channel**:
+   - **Toast notifications**: Quick, color-coded status (doesn't pollute chat)
+   - **Chat messages**: Detailed feedback that triggers agent to respond
+3. **Context Collection**: Gathers last user message, AGENTS.md, recent tool calls, and agent output
+4. **Infinite Loop Prevention**: Tracks judge sessions and limits to 3 attempts per task
+5. **Always Provides Feedback**: Both successful and failed tasks receive confirmation/guidance
 
 ## Installation
 
@@ -49,9 +141,65 @@ Restart opencode after installation.
 - **Infinite loop prevention**: Automatically skips judge sessions to prevent recursion
 - **Always provides feedback**: Both complete and incomplete tasks receive confirmation/guidance
 
+## Technical Implementation
+
+### Plugin Architecture
+
+```typescript
+// 1. Listen for session idle events
+event: async ({ event }) => {
+  if (event.type === "session.idle") {
+    await judge(event.properties.sessionID)
+  }
+}
+
+// 2. Extract context from session
+const extracted = extractFromMessages(messages)
+// Returns: { task, result, tools }
+
+// 3. Create judge session and evaluate
+const judgePrompt = `TASK VERIFICATION
+## Original Task
+${extracted.task}
+
+## Agent's Response  
+${extracted.result}
+
+Evaluate if this task is COMPLETE. Reply with JSON:
+{
+  "complete": true/false,
+  "feedback": "..."
+}`
+
+// 4. Parse verdict and take action
+if (!verdict.complete) {
+  // Show warning toast
+  await showToast("Task incomplete (1/3)", "warning")
+  
+  // Send feedback to session
+  await client.session.prompt({
+    path: { id: sessionId },
+    body: { parts: [{ type: "text", text: feedback }] }
+  })
+} else {
+  // Show success toast
+  await showToast("Task complete ✓", "success")
+}
+```
+
+### API Integration Points
+
+| API | Purpose | Type |
+|-----|---------|------|
+| `client.session.create()` | Create judge session | Session Management |
+| `client.session.prompt()` | Send prompts and feedback | Session Management |
+| `client.session.messages()` | Get conversation context | Session Management |
+| `client.tui.publish()` | Show toast notifications | UI Feedback |
+| `event.type === "session.idle"` | Trigger reflection | Event Hook |
+
 ## Known Limitations
 
-⚠️ **Timeout with slow models**: The current implementation uses the blocking `client.session.prompt()` API, which has a ~90 second timeout. This may cause failures with slower models like Claude Opus 4.5. See AGENTS.md for the recommended `promptAsync()` + polling solution.
+⚠️ **Timeout with slow models**: The current implementation uses the blocking `client.session.prompt()` API, which has a ~90 second timeout. This may cause failures with slower models like Claude Opus 4.5. See [AGENTS.md](AGENTS.md) for the recommended `promptAsync()` + polling solution.
 
 ## Configuration
 
