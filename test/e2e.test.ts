@@ -70,8 +70,8 @@ async function runTask(
     result.sessionId = session.id
     console.log(`[${label}] Session: ${result.sessionId}`)
 
-    // Send task
-    await client.session.promptAsync({
+    // Send task (use prompt, not promptAsync, to trigger LLM response)
+    await client.session.prompt({
       path: { id: result.sessionId },
       body: { parts: [{ type: "text", text: task }] }
     })
@@ -180,16 +180,16 @@ describe("E2E: OpenCode API with Reflection", { timeout: TIMEOUT * 2 + 120_000 }
 
     pythonServer.stdout?.on("data", (d) => {
       const line = d.toString().trim()
+      if (line) console.log(`[py] ${line}`)
       if (line.includes("[Reflection]")) {
         serverLogs.push(`[py] ${line}`)
-        console.log(`[py] ${line}`)
       }
     })
     pythonServer.stderr?.on("data", (d) => {
       const line = d.toString().trim()
+      if (line) console.error(`[py:err] ${line}`)
       if (line.includes("[Reflection]")) {
-        serverLogs.push(`[py] ${line}`)
-        console.log(`[py] ${line}`)
+        serverLogs.push(`[py:err] ${line}`)
       }
     })
 
@@ -201,16 +201,16 @@ describe("E2E: OpenCode API with Reflection", { timeout: TIMEOUT * 2 + 120_000 }
 
     nodeServer.stdout?.on("data", (d) => {
       const line = d.toString().trim()
+      if (line) console.log(`[node] ${line}`)
       if (line.includes("[Reflection]")) {
         serverLogs.push(`[node] ${line}`)
-        console.log(`[node] ${line}`)
       }
     })
     nodeServer.stderr?.on("data", (d) => {
       const line = d.toString().trim()
+      if (line) console.error(`[node:err] ${line}`)
       if (line.includes("[Reflection]")) {
-        serverLogs.push(`[node] ${line}`)
-        console.log(`[node] ${line}`)
+        serverLogs.push(`[node:err] ${line}`)
       }
     })
 

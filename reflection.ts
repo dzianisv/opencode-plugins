@@ -110,7 +110,7 @@ ${extracted.result.slice(0, 2000)}
 
 ---
 Is this task COMPLETE? Reply with JSON only:
-{"complete": true/false, "feedback": "if incomplete, what's missing"}`
+{"complete": true/false, "feedback": "specific issues if incomplete, or empty string if complete"}`
 
       // Send prompt and wait for response
       const { data: response } = await client.session.prompt({
@@ -139,9 +139,11 @@ Is this task COMPLETE? Reply with JSON only:
       const verdict = JSON.parse(jsonMatch[0])
       const status = verdict.complete ? "COMPLETE" : "INCOMPLETE"
       console.log(`[Reflection] Verdict: ${status}`)
-      console.log(`[Reflection] Feedback: ${verdict.feedback || "(none)"}`)
 
-      if (!verdict.complete && verdict.feedback) {
+      if (!verdict.complete) {
+        const feedback = verdict.feedback || "No specific feedback provided. Please review the task requirements."
+        console.log(`[Reflection] Feedback: ${feedback}`)
+        
         attempts.set(sessionId, attemptCount + 1)
 
         // Send feedback to original session
@@ -150,11 +152,15 @@ Is this task COMPLETE? Reply with JSON only:
           body: {
             parts: [{
               type: "text",
-              text: `## Task Incomplete (${attemptCount + 1}/${MAX_ATTEMPTS})\n\n${verdict.feedback}\n\nPlease continue and complete the task.`
+              text: `## Task Incomplete (${attemptCount + 1}/${MAX_ATTEMPTS})\n\n${feedback}\n\nPlease continue and complete the task.`
             }]
           }
         })
       } else {
+        // Task complete - no feedback needed
+        if (verdict.feedback) {
+          console.log(`[Reflection] Note: ${verdict.feedback}`)
+        }
         attempts.delete(sessionId)
       }
     } catch (e) {
