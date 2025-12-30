@@ -1,5 +1,22 @@
 # OpenCode Reflection Plugin - Development Guidelines
 
+## CRITICAL: Plugin Installation Location
+
+**OpenCode loads plugins from `~/.config/opencode/plugin/`, NOT from npm global installs!**
+
+When deploying changes:
+1. Update source: `/Users/engineer/workspace/opencode-reflection-plugin/reflection.ts`
+2. **MUST COPY** to: `~/.config/opencode/plugin/reflection.ts`
+3. Restart OpenCode for changes to take effect
+
+```bash
+# Deploy plugin changes
+cp /Users/engineer/workspace/opencode-reflection-plugin/reflection.ts ~/.config/opencode/plugin/reflection.ts
+# Then restart opencode
+```
+
+The npm global install (`npm install -g`) is NOT used by OpenCode - it reads directly from the config directory.
+
 ## Plugin Architecture
 
 ### Message Flow
