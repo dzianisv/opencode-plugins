@@ -284,27 +284,16 @@ Please address the above issues and continue working on the task.`
           }
         })
       } else {
-        // Show success toast
-        await showToast("Task complete ✓", "success")
-        console.log("[Reflection] COMPLETE - task verified")
+        // Task complete - only show toast, do NOT call prompt()
+        // Calling prompt() on complete tasks creates an infinite loop:
+        // agent responds → session.idle → reflection → "complete" → prompt() → agent responds → ...
+        await showToast(`Task complete ✓ ${feedback.slice(0, 50)}...`, "success")
+        console.log(`[Reflection] COMPLETE - task verified: ${feedback.slice(0, 100)}`)
 
         // Mark as completed so we don't reflect again
         completedSessions.add(sessionId)
         attempts.delete(sessionId)
         lastFeedbackTime.delete(sessionId)
-
-        // Task complete - send summary as confirmation (async)
-        await client.session.promptAsync({
-          path: { id: sessionId },
-          body: {
-            parts: [{
-              type: "text",
-              text: `## Reflection: Task Complete ✓
-
-${feedback}`
-            }]
-          }
-        })
       }
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e)

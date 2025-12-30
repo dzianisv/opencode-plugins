@@ -5,7 +5,7 @@
 ### Message Flow
 The plugin integrates seamlessly with OpenCode's UI:
 - **Judge evaluation** happens in a separate session (invisible to user)
-- **Reflection feedback** appears as user messages in the main chat via `client.session.prompt()`
+- **Reflection feedback** appears as user messages in the main chat via `client.session.prompt()` - **ONLY when task is incomplete**
 - **Toast notifications** show status updates via `client.tui.publish()` (non-intrusive)
 
 Feedback delivery methods:
@@ -13,23 +13,26 @@ Feedback delivery methods:
    - ✅ Full feedback details with markdown formatting
    - ✅ Visible in message history
    - ✅ Triggers the agent to respond
+   - ⚠️ **ONLY use for INCOMPLETE tasks** - using for complete tasks creates infinite loop
    
 2. **Toast notifications** (`client.tui.publish()`):
    - ✅ Brief status updates (e.g., "Task complete ✓")
    - ✅ Non-intrusive, auto-dismiss
    - ✅ Color-coded by severity (success/warning/error)
    - ✅ Does NOT pollute terminal or chat
+   - ✅ **Use for COMPLETE tasks** - no agent response triggered
 
-### Feedback Design
-The judge ALWAYS provides feedback for both complete and incomplete tasks:
-- **Task Complete**: Brief summary of what was accomplished → appears in chat as "Reflection: Task Complete ✓"
-- **Task Incomplete**: Specific issues that need to be fixed → appears in chat as "Reflection: Task Incomplete"
+### Feedback Design - CRITICAL
+**Task Complete**: Toast notification ONLY - do NOT call `prompt()`
+**Task Incomplete**: Send feedback via `prompt()` to trigger agent to continue
 
-This provides:
-- ✅ Complete audit trail of all reflections
-- ✅ Explicit confirmation when tasks succeed
-- ✅ Actionable guidance when tasks need work
-- ✅ Better UX - user sees reflection results directly in chat
+**WHY:** Calling `prompt()` on complete tasks creates an infinite loop:
+1. Agent finishes task → session.idle fires
+2. Plugin judges → "task complete" 
+3. Plugin calls `prompt("Task Complete ✓")` → agent responds "Acknowledged"
+4. session.idle fires again → goto step 2 (INFINITE LOOP!)
+
+The fix: Complete tasks show a toast notification only. The user sees confirmation without triggering another agent response.
 
 ## Critical Learnings
 
