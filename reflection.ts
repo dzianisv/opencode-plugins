@@ -50,6 +50,14 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     return false
   }
 
+  function wasSessionAborted(messages: any[]): boolean {
+    // Check if the last assistant message has an abort error
+    // This happens when user presses Esc to cancel the task
+    const lastAssistant = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
+    if (!lastAssistant?.info?.error) return false
+    return lastAssistant.info.error.name === "MessageAbortedError"
+  }
+
   function extractTaskAndResult(messages: any[]): { task: string; result: string; tools: string } | null {
     let task = ""
     let result = ""
@@ -115,6 +123,12 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
 
       // Skip judge sessions
       if (isJudgeSession(messages)) {
+        processedSessions.add(sessionId)
+        return
+      }
+
+      // Skip if session was aborted/cancelled by user (Esc key)
+      if (wasSessionAborted(messages)) {
         processedSessions.add(sessionId)
         return
       }

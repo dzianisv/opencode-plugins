@@ -34,6 +34,40 @@ describe("Reflection Plugin - Unit Tests", () => {
     assert.strictEqual(verdict.complete, false)
     assert.strictEqual(verdict.feedback, "Missing tests")
   })
+
+  it("detects aborted sessions", () => {
+    // Simulate an aborted session's messages (using any to avoid TS issues)
+    const abortedMessages: any[] = [
+      { info: { role: "user" }, parts: [{ type: "text", text: "Do something" }] },
+      { 
+        info: { 
+          role: "assistant", 
+          error: { name: "MessageAbortedError", message: "User cancelled" } 
+        }, 
+        parts: [{ type: "text", text: "I'll start..." }] 
+      }
+    ]
+    
+    // Check that we detect the abort error
+    const lastAssistant = [...abortedMessages].reverse().find((m: any) => m.info?.role === "assistant")
+    const wasAborted = lastAssistant?.info?.error?.name === "MessageAbortedError"
+    assert.strictEqual(wasAborted, true, "Should detect aborted session")
+  })
+
+  it("does not flag non-aborted sessions as aborted", () => {
+    // Simulate a normal completed session
+    const normalMessages: any[] = [
+      { info: { role: "user" }, parts: [{ type: "text", text: "Do something" }] },
+      { 
+        info: { role: "assistant" }, 
+        parts: [{ type: "text", text: "Done!" }] 
+      }
+    ]
+    
+    const lastAssistant = [...normalMessages].reverse().find((m: any) => m.info?.role === "assistant")
+    const wasAborted = lastAssistant?.info?.error?.name === "MessageAbortedError"
+    assert.strictEqual(wasAborted, false, "Should not flag normal session as aborted")
+  })
 })
 
 describe("Reflection Plugin - Structure Validation", () => {
@@ -71,5 +105,10 @@ describe("Reflection Plugin - Structure Validation", () => {
 
   it("cleans up sessions", () => {
     assert.ok(pluginContent.includes("processedSessions.add"), "Missing cleanup")
+  })
+
+  it("detects aborted sessions to skip reflection", () => {
+    assert.ok(pluginContent.includes("wasSessionAborted"), "Missing wasSessionAborted function")
+    assert.ok(pluginContent.includes("MessageAbortedError"), "Missing MessageAbortedError check")
   })
 })
