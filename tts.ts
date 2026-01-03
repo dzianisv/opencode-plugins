@@ -8,6 +8,9 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { exec } from "child_process"
 import { promisify } from "util"
+import { readFile, writeFile } from "fs/promises"
+import { join } from "path"
+import { homedir } from "os"
 
 const execAsync = promisify(exec)
 
@@ -17,7 +20,41 @@ const MAX_SPEECH_LENGTH = 1000
 // Track sessions we've already spoken for
 const spokenSessions = new Set<string>()
 
+// Config file path for persistent TTS settings
+const TTS_CONFIG_PATH = join(homedir(), ".config", "opencode", "tts.json")
+
+// In-memory TTS enabled state
+let ttsEnabled = true
+
+/**
+ * Load TTS config from file
+ */
+async function loadConfig(): Promise<{ enabled: boolean }> {
+  try {
+    const content = await readFile(TTS_CONFIG_PATH, "utf-8")
+    return JSON.parse(content)
+  } catch {
+    // Default config if file doesn't exist
+    return { enabled: true }
+  }
+}
+
+/**
+ * Save TTS config to file
+ */
+async function saveConfig(config: { enabled: boolean }): Promise<void> {
+  try {
+    await writeFile(TTS_CONFIG_PATH, JSON.stringify(config, null, 2))
+  } catch (error) {
+    console.error("[TTS] Failed to save config:", error)
+  }
+}
+
 export const TTSPlugin: Plugin = async ({ client, directory }) => {
+  // Load initial state from config file
+  const config = await loadConfig()
+  ttsEnabled = config.enabled
+  
   /**
    * Extract the final assistant response from session messages
    */
@@ -111,7 +148,48 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
   }
 
   return {
+    // Handle /tts command to toggle voice on/off
+    "tui.command.execute": async (input: any, output: any) => {
+      if (input.command === "tts") {
+        const arg = input.args?.trim().toLowerCase()
+        
+        if (arg === "on") {
+          ttsEnabled = true
+        } else if (arg === "off") {
+          ttsEnabled = false
+        } else {
+          // Toggle if no argument
+          ttsEnabled = !ttsEnabled
+        }
+        
+        // Persist the setting to config file
+        await saveConfig({ enabled: ttsEnabled })
+        
+        // Show toast notification
+        try {
+          await client.tui.publish({
+            query: { directory },
+            body: {
+              type: "tui.toast.show",
+              properties: {
+                title: "TTS",
+                message: ttsEnabled ? "Voice enabled" : "Voice disabled",
+                variant: "info",
+                duration: 3000,
+              },
+            },
+          })
+        } catch {}
+        
+        // Prevent default command handling
+        output.handled = true
+      }
+    },
+    
     event: async ({ event }) => {
+      // Check if TTS is disabled via toggle or env var
+      if (!ttsEnabled || process.env.TTS_DISABLED === "1") return
+
       if (event.type === "session.idle") {
         const sessionId = (event as any).properties?.sessionID
         if (!sessionId || typeof sessionId !== "string") return
