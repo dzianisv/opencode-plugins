@@ -117,10 +117,9 @@ describe("TTS Plugin - Structure Validation", () => {
     assert.ok(pluginContent.includes("process.env.TTS_DISABLED"), "Missing env var check")
   })
 
-  it("handles tts command", () => {
-    assert.ok(pluginContent.includes('"tui.command.execute"'), "Missing command handler")
-    assert.ok(pluginContent.includes('input.command === "tts"'), "Missing tts command check")
-    assert.ok(pluginContent.includes("ttsEnabled"), "Missing ttsEnabled state")
+  it("supports config file toggle", () => {
+    assert.ok(pluginContent.includes("tts.json"), "Missing config file reference")
+    assert.ok(pluginContent.includes("isEnabled"), "Missing isEnabled check")
   })
 })
 
