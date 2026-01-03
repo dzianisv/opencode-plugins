@@ -112,6 +112,16 @@ describe("TTS Plugin - Structure Validation", () => {
     assert.ok(pluginContent.includes("extractFinalResponse"), "Missing response extraction")
     assert.ok(pluginContent.includes('role === "assistant"'), "Missing assistant role check")
   })
+
+  it("checks for TTS_DISABLED env var", () => {
+    assert.ok(pluginContent.includes("process.env.TTS_DISABLED"), "Missing env var check")
+  })
+
+  it("handles tts command", () => {
+    assert.ok(pluginContent.includes('"tui.command.execute"'), "Missing command handler")
+    assert.ok(pluginContent.includes('input.command === "tts"'), "Missing tts command check")
+    assert.ok(pluginContent.includes("ttsEnabled"), "Missing ttsEnabled state")
+  })
 })
 
 describe("TTS Plugin - macOS Integration", () => {
