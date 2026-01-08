@@ -236,6 +236,19 @@ describe("TTS Plugin - Chatterbox Features", () => {
     assert.ok(pluginContent.includes('"mps"'), "Missing MPS device option")
     assert.ok(pluginContent.includes("torch.backends.mps.is_available"), "Missing MPS detection")
   })
+
+  it("prevents multiple server instances with locking", () => {
+    assert.ok(pluginContent.includes("server.lock"), "Missing lock file")
+    assert.ok(pluginContent.includes("acquireLock"), "Missing lock acquisition")
+    assert.ok(pluginContent.includes("releaseLock"), "Missing lock release")
+    assert.ok(pluginContent.includes("isServerRunning"), "Missing server check function")
+  })
+
+  it("runs server detached for sharing across sessions", () => {
+    assert.ok(pluginContent.includes("detached: true"), "Server should be detached")
+    assert.ok(pluginContent.includes("server.pid"), "Missing PID file for server tracking")
+    assert.ok(pluginContent.includes(".unref()"), "Server should be unref'd")
+  })
 })
 
 describe("TTS Plugin - macOS Integration", () => {

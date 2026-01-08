@@ -336,64 +336,155 @@ if __name__ == "__main__":
   await writeFile(CHATTERBOX_SERVER_SCRIPT, script, { mode: 0o755 })
 }
 
+// Lock file for server startup coordination
+const CHATTERBOX_LOCK = join(CHATTERBOX_DIR, "server.lock")
+const CHATTERBOX_PID = join(CHATTERBOX_DIR, "server.pid")
+
+/**
+ * Check if a server is already running and responsive
+ */
+async function isServerRunning(): Promise<boolean> {
+  try {
+    await access(CHATTERBOX_SOCKET)
+    // Socket exists, try to connect
+    const net = await import("net")
+    return new Promise((resolve) => {
+      const client = net.createConnection(CHATTERBOX_SOCKET, () => {
+        client.destroy()
+        resolve(true)
+      })
+      client.on("error", () => resolve(false))
+      setTimeout(() => {
+        client.destroy()
+        resolve(false)
+      }, 1000)
+    })
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Acquire a lock file to prevent multiple server startups
+ */
+async function acquireLock(): Promise<boolean> {
+  const lockContent = `${process.pid}\n${Date.now()}`
+  try {
+    // Try to create lock file exclusively
+    const { open } = await import("fs/promises")
+    const handle = await open(CHATTERBOX_LOCK, "wx")
+    await handle.writeFile(lockContent)
+    await handle.close()
+    return true
+  } catch (e: any) {
+    if (e.code === "EEXIST") {
+      // Lock exists, check if it's stale (older than 120 seconds)
+      try {
+        const content = await readFile(CHATTERBOX_LOCK, "utf-8")
+        const timestamp = parseInt(content.split("\n")[1] || "0", 10)
+        if (Date.now() - timestamp > 120000) {
+          // Stale lock, remove and retry
+          await unlink(CHATTERBOX_LOCK)
+          return acquireLock()
+        }
+      } catch {
+        // Can't read lock, try to remove it
+        await unlink(CHATTERBOX_LOCK).catch(() => {})
+        return acquireLock()
+      }
+    }
+    return false
+  }
+}
+
+/**
+ * Release the lock file
+ */
+async function releaseLock(): Promise<void> {
+  await unlink(CHATTERBOX_LOCK).catch(() => {})
+}
+
 /**
  * Start the Chatterbox TTS server (keeps model loaded for fast inference)
+ * Uses locking to ensure only one server runs across all OpenCode sessions
  */
 async function startChatterboxServer(config: TTSConfig): Promise<boolean> {
-  if (chatterboxServerProcess) {
-    // Check if still running
-    try {
-      await access(CHATTERBOX_SOCKET)
-      return true
-    } catch {
-      // Socket gone, restart server
-      chatterboxServerProcess.kill()
-      chatterboxServerProcess = null
+  // First, check if a server is already running (from any session)
+  if (await isServerRunning()) {
+    return true
+  }
+  
+  // Try to acquire lock to start the server
+  if (!(await acquireLock())) {
+    // Another process is starting the server, wait for it
+    const startTime = Date.now()
+    while (Date.now() - startTime < 120000) {
+      await new Promise(r => setTimeout(r, 1000))
+      if (await isServerRunning()) {
+        return true
+      }
     }
+    return false
   }
   
-  await ensureChatterboxServerScript()
-  
-  const venvPython = join(CHATTERBOX_VENV, "bin", "python")
-  const opts = config.chatterbox || {}
-  const device = opts.device || "cuda"
-  
-  const args = [
-    CHATTERBOX_SERVER_SCRIPT,
-    "--socket", CHATTERBOX_SOCKET,
-    "--device", device,
-  ]
-  
-  if (opts.useTurbo) {
-    args.push("--turbo")
-  }
-  
-  if (opts.voiceRef) {
-    args.push("--voice", opts.voiceRef)
-  }
-  
-  // Remove old socket
   try {
-    await unlink(CHATTERBOX_SOCKET)
-  } catch {}
-  
-  chatterboxServerProcess = spawn(venvPython, args, {
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: false,
-  })
-  
-  // Wait for server to be ready (up to 60s for model loading)
-  const startTime = Date.now()
-  while (Date.now() - startTime < 60000) {
-    try {
-      await access(CHATTERBOX_SOCKET)
+    // Double-check after acquiring lock
+    if (await isServerRunning()) {
       return true
-    } catch {
+    }
+    
+    await ensureChatterboxServerScript()
+    
+    const venvPython = join(CHATTERBOX_VENV, "bin", "python")
+    const opts = config.chatterbox || {}
+    const device = opts.device || "cuda"
+    
+    const args = [
+      CHATTERBOX_SERVER_SCRIPT,
+      "--socket", CHATTERBOX_SOCKET,
+      "--device", device,
+    ]
+    
+    if (opts.useTurbo) {
+      args.push("--turbo")
+    }
+    
+    if (opts.voiceRef) {
+      args.push("--voice", opts.voiceRef)
+    }
+    
+    // Remove old socket
+    try {
+      await unlink(CHATTERBOX_SOCKET)
+    } catch {}
+    
+    // Start server detached so it survives if this process exits
+    chatterboxServerProcess = spawn(venvPython, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+    })
+    
+    // Save PID for other sessions to find
+    if (chatterboxServerProcess.pid) {
+      await writeFile(CHATTERBOX_PID, String(chatterboxServerProcess.pid))
+    }
+    
+    // Don't keep reference - let server run independently
+    chatterboxServerProcess.unref()
+    
+    // Wait for server to be ready (up to 120s for model loading on CPU/MPS)
+    const startTime = Date.now()
+    while (Date.now() - startTime < 120000) {
+      if (await isServerRunning()) {
+        return true
+      }
       await new Promise(r => setTimeout(r, 500))
     }
+    
+    return false
+  } finally {
+    await releaseLock()
   }
-  
-  return false
 }
 
 /**
