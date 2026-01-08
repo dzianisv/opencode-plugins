@@ -93,6 +93,7 @@ Reads the final agent response aloud when a session completes. Supports multiple
 - **Default female voice**: Uses macOS Samantha voice out of the box
 - **Automatic setup**: Chatterbox is auto-installed in a virtualenv on first use
 - **Server mode**: Keeps Chatterbox model loaded for fast subsequent requests
+- **Shared server**: Single Chatterbox instance shared across all OpenCode sessions on the machine
 - **Turbo model**: 10x faster Chatterbox inference
 - **Device auto-detection**: Supports CUDA (NVIDIA), MPS (Apple Silicon), CPU
 - **OS engine**: Native macOS `say` command (zero dependencies)
@@ -163,7 +164,10 @@ Create/edit `~/.config/opencode/tts.json`:
 | OS TTS (Samantha) | Instant | Instant |
 | Chatterbox CPU | 3-5 min | 3-5 min |
 | Chatterbox CPU + Turbo + Server | 30-60s | 5-15s |
-| Chatterbox GPU + Turbo + Server | 5-10s | <1s |
+| Chatterbox MPS (Apple Silicon) + Turbo + Server | 10-20s | 2-5s |
+| Chatterbox CUDA (NVIDIA GPU) + Turbo + Server | 5-10s | <1s |
+
+> **Note**: With server mode enabled, the Chatterbox model stays loaded in memory and is shared across all OpenCode sessions. The first request loads the model (slow), but all subsequent requests from any session are fast.
 
 ### Quick Toggle
 
@@ -181,6 +185,48 @@ Run `say -v ?` to list all available voices. Popular choices:
 - **Victoria** - American English female
 - **Daniel** - British English male
 - **Karen** - Australian English female
+
+### Chatterbox Server Architecture
+
+When using Chatterbox with `serverMode: true` (default), the plugin runs a persistent TTS server:
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│ OpenCode        │     │ OpenCode        │     │ OpenCode        │
+│ Session 1       │     │ Session 2       │     │ Session 3       │
+└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
+         │                       │                       │
+         └───────────────────────┼───────────────────────┘
+                                 │
+                                 ▼
+                    ┌────────────────────────┐
+                    │   Chatterbox Server    │
+                    │   (Unix Socket)        │
+                    │                        │
+                    │ • Model loaded once    │
+                    │ • Shared across all    │
+                    │   sessions             │
+                    │ • Lock prevents        │
+                    │   duplicate starts     │
+                    │ • Runs detached        │
+                    └────────────────────────┘
+```
+
+**Server files** (in `~/.config/opencode/chatterbox/`):
+- `tts.sock` - Unix socket for IPC
+- `server.pid` - Process ID of running server
+- `server.lock` - Lock file to prevent race conditions
+
+**Managing the server:**
+```bash
+# Check if server is running
+ls -la ~/.config/opencode/chatterbox/tts.sock
+
+# Stop the server manually
+kill $(cat ~/.config/opencode/chatterbox/server.pid)
+
+# Server restarts automatically on next TTS request
+```
 
 ---
 

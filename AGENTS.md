@@ -26,25 +26,69 @@ The npm global install (`npm install -g`) is NOT used by OpenCode - it reads dir
 ## TTS Plugin (`tts.ts`)
 
 ### Overview
-Reads the final agent response aloud when a session completes using macOS `say` command.
+Reads the final agent response aloud when a session completes. Supports two engines:
+- **OS TTS**: Native macOS `say` command (default, instant)
+- **Chatterbox**: High-quality neural TTS with voice cloning
 
 ### Features
-- Uses native macOS TTS (no dependencies)
+- **Dual engine support**: OS TTS (instant) or Chatterbox (high quality)
+- **Server mode**: Chatterbox model stays loaded for fast subsequent requests
+- **Shared server**: Single Chatterbox instance shared across all OpenCode sessions
+- **Lock mechanism**: Prevents multiple server startups from concurrent sessions
+- **Device auto-detection**: Supports CUDA, MPS (Apple Silicon), CPU
+- **Turbo model**: 10x faster Chatterbox inference
 - Cleans markdown/code from text before speaking
 - Truncates long messages (1000 char limit)
 - Skips judge/reflection sessions
 - Tracks sessions to prevent duplicate speech
 
-### Customization
-Edit constants in `tts.ts`:
-- `MAX_SPEECH_LENGTH`: Max characters to speak (default: 1000)
-- `-r 200`: Speaking rate in words per minute
-- Add `-v VoiceName` to use specific voice (run `say -v ?` to list)
+### Configuration
+Edit `~/.config/opencode/tts.json`:
+```json
+{
+  "enabled": true,
+  "engine": "chatterbox",
+  "os": {
+    "voice": "Samantha",
+    "rate": 200
+  },
+  "chatterbox": {
+    "device": "mps",
+    "useTurbo": true,
+    "serverMode": true,
+    "exaggeration": 0.5
+  }
+}
+```
+
+### Chatterbox Server Files
+Located in `~/.config/opencode/chatterbox/`:
+- `tts.py` - One-shot TTS script
+- `tts_server.py` - Persistent server script
+- `tts.sock` - Unix socket for IPC
+- `server.pid` - Running server PID
+- `server.lock` - Startup lock file
+- `venv/` - Python virtualenv with chatterbox-tts
 
 ### Testing
 ```bash
 npm run test:tts        # Unit tests
 npm run test:tts:manual # Actually speaks test phrases
+```
+
+### Debugging
+```bash
+# Check if Chatterbox server is running
+ls -la ~/.config/opencode/chatterbox/tts.sock
+
+# Check server PID
+cat ~/.config/opencode/chatterbox/server.pid
+
+# Stop server manually
+kill $(cat ~/.config/opencode/chatterbox/server.pid)
+
+# Check server logs (stderr)
+# Server automatically restarts on next TTS request
 ```
 
 ## Plugin Architecture
