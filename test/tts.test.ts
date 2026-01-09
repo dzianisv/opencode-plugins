@@ -297,6 +297,15 @@ describe("TTS Plugin - Chatterbox Availability Check", () => {
 })
 
 describe("TTS Plugin - Embedded Python Scripts Validation", () => {
+  /**
+   * NOTE: These are fast sanity checks that grep for strings.
+   * They are NOT sufficient to catch all bugs.
+   * 
+   * The REAL protection is the E2E test in tts.e2e.test.ts which
+   * actually runs Chatterbox with MPS and verifies audio is produced.
+   * 
+   * Run E2E tests with: npm run test:tts:e2e
+   */
   let pluginContent: string
 
   before(async () => {
