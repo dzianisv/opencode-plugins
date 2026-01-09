@@ -7,6 +7,7 @@
   "scripts": {
     "test": "node --experimental-strip-types --test test/reflection.test.ts test/tts.test.ts",
     "test:tts": "node --experimental-strip-types --test test/tts.test.ts",
+    "test:tts:e2e": "OPENCODE_TTS_E2E=1 node --experimental-strip-types --test test/tts.e2e.test.ts",
     "test:e2e": "node --experimental-strip-types --test test/e2e.test.ts",
     "test:tts:manual": "node --experimental-strip-types test/tts-manual.ts",
     "typecheck": "npx tsc --noEmit",
