@@ -233,8 +233,16 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
       // Mark judge session as processed immediately
       processedSessions.add(judgeSession.id)
 
-      const agents = await getAgentsFile()
-      const prompt = `TASK VERIFICATION
+      // Helper to clean up judge session (always called)
+      const cleanupJudgeSession = async () => {
+        try {
+          await client.session.delete({ path: { id: judgeSession.id } })
+        } catch {}
+      }
+
+      try {
+        const agents = await getAgentsFile()
+        const prompt = `TASK VERIFICATION
 
 ${agents ? `## Instructions\n${agents.slice(0, 1500)}\n` : ""}
 ## Original Task
@@ -250,58 +258,63 @@ ${extracted.result.slice(0, 2000)}
 Reply with JSON only:
 {"complete": true/false, "feedback": "brief explanation"}`
 
-      await client.session.promptAsync({
-        path: { id: judgeSession.id },
-        body: { parts: [{ type: "text", text: prompt }] }
-      })
-
-      const response = await waitForResponse(judgeSession.id)
-      if (!response) {
-        processedSessions.add(sessionId)
-        return
-      }
-
-      const jsonMatch = response.match(/\{[\s\S]*\}/)
-      if (!jsonMatch) {
-        processedSessions.add(sessionId)
-        return
-      }
-
-      const verdict = JSON.parse(jsonMatch[0])
-
-      // Save reflection data to .reflection/ directory
-      await saveReflectionData(sessionId, {
-        task: extracted.task,
-        result: extracted.result.slice(0, 2000),
-        tools: extracted.tools || "(none)",
-        prompt,
-        verdict,
-        timestamp: new Date().toISOString()
-      })
-
-      if (verdict.complete) {
-        // COMPLETE: mark as done, show toast only (no prompt!)
-        processedSessions.add(sessionId)
-        attempts.delete(sessionId)
-        await showToast("Task complete ✓", "success")
-      } else {
-        // INCOMPLETE: send feedback to continue
-        attempts.set(sessionId, attemptCount + 1)
-        await showToast(`Incomplete (${attemptCount + 1}/${MAX_ATTEMPTS})`, "warning")
-        
         await client.session.promptAsync({
-          path: { id: sessionId },
-          body: {
-            parts: [{
-              type: "text",
-              text: `## Reflection: Task Incomplete (${attemptCount + 1}/${MAX_ATTEMPTS})
+          path: { id: judgeSession.id },
+          body: { parts: [{ type: "text", text: prompt }] }
+        })
+
+        const response = await waitForResponse(judgeSession.id)
+        
+        if (!response) {
+          processedSessions.add(sessionId)
+          return
+        }
+
+        const jsonMatch = response.match(/\{[\s\S]*\}/)
+        if (!jsonMatch) {
+          processedSessions.add(sessionId)
+          return
+        }
+
+        const verdict = JSON.parse(jsonMatch[0])
+
+        // Save reflection data to .reflection/ directory
+        await saveReflectionData(sessionId, {
+          task: extracted.task,
+          result: extracted.result.slice(0, 2000),
+          tools: extracted.tools || "(none)",
+          prompt,
+          verdict,
+          timestamp: new Date().toISOString()
+        })
+
+        if (verdict.complete) {
+          // COMPLETE: mark as done, show toast only (no prompt!)
+          processedSessions.add(sessionId)
+          attempts.delete(sessionId)
+          await showToast("Task complete ✓", "success")
+        } else {
+          // INCOMPLETE: send feedback to continue
+          attempts.set(sessionId, attemptCount + 1)
+          await showToast(`Incomplete (${attemptCount + 1}/${MAX_ATTEMPTS})`, "warning")
+          
+          await client.session.promptAsync({
+            path: { id: sessionId },
+            body: {
+              parts: [{
+                type: "text",
+                text: `## Reflection: Task Incomplete (${attemptCount + 1}/${MAX_ATTEMPTS})
 
 ${verdict.feedback || "Please review and complete the task."}
 
 Please address the above and continue.`
-            }]
-          }
-        })
+              }]
+            }
+          })
+        }
+      } finally {
+        // Always clean up judge session to prevent clutter in /session list
+        await cleanupJudgeSession()
       }
     } catch {
       processedSessions.add(sessionId)
