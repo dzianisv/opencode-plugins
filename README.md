@@ -27,16 +27,12 @@ curl -fsSL -o ~/.config/opencode/plugin/tts.ts \
 cat > ~/.config/opencode/tts.json << 'EOF'
 {
   "enabled": true,
-  "engine": "chatterbox",
-  "os": {
-    "voice": "Samantha",
-    "rate": 200
-  },
-  "chatterbox": {
+  "engine": "coqui",
+  "coqui": {
+    "model": "xtts_v2",
     "device": "mps",
-    "useTurbo": true,
-    "serverMode": true,
-    "exaggeration": 0.5
+    "language": "en",
+    "serverMode": true
   }
 }
 EOF
@@ -82,36 +78,59 @@ Reads the final agent response aloud when a session completes. Supports multiple
 
 | Engine | Quality | Speed | Requirements |
 |--------|---------|-------|--------------|
-| **OS** (default) | Good - Samantha voice | Instant | macOS only |
+| **OS** | Good - Samantha voice | Instant | macOS only |
+| **Coqui** (default) | Excellent - multiple models | ~2-30s | Python 3.9+, GPU recommended |
 | **Chatterbox** | Excellent - natural, expressive | ~2-15s | Python 3.11, GPU recommended |
 
-**OS TTS** uses macOS's built-in Samantha voice (female) by default - instant, no setup required.
+**OS TTS** uses macOS's built-in Samantha voice (female) - instant, no setup required.
 
-**Chatterbox** is [Resemble AI's open-source TTS](https://github.com/resemble-ai/chatterbox) - widely regarded as one of the best open-source TTS models, outperforming ElevenLabs in blind tests 63-75% of the time.
+**Coqui TTS** is [Coqui's open-source TTS](https://github.com/coqui-ai/TTS) - supports multiple models including:
+- **XTTS v2** (default) - Best speed/quality balance, voice cloning, 16 languages, streaming support
+- **Bark** - Highly expressive with emotional speech, slower on CPU/MPS
+- **Tortoise** - High quality but very slow
+- **VITS** - Fast, good quality, single speaker
+
+**Chatterbox** is [Resemble AI's open-source TTS](https://github.com/resemble-ai/chatterbox) - one of the best open-source TTS models, outperforming ElevenLabs in blind tests 63-75% of the time.
 
 ### Features
-- **Default female voice**: Uses macOS Samantha voice out of the box
-- **Automatic setup**: Chatterbox is auto-installed in a virtualenv on first use
-- **Server mode**: Keeps Chatterbox model loaded for fast subsequent requests
-- **Shared server**: Single Chatterbox instance shared across all OpenCode sessions on the machine
-- **Turbo model**: 10x faster Chatterbox inference
+- **Default XTTS v2**: Best speed/quality balance for Apple Silicon
+- **Voice cloning**: Clone any voice with a 5-10s audio sample (XTTS, Chatterbox)
+- **Automatic setup**: Coqui/Chatterbox auto-installed in virtualenv on first use
+- **Server mode**: Keeps model loaded for fast subsequent requests
+- **Shared server**: Single instance shared across all OpenCode sessions
 - **Device auto-detection**: Supports CUDA (NVIDIA), MPS (Apple Silicon), CPU
-- **OS engine**: Native macOS `say` command (zero dependencies)
+- **Speech locking**: Prevents multiple agents from speaking simultaneously
+- **OS fallback**: Falls back to macOS `say` if other engines fail
 - Cleans markdown, code blocks, URLs from text before speaking
 - Truncates long messages (1000 char limit)
 - Skips judge/reflection sessions
 
 ### Requirements
 
-- **macOS** for OS TTS (default)
+- **macOS** for OS TTS
+- **Python 3.9+** for Coqui TTS
 - **Python 3.11** for Chatterbox (install with `brew install python@3.11`)
-- **GPU recommended** for Chatterbox (NVIDIA CUDA or Apple Silicon MPS)
+- **GPU recommended** for neural TTS (NVIDIA CUDA or Apple Silicon MPS)
 
 ### Configuration
 
 Create/edit `~/.config/opencode/tts.json`:
 
-**Default (OS TTS with Samantha - recommended for most users):**
+**Default (Coqui XTTS v2 - recommended for Apple Silicon):**
+```json
+{
+  "enabled": true,
+  "engine": "coqui",
+  "coqui": {
+    "model": "xtts_v2",
+    "device": "mps",
+    "language": "en",
+    "serverMode": true
+  }
+}
+```
+
+**OS TTS (instant, no dependencies):**
 ```json
 {
   "enabled": true,
@@ -123,13 +142,41 @@ Create/edit `~/.config/opencode/tts.json`:
 }
 ```
 
-**Chatterbox with optimizations (GPU users):**
+**Coqui with Bark (expressive, random speaker):**
+```json
+{
+  "enabled": true,
+  "engine": "coqui",
+  "coqui": {
+    "model": "bark",
+    "device": "mps",
+    "serverMode": true
+  }
+}
+```
+
+**Coqui XTTS with voice cloning:**
+```json
+{
+  "enabled": true,
+  "engine": "coqui",
+  "coqui": {
+    "model": "xtts_v2",
+    "device": "mps",
+    "voiceRef": "/path/to/voice-sample.wav",
+    "language": "en",
+    "serverMode": true
+  }
+}
+```
+
+**Chatterbox with optimizations:**
 ```json
 {
   "enabled": true,
   "engine": "chatterbox",
   "chatterbox": {
-    "device": "cuda",
+    "device": "mps",
     "useTurbo": true,
     "serverMode": true,
     "exaggeration": 0.5,
@@ -138,36 +185,77 @@ Create/edit `~/.config/opencode/tts.json`:
 }
 ```
 
-**Configuration options:**
+### Configuration Options
+
+**General:**
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `enabled` | boolean | `true` | Enable/disable TTS |
-| `engine` | string | `"os"` | TTS engine: `"os"` or `"chatterbox"` |
+| `engine` | string | `"coqui"` | TTS engine: `"coqui"`, `"chatterbox"`, or `"os"` |
+
+**OS options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
 | `os.voice` | string | `"Samantha"` | macOS voice name (run `say -v ?` to list) |
 | `os.rate` | number | `200` | Speaking rate in words per minute |
-| `chatterbox.device` | string | `"cuda"` | Device: `"cuda"`, `"mps"` (Apple Silicon), or `"cpu"` |
+
+**Coqui options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `coqui.model` | string | `"xtts_v2"` | Model: `"xtts_v2"`, `"bark"`, `"tortoise"`, `"vits"` |
+| `coqui.device` | string | auto | Device: `"cuda"`, `"mps"`, or `"cpu"` |
+| `coqui.serverMode` | boolean | `true` | Keep model loaded between requests |
+| `coqui.voiceRef` | string | - | Path to voice sample for cloning (XTTS only) |
+| `coqui.language` | string | `"en"` | Language code for XTTS (en, es, fr, de, etc.) |
+| `coqui.speaker` | string | `"Ana Florence"` | Built-in XTTS speaker (when no voiceRef) |
+
+**Chatterbox options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `chatterbox.device` | string | auto | Device: `"cuda"`, `"mps"`, or `"cpu"` |
 | `chatterbox.useTurbo` | boolean | `false` | Use Turbo model (10x faster) |
 | `chatterbox.serverMode` | boolean | `true` | Keep model loaded between requests |
 | `chatterbox.exaggeration` | number | `0.5` | Emotion intensity (0.0-1.0) |
-| `chatterbox.voiceRef` | string | - | Path to reference audio for voice cloning (5-10s WAV) |
+| `chatterbox.voiceRef` | string | - | Path to voice sample for cloning (5-10s WAV) |
 
 **Environment variables** (override config):
 - `TTS_DISABLED=1` - Disable TTS entirely
-- `TTS_ENGINE=os` - Force OS TTS engine
+- `TTS_ENGINE=coqui` - Force Coqui TTS engine
 - `TTS_ENGINE=chatterbox` - Force Chatterbox engine
+- `TTS_ENGINE=os` - Force OS TTS engine
+
+### Model Comparison
+
+| Model | Quality | Speed (MPS) | Voice Cloning | Languages |
+|-------|---------|-------------|---------------|-----------|
+| **XTTS v2** | Excellent | Fast (2-5s) | Yes | 16 |
+| **Bark** | Excellent | Slow (30-60s) | No | Multi |
+| **Tortoise** | Excellent | Very slow | Yes | English |
+| **VITS** | Good | Very fast | No | English |
+| **Chatterbox** | Excellent | Fast (2-5s) | Yes | English |
+| **OS (Samantha)** | Good | Instant | No | Multi |
+
+**Recommendation for Apple Silicon (MPS):**
+- **Best balance**: XTTS v2 - fast, high quality, voice cloning, multilingual
+- **Instant speech**: OS TTS - no delay, good quality
+- **Expressive speech**: Chatterbox with Turbo - natural sounding
 
 ### Speed Comparison
 
 | Configuration | First Request | Subsequent |
 |--------------|---------------|------------|
 | OS TTS (Samantha) | Instant | Instant |
-| Chatterbox CPU | 3-5 min | 3-5 min |
-| Chatterbox CPU + Turbo + Server | 30-60s | 5-15s |
-| Chatterbox MPS (Apple Silicon) + Turbo + Server | 10-20s | 2-5s |
-| Chatterbox CUDA (NVIDIA GPU) + Turbo + Server | 5-10s | <1s |
+| XTTS v2 MPS + Server | 15-30s | 2-5s |
+| Bark MPS + Server | 60-120s | 30-60s |
+| VITS MPS + Server | 5-10s | <1s |
+| Chatterbox MPS + Turbo + Server | 10-20s | 2-5s |
+| Chatterbox CUDA + Turbo + Server | 5-10s | <1s |
 
-> **Note**: With server mode enabled, the Chatterbox model stays loaded in memory and is shared across all OpenCode sessions. The first request loads the model (slow), but all subsequent requests from any session are fast.
+> **Note**: With server mode enabled, the model stays loaded in memory and is shared across all OpenCode sessions. The first request downloads/loads the model (slow), subsequent requests are fast.
 
 ### Quick Toggle
 
@@ -186,9 +274,9 @@ Run `say -v ?` to list all available voices. Popular choices:
 - **Daniel** - British English male
 - **Karen** - Australian English female
 
-### Chatterbox Server Architecture
+### Server Architecture
 
-When using Chatterbox with `serverMode: true` (default), the plugin runs a persistent TTS server:
+When using Coqui or Chatterbox with `serverMode: true` (default), the plugin runs a persistent TTS server:
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
@@ -200,7 +288,7 @@ When using Chatterbox with `serverMode: true` (default), the plugin runs a persi
                                  │
                                  ▼
                     ┌────────────────────────┐
-                    │   Chatterbox Server    │
+                    │   TTS Server           │
                     │   (Unix Socket)        │
                     │                        │
                     │ • Model loaded once    │
@@ -208,21 +296,28 @@ When using Chatterbox with `serverMode: true` (default), the plugin runs a persi
                     │   sessions             │
                     │ • Lock prevents        │
                     │   duplicate starts     │
-                    │ • Runs detached        │
+                    │ • Speech lock prevents │
+                    │   simultaneous speech  │
                     └────────────────────────┘
 ```
 
-**Server files** (in `~/.config/opencode/chatterbox/`):
-- `tts.sock` - Unix socket for IPC
-- `server.pid` - Process ID of running server
-- `server.lock` - Lock file to prevent race conditions
+**Server files:**
+- Coqui: `~/.config/opencode/coqui/` (tts.sock, server.pid, server.lock, venv/)
+- Chatterbox: `~/.config/opencode/chatterbox/` (tts.sock, server.pid, server.lock, venv/)
+- Speech lock: `~/.config/opencode/speech.lock`
 
 **Managing the server:**
 ```bash
-# Check if server is running
+# Check if Coqui server is running
+ls -la ~/.config/opencode/coqui/tts.sock
+
+# Stop the Coqui server manually
+kill $(cat ~/.config/opencode/coqui/server.pid)
+
+# Check if Chatterbox server is running
 ls -la ~/.config/opencode/chatterbox/tts.sock
 
-# Stop the server manually
+# Stop the Chatterbox server manually
 kill $(cat ~/.config/opencode/chatterbox/server.pid)
 
 # Server restarts automatically on next TTS request
@@ -350,14 +445,16 @@ ls -lh ~/.config/opencode/plugin/
 ### Known Limitations
 
 - **Reflection**: May timeout with very slow models (>3 min response time)
+- **TTS Coqui**: First run downloads models (~1-2GB depending on model)
+- **TTS Coqui Bark**: Very slow on CPU/MPS - use XTTS v2 instead
 - **TTS Chatterbox**: Requires Python 3.11+ and ~2GB VRAM for GPU mode
-- **TTS Chatterbox**: Default voice is male; provide `voiceRef` for custom/female voice
 - **TTS OS**: macOS only (uses `say` command)
 
 ## Requirements
 
 - OpenCode v1.0+
 - **TTS with OS engine**: macOS (default, no extra dependencies)
+- **TTS with Coqui**: Python 3.9+, `TTS` package, GPU recommended
 - **TTS with Chatterbox**: Python 3.11+, `chatterbox-tts` package, GPU recommended
 
 ## License

@@ -3,6 +3,7 @@
  *
  * Reads the final answer aloud when the agent finishes.
  * Supports multiple TTS engines:
+ *   - coqui: Coqui TTS - supports multiple models (bark, xtts_v2, tortoise, etc.)
  *   - chatterbox: High-quality neural TTS (auto-installed in virtualenv)
  *   - os: Native OS TTS (macOS `say` command)
  * 
@@ -12,11 +13,12 @@
  *   /tts off   - disable
  * 
  * Configure engine in ~/.config/opencode/tts.json:
- *   { "enabled": true, "engine": "chatterbox" }
+ *   { "enabled": true, "engine": "coqui", "coqui": { "model": "bark" } }
  * 
  * Or set environment variables:
- *   TTS_DISABLED=1    - disable TTS
- *   TTS_ENGINE=os     - use OS TTS instead of chatterbox
+ *   TTS_DISABLED=1     - disable TTS
+ *   TTS_ENGINE=coqui   - use Coqui TTS
+ *   TTS_ENGINE=os      - use OS TTS
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
@@ -37,13 +39,15 @@ const spokenSessions = new Set<string>()
 // Config file path for persistent TTS settings
 const TTS_CONFIG_PATH = join(homedir(), ".config", "opencode", "tts.json")
 
-// Chatterbox installation directory
-const CHATTERBOX_DIR = join(homedir(), ".config", "opencode", "chatterbox")
-const CHATTERBOX_VENV = join(CHATTERBOX_DIR, "venv")
-const CHATTERBOX_SCRIPT = join(CHATTERBOX_DIR, "tts.py")
+// Global speech lock - prevents multiple agents from speaking simultaneously
+const SPEECH_LOCK_PATH = join(homedir(), ".config", "opencode", "speech.lock")
+const SPEECH_LOCK_TIMEOUT = 120000  // Max speech duration (2 minutes)
 
 // TTS Engine types
-type TTSEngine = "chatterbox" | "os"
+type TTSEngine = "coqui" | "chatterbox" | "os"
+
+// Coqui TTS model types
+type CoquiModel = "bark" | "xtts_v2" | "tortoise" | "vits"
 
 interface TTSConfig {
   enabled?: boolean
@@ -52,6 +56,16 @@ interface TTSConfig {
   os?: {
     voice?: string                    // Voice name (e.g., "Samantha", "Alex"). Run `say -v ?` on macOS to list voices
     rate?: number                     // Speaking rate in words per minute (default: 200)
+  }
+  // Coqui TTS options (supports bark, xtts_v2, tortoise, vits, etc.)
+  coqui?: {
+    model?: CoquiModel                // Model to use: "bark", "xtts_v2", "tortoise", "vits" (default: "xtts_v2")
+    device?: "cuda" | "cpu" | "mps"   // GPU, CPU, or Apple Silicon (default: auto-detect)
+    // XTTS-specific options  
+    voiceRef?: string                 // Path to reference voice clip for cloning (XTTS)
+    language?: string                 // Language code for XTTS (default: "en")
+    speaker?: string                  // Speaker name for XTTS (default: "Ana Florence")
+    serverMode?: boolean              // Keep model loaded for fast subsequent requests (default: true)
   }
   // Chatterbox-specific options
   chatterbox?: {
@@ -63,9 +77,31 @@ interface TTSConfig {
   }
 }
 
-// Cache for chatterbox setup check (not availability - that depends on config)
+// ==================== CHATTERBOX ====================
+
+const CHATTERBOX_DIR = join(homedir(), ".config", "opencode", "chatterbox")
+const CHATTERBOX_VENV = join(CHATTERBOX_DIR, "venv")
+const CHATTERBOX_SCRIPT = join(CHATTERBOX_DIR, "tts.py")
+const CHATTERBOX_SERVER_SCRIPT = join(CHATTERBOX_DIR, "tts_server.py")
+const CHATTERBOX_SOCKET = join(CHATTERBOX_DIR, "tts.sock")
+const CHATTERBOX_LOCK = join(CHATTERBOX_DIR, "server.lock")
+const CHATTERBOX_PID = join(CHATTERBOX_DIR, "server.pid")
+
 let chatterboxInstalled: boolean | null = null
 let chatterboxSetupAttempted = false
+
+// ==================== COQUI TTS ====================
+
+const COQUI_DIR = join(homedir(), ".config", "opencode", "coqui")
+const COQUI_VENV = join(COQUI_DIR, "venv")
+const COQUI_SCRIPT = join(COQUI_DIR, "tts.py")
+const COQUI_SERVER_SCRIPT = join(COQUI_DIR, "tts_server.py")
+const COQUI_SOCKET = join(COQUI_DIR, "tts.sock")
+const COQUI_LOCK = join(COQUI_DIR, "server.lock")
+const COQUI_PID = join(COQUI_DIR, "server.pid")
+
+let coquiInstalled: boolean | null = null
+let coquiSetupAttempted = false
 
 /**
  * Load TTS configuration from file
@@ -75,7 +111,6 @@ async function loadConfig(): Promise<TTSConfig> {
     const content = await readFile(TTS_CONFIG_PATH, "utf-8")
     return JSON.parse(content)
   } catch {
-    // Default config - use OS TTS with Samantha voice (female, macOS)
     return { 
       enabled: true, 
       engine: "os",
@@ -101,14 +136,58 @@ async function isEnabled(): Promise<boolean> {
  */
 async function getEngine(): Promise<TTSEngine> {
   if (process.env.TTS_ENGINE === "os") return "os"
+  if (process.env.TTS_ENGINE === "coqui") return "coqui"
   if (process.env.TTS_ENGINE === "chatterbox") return "chatterbox"
   const config = await loadConfig()
-  return config.engine || "chatterbox"
+  return config.engine || "coqui"
 }
 
-/**
- * Find Python 3.11 (required for Chatterbox)
- */
+// ==================== SPEECH LOCK ====================
+
+async function acquireSpeechLock(): Promise<boolean> {
+  const lockContent = `${process.pid}\n${Date.now()}`
+  try {
+    const { open } = await import("fs/promises")
+    const handle = await open(SPEECH_LOCK_PATH, "wx")
+    await handle.writeFile(lockContent)
+    await handle.close()
+    return true
+  } catch (e: any) {
+    if (e.code === "EEXIST") {
+      try {
+        const content = await readFile(SPEECH_LOCK_PATH, "utf-8")
+        const timestamp = parseInt(content.split("\n")[1] || "0", 10)
+        if (Date.now() - timestamp > SPEECH_LOCK_TIMEOUT) {
+          await unlink(SPEECH_LOCK_PATH).catch(() => {})
+          return acquireSpeechLock()
+        }
+        return false
+      } catch {
+        await unlink(SPEECH_LOCK_PATH).catch(() => {})
+        return acquireSpeechLock()
+      }
+    }
+    return false
+  }
+}
+
+async function releaseSpeechLock(): Promise<void> {
+  await unlink(SPEECH_LOCK_PATH).catch(() => {})
+}
+
+async function waitForSpeechLock(timeoutMs: number = 60000): Promise<boolean> {
+  const startTime = Date.now()
+  while (Date.now() - startTime < timeoutMs) {
+    if (await acquireSpeechLock()) {
+      return true
+    }
+    await new Promise(r => setTimeout(r, 500))
+  }
+  return false
+}
+
+// ==================== UTILITY FUNCTIONS ====================
+
 async function findPython311(): Promise<string | null> {
   const candidates = ["python3.11", "/opt/homebrew/bin/python3.11", "/usr/local/bin/python3.11"]
   for (const py of candidates) {
@@ -122,22 +201,21 @@ async function findPython311(): Promise<string | null> {
   return null
 }
 
-/**
- * Check if CUDA GPU is available
- */
-async function checkCudaAvailable(): Promise<boolean> {
-  const venvPython = join(CHATTERBOX_VENV, "bin", "python")
-  try {
-    const { stdout } = await execAsync(`"${venvPython}" -c "import torch; print(torch.cuda.is_available())"`, { timeout: 30000 })
-    return stdout.trim() === "True"
-  } catch {
-    return false
+async function findPython3(): Promise<string | null> {
+  const candidates = ["python3", "python3.11", "python3.10", "python3.9", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"]
+  for (const py of candidates) {
+    try {
+      const { stdout } = await execAsync(`${py} --version 2>/dev/null`)
+      if (stdout.includes("Python 3")) return py
+    } catch {
+      // Try next
+    }
   }
+  return null
 }
 
-/**
- * Setup Chatterbox virtual environment and install dependencies
- */
+// ==================== CHATTERBOX SETUP ====================
+
 async function setupChatterbox(): Promise<boolean> {
   if (chatterboxSetupAttempted) return chatterboxInstalled === true
   chatterboxSetupAttempted = true
@@ -161,10 +239,8 @@ async function setupChatterbox(): Promise<boolean> {
       // Need to create/setup venv
     }
     
-    // Create venv
     await execAsync(`"${python}" -m venv "${CHATTERBOX_VENV}"`, { timeout: 60000 })
     
-    // Install chatterbox-tts
     const pip = join(CHATTERBOX_VENV, "bin", "pip")
     await execAsync(`"${pip}" install --upgrade pip`, { timeout: 120000 })
     await execAsync(`"${pip}" install chatterbox-tts`, { timeout: 600000 })
@@ -178,17 +254,9 @@ async function setupChatterbox(): Promise<boolean> {
   }
 }
 
-// Chatterbox server state
-const CHATTERBOX_SERVER_SCRIPT = join(CHATTERBOX_DIR, "tts_server.py")
-const CHATTERBOX_SOCKET = join(CHATTERBOX_DIR, "tts.sock")
-let chatterboxServerProcess: ReturnType<typeof spawn> | null = null
-
-/**
- * Ensure the Chatterbox Python helper script exists (one-shot mode)
- */
 async function ensureChatterboxScript(): Promise<void> {
   const script = `#!/usr/bin/env python3
-"""Chatterbox TTS helper script for OpenCode (one-shot mode)."""
+"""Chatterbox TTS helper script for OpenCode."""
 import sys
 import argparse
 
@@ -235,16 +303,9 @@ if __name__ == "__main__":
   await writeFile(CHATTERBOX_SCRIPT, script, { mode: 0o755 })
 }
 
-/**
- * Ensure the Chatterbox TTS server script exists (persistent mode - keeps model loaded)
- */
 async function ensureChatterboxServerScript(): Promise<void> {
   const script = `#!/usr/bin/env python3
-"""
-Chatterbox TTS Server for OpenCode.
-Keeps model loaded in memory for fast inference.
-Communicates via Unix socket for low latency.
-"""
+"""Chatterbox TTS Server for OpenCode."""
 import sys
 import os
 import json
@@ -255,14 +316,13 @@ def main():
     parser = argparse.ArgumentParser(description="Chatterbox TTS Server")
     parser.add_argument("--socket", required=True, help="Unix socket path")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu", "mps"])
-    parser.add_argument("--turbo", action="store_true", help="Use Turbo model (10x faster)")
+    parser.add_argument("--turbo", action="store_true", help="Use Turbo model")
     parser.add_argument("--voice", help="Default reference voice audio path")
     args = parser.parse_args()
     
     import torch
     import torchaudio as ta
     
-    # Auto-detect best device
     device = args.device
     if device == "cuda" and not torch.cuda.is_available():
         if torch.backends.mps.is_available():
@@ -272,23 +332,18 @@ def main():
     
     print(f"Loading model on {device}...", file=sys.stderr)
     
-    # Load model once at startup
     if args.turbo:
         from chatterbox.tts_turbo import ChatterboxTurboTTS
         model = ChatterboxTurboTTS.from_pretrained(device=device)
-        print("Turbo model loaded (10x faster inference)", file=sys.stderr)
     else:
         from chatterbox.tts import ChatterboxTTS
         model = ChatterboxTTS.from_pretrained(device=device)
-        print("Standard model loaded", file=sys.stderr)
     
     default_voice = args.voice
     
-    # Remove old socket if exists
     if os.path.exists(args.socket):
         os.unlink(args.socket)
     
-    # Create Unix socket server
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(args.socket)
     server.listen(1)
@@ -315,7 +370,6 @@ def main():
             voice = request.get("voice") or default_voice
             exaggeration = request.get("exaggeration", 0.5)
             
-            # Generate speech
             if voice:
                 wav = model.generate(text, audio_prompt_path=voice, exaggeration=exaggeration)
             else:
@@ -338,17 +392,9 @@ if __name__ == "__main__":
   await writeFile(CHATTERBOX_SERVER_SCRIPT, script, { mode: 0o755 })
 }
 
-// Lock file for server startup coordination
-const CHATTERBOX_LOCK = join(CHATTERBOX_DIR, "server.lock")
-const CHATTERBOX_PID = join(CHATTERBOX_DIR, "server.pid")
-
-/**
- * Check if a server is already running and responsive
- */
-async function isServerRunning(): Promise<boolean> {
+async function isChatterboxServerRunning(): Promise<boolean> {
   try {
     await access(CHATTERBOX_SOCKET)
-    // Socket exists, try to connect
     const net = await import("net")
     return new Promise((resolve) => {
       const client = net.createConnection(CHATTERBOX_SOCKET, () => {
@@ -366,13 +412,9 @@ async function isServerRunning(): Promise<boolean> {
   }
 }
 
-/**
- * Acquire a lock file to prevent multiple server startups
- */
-async function acquireLock(): Promise<boolean> {
+async function acquireChatterboxLock(): Promise<boolean> {
   const lockContent = `${process.pid}\n${Date.now()}`
   try {
-    // Try to create lock file exclusively
     const { open } = await import("fs/promises")
     const handle = await open(CHATTERBOX_LOCK, "wx")
     await handle.writeFile(lockContent)
@@ -380,49 +422,36 @@ async function acquireLock(): Promise<boolean> {
     return true
   } catch (e: any) {
     if (e.code === "EEXIST") {
-      // Lock exists, check if it's stale (older than 120 seconds)
       try {
         const content = await readFile(CHATTERBOX_LOCK, "utf-8")
         const timestamp = parseInt(content.split("\n")[1] || "0", 10)
         if (Date.now() - timestamp > 120000) {
-          // Stale lock, remove and retry
           await unlink(CHATTERBOX_LOCK)
-          return acquireLock()
+          return acquireChatterboxLock()
         }
       } catch {
-        // Can't read lock, try to remove it
         await unlink(CHATTERBOX_LOCK).catch(() => {})
-        return acquireLock()
+        return acquireChatterboxLock()
       }
     }
     return false
   }
 }
 
-/**
- * Release the lock file
- */
-async function releaseLock(): Promise<void> {
+async function releaseChatterboxLock(): Promise<void> {
   await unlink(CHATTERBOX_LOCK).catch(() => {})
 }
 
-/**
- * Start the Chatterbox TTS server (keeps model loaded for fast inference)
- * Uses locking to ensure only one server runs across all OpenCode sessions
- */
 async function startChatterboxServer(config: TTSConfig): Promise<boolean> {
-  // First, check if a server is already running (from any session)
-  if (await isServerRunning()) {
+  if (await isChatterboxServerRunning()) {
     return true
   }
   
-  // Try to acquire lock to start the server
-  if (!(await acquireLock())) {
-    // Another process is starting the server, wait for it
+  if (!(await acquireChatterboxLock())) {
     const startTime = Date.now()
     while (Date.now() - startTime < 120000) {
       await new Promise(r => setTimeout(r, 1000))
-      if (await isServerRunning()) {
+      if (await isChatterboxServerRunning()) {
         return true
       }
     }
@@ -430,8 +459,7 @@ async function startChatterboxServer(config: TTSConfig): Promise<boolean> {
   }
   
   try {
-    // Double-check after acquiring lock
-    if (await isServerRunning()) {
+    if (await isChatterboxServerRunning()) {
       return true
     }
     
@@ -455,29 +483,24 @@ async function startChatterboxServer(config: TTSConfig): Promise<boolean> {
       args.push("--voice", opts.voiceRef)
     }
     
-    // Remove old socket
     try {
       await unlink(CHATTERBOX_SOCKET)
     } catch {}
     
-    // Start server detached so it survives if this process exits
-    chatterboxServerProcess = spawn(venvPython, args, {
+    const serverProcess = spawn(venvPython, args, {
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     })
     
-    // Save PID for other sessions to find
-    if (chatterboxServerProcess.pid) {
-      await writeFile(CHATTERBOX_PID, String(chatterboxServerProcess.pid))
+    if (serverProcess.pid) {
+      await writeFile(CHATTERBOX_PID, String(serverProcess.pid))
     }
     
-    // Don't keep reference - let server run independently
-    chatterboxServerProcess.unref()
+    serverProcess.unref()
     
-    // Wait for server to be ready (up to 120s for model loading on CPU/MPS)
     const startTime = Date.now()
     while (Date.now() - startTime < 120000) {
-      if (await isServerRunning()) {
+      if (await isChatterboxServerRunning()) {
         return true
       }
       await new Promise(r => setTimeout(r, 500))
@@ -485,13 +508,10 @@ async function startChatterboxServer(config: TTSConfig): Promise<boolean> {
     
     return false
   } finally {
-    await releaseLock()
+    await releaseChatterboxLock()
   }
 }
 
-/**
- * Send TTS request to the running server (fast path)
- */
 async function speakWithChatterboxServer(text: string, config: TTSConfig): Promise<boolean> {
   const net = await import("net")
   const opts = config.chatterbox || {}
@@ -521,7 +541,6 @@ async function speakWithChatterboxServer(text: string, config: TTSConfig): Promi
           return
         }
         
-        // Play audio
         if (platform() === "darwin") {
           await execAsync(`afplay "${outputPath}"`)
         } else {
@@ -542,7 +561,6 @@ async function speakWithChatterboxServer(text: string, config: TTSConfig): Promi
       resolve(false)
     })
     
-    // Timeout
     setTimeout(() => {
       client.destroy()
       resolve(false)
@@ -550,40 +568,34 @@ async function speakWithChatterboxServer(text: string, config: TTSConfig): Promi
   })
 }
 
-/**
- * Check if Chatterbox is available for use
- */
 async function isChatterboxAvailable(config: TTSConfig): Promise<boolean> {
   const installed = await setupChatterbox()
   if (!installed) return false
   
   const device = config.chatterbox?.device || "cuda"
-  
-  // Allow if device is explicitly set to cpu or mps (Apple Silicon)
   if (device === "cpu" || device === "mps") return true
   
-  // For cuda, check if it's actually available
-  return await checkCudaAvailable()
+  const venvPython = join(CHATTERBOX_VENV, "bin", "python")
+  try {
+    const { stdout } = await execAsync(`"${venvPython}" -c "import torch; print(torch.cuda.is_available())"`, { timeout: 30000 })
+    return stdout.trim() === "True"
+  } catch {
+    return false
+  }
 }
 
-/**
- * Speak using Chatterbox TTS
- */
 async function speakWithChatterbox(text: string, config: TTSConfig): Promise<boolean> {
   const opts = config.chatterbox || {}
-  const useServer = opts.serverMode !== false  // Default to server mode for speed
+  const useServer = opts.serverMode !== false
   
-  // Try server mode first (fast path - model stays loaded)
   if (useServer) {
     const serverReady = await startChatterboxServer(config)
     if (serverReady) {
       const success = await speakWithChatterboxServer(text, config)
       if (success) return true
-      // Server failed, fall through to one-shot mode
     }
   }
   
-  // One-shot mode (slower - reloads model each time)
   const venvPython = join(CHATTERBOX_VENV, "bin", "python")
   const device = opts.device || "cuda"
   const outputPath = join(tmpdir(), `opencode_tts_${Date.now()}.wav`)
@@ -611,7 +623,6 @@ async function speakWithChatterbox(text: string, config: TTSConfig): Promise<boo
   return new Promise((resolve) => {
     const proc = spawn(venvPython, args)
     
-    // Set timeout for CPU mode (can take 3+ minutes)
     const timeout = device === "cpu" ? 300000 : 120000
     const timer = setTimeout(() => {
       proc.kill()
@@ -650,20 +661,507 @@ async function speakWithChatterbox(text: string, config: TTSConfig): Promise<boo
   })
 }
 
-/**
- * Speak using OS TTS (macOS `say` command, Linux espeak)
- */
+// ==================== COQUI TTS SETUP ====================
+
+async function setupCoqui(): Promise<boolean> {
+  if (coquiSetupAttempted) return coquiInstalled === true
+  coquiSetupAttempted = true
+  
+  const python = await findPython3()
+  if (!python) return false
+  
+  try {
+    await mkdir(COQUI_DIR, { recursive: true })
+    
+    const venvPython = join(COQUI_VENV, "bin", "python")
+    try {
+      await access(venvPython)
+      const { stdout } = await execAsync(`"${venvPython}" -c "from TTS.api import TTS; print('ok')"`, { timeout: 30000 })
+      if (stdout.includes("ok")) {
+        await ensureCoquiScript()
+        coquiInstalled = true
+        return true
+      }
+    } catch {
+      // Need to create/setup venv
+    }
+    
+    await execAsync(`"${python}" -m venv "${COQUI_VENV}"`, { timeout: 60000 })
+    
+    const pip = join(COQUI_VENV, "bin", "pip")
+    await execAsync(`"${pip}" install --upgrade pip`, { timeout: 120000 })
+    await execAsync(`"${pip}" install TTS`, { timeout: 600000 })
+    
+    await ensureCoquiScript()
+    coquiInstalled = true
+    return true
+  } catch {
+    coquiInstalled = false
+    return false
+  }
+}
+
+async function ensureCoquiScript(): Promise<void> {
+  const script = `#!/usr/bin/env python3
+"""Coqui TTS helper script for OpenCode. Supports multiple models."""
+import sys
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser(description="Coqui TTS")
+    parser.add_argument("text", help="Text to synthesize")
+    parser.add_argument("--output", "-o", required=True, help="Output WAV file")
+    parser.add_argument("--model", default="xtts_v2", choices=["bark", "xtts_v2", "tortoise", "vits"])
+    parser.add_argument("--device", default="cuda", choices=["cuda", "mps", "cpu"])
+    parser.add_argument("--voice-ref", help="Reference voice audio path (for XTTS voice cloning)")
+    parser.add_argument("--language", default="en", help="Language code (for XTTS)")
+    parser.add_argument("--speaker", default="Ana Florence", help="Speaker name for XTTS (e.g., 'Ana Florence', 'Claribel Dervla')")
+    args = parser.parse_args()
+    
+    try:
+        import torch
+        
+        device = args.device
+        if device == "cuda" and not torch.cuda.is_available():
+            device = "mps" if torch.backends.mps.is_available() else "cpu"
+        elif device == "mps" and not torch.backends.mps.is_available():
+            device = "cpu"
+        
+        from TTS.api import TTS
+        
+        if args.model == "bark":
+            # Bark: use random speaker (no reliable preset support)
+            # For voice cloning, use --voice-ref with XTTS instead
+            tts = TTS("tts_models/multilingual/multi-dataset/bark", gpu=(device != "cpu"))
+            tts.tts_to_file(text=args.text, file_path=args.output)
+        elif args.model == "xtts_v2":
+            tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=(device != "cpu"))
+            if args.voice_ref:
+                # Voice cloning from reference audio
+                tts.tts_to_file(
+                    text=args.text,
+                    file_path=args.output,
+                    speaker_wav=args.voice_ref,
+                    language=args.language
+                )
+            else:
+                # Use built-in speaker
+                tts.tts_to_file(
+                    text=args.text,
+                    file_path=args.output,
+                    speaker=args.speaker,
+                    language=args.language
+                )
+        elif args.model == "tortoise":
+            tts = TTS("tts_models/en/multi-dataset/tortoise-v2", gpu=(device != "cpu"))
+            tts.tts_to_file(text=args.text, file_path=args.output)
+        elif args.model == "vits":
+            tts = TTS("tts_models/en/ljspeech/vits", gpu=(device != "cpu"))
+            tts.tts_to_file(text=args.text, file_path=args.output)
+        
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+`
+  await writeFile(COQUI_SCRIPT, script, { mode: 0o755 })
+}
+
+async function ensureCoquiServerScript(): Promise<void> {
+  const script = `#!/usr/bin/env python3
+"""Coqui TTS Server for OpenCode. Keeps model loaded for fast inference."""
+import sys
+import os
+import json
+import socket
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser(description="Coqui TTS Server")
+    parser.add_argument("--socket", required=True, help="Unix socket path")
+    parser.add_argument("--model", default="xtts_v2", choices=["bark", "xtts_v2", "tortoise", "vits"])
+    parser.add_argument("--device", default="cuda", choices=["cuda", "cpu", "mps"])
+    parser.add_argument("--voice-ref", help="Default reference voice (for XTTS)")
+    parser.add_argument("--speaker", default="Ana Florence", help="Default XTTS speaker")
+    parser.add_argument("--language", default="en", help="Default language")
+    args = parser.parse_args()
+    
+    import torch
+    
+    device = args.device
+    use_gpu = device != "cpu"
+    if device == "cuda" and not torch.cuda.is_available():
+        if torch.backends.mps.is_available():
+            device = "mps"
+            use_gpu = True
+        else:
+            device = "cpu"
+            use_gpu = False
+    
+    print(f"Loading Coqui TTS model '{args.model}' on {device}...", file=sys.stderr)
+    
+    from TTS.api import TTS
+    
+    if args.model == "bark":
+        tts = TTS("tts_models/multilingual/multi-dataset/bark", gpu=use_gpu)
+    elif args.model == "xtts_v2":
+        tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=use_gpu)
+    elif args.model == "tortoise":
+        tts = TTS("tts_models/en/multi-dataset/tortoise-v2", gpu=use_gpu)
+    elif args.model == "vits":
+        tts = TTS("tts_models/en/ljspeech/vits", gpu=use_gpu)
+    
+    print(f"Model loaded", file=sys.stderr)
+    
+    if os.path.exists(args.socket):
+        os.unlink(args.socket)
+    
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(args.socket)
+    server.listen(1)
+    os.chmod(args.socket, 0o600)
+    
+    print(f"TTS server ready on {args.socket}", file=sys.stderr)
+    sys.stderr.flush()
+    
+    while True:
+        try:
+            conn, _ = server.accept()
+            data = b""
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                if b"\\n" in data:
+                    break
+            
+            request = json.loads(data.decode().strip())
+            text = request.get("text", "")
+            output = request.get("output", "/tmp/tts_output.wav")
+            voice_ref = request.get("voice_ref") or args.voice_ref
+            speaker = request.get("speaker") or args.speaker
+            language = request.get("language") or args.language
+            
+            if args.model == "bark":
+                # Bark: random speaker (no reliable preset support)
+                tts.tts_to_file(text=text, file_path=output)
+            elif args.model == "xtts_v2":
+                if voice_ref:
+                    tts.tts_to_file(text=text, file_path=output, speaker_wav=voice_ref, language=language)
+                else:
+                    tts.tts_to_file(text=text, file_path=output, speaker=speaker, language=language)
+            else:
+                tts.tts_to_file(text=text, file_path=output)
+            
+            conn.sendall(json.dumps({"success": True, "output": output}).encode() + b"\\n")
+            conn.close()
+        except Exception as e:
+            try:
+                conn.sendall(json.dumps({"success": False, "error": str(e)}).encode() + b"\\n")
+                conn.close()
+            except:
+                pass
+
+if __name__ == "__main__":
+    main()
+`
+  await writeFile(COQUI_SERVER_SCRIPT, script, { mode: 0o755 })
+}
+
+async function isCoquiServerRunning(): Promise<boolean> {
+  try {
+    await access(COQUI_SOCKET)
+    const net = await import("net")
+    return new Promise((resolve) => {
+      const client = net.createConnection(COQUI_SOCKET, () => {
+        client.destroy()
+        resolve(true)
+      })
+      client.on("error", () => resolve(false))
+      setTimeout(() => {
+        client.destroy()
+        resolve(false)
+      }, 1000)
+    })
+  } catch {
+    return false
+  }
+}
+
+async function acquireCoquiLock(): Promise<boolean> {
+  const lockContent = `${process.pid}\n${Date.now()}`
+  try {
+    const { open } = await import("fs/promises")
+    const handle = await open(COQUI_LOCK, "wx")
+    await handle.writeFile(lockContent)
+    await handle.close()
+    return true
+  } catch (e: any) {
+    if (e.code === "EEXIST") {
+      try {
+        const content = await readFile(COQUI_LOCK, "utf-8")
+        const timestamp = parseInt(content.split("\n")[1] || "0", 10)
+        if (Date.now() - timestamp > 120000) {
+          await unlink(COQUI_LOCK)
+          return acquireCoquiLock()
+        }
+      } catch {
+        await unlink(COQUI_LOCK).catch(() => {})
+        return acquireCoquiLock()
+      }
+    }
+    return false
+  }
+}
+
+async function releaseCoquiLock(): Promise<void> {
+  await unlink(COQUI_LOCK).catch(() => {})
+}
+
+async function startCoquiServer(config: TTSConfig): Promise<boolean> {
+  if (await isCoquiServerRunning()) {
+    return true
+  }
+  
+  if (!(await acquireCoquiLock())) {
+    const startTime = Date.now()
+    while (Date.now() - startTime < 120000) {
+      await new Promise(r => setTimeout(r, 1000))
+      if (await isCoquiServerRunning()) {
+        return true
+      }
+    }
+    return false
+  }
+  
+  try {
+    if (await isCoquiServerRunning()) {
+      return true
+    }
+    
+    await ensureCoquiServerScript()
+    
+    const venvPython = join(COQUI_VENV, "bin", "python")
+    const opts = config.coqui || {}
+    const device = opts.device || "cuda"
+    const model = opts.model || "xtts_v2"
+    
+    const args = [
+      COQUI_SERVER_SCRIPT,
+      "--socket", COQUI_SOCKET,
+      "--model", model,
+      "--device", device,
+    ]
+    
+    if (opts.voiceRef) {
+      args.push("--voice-ref", opts.voiceRef)
+    }
+    
+    if (opts.speaker) {
+      args.push("--speaker", opts.speaker)
+    }
+    
+    if (opts.language) {
+      args.push("--language", opts.language)
+    }
+    
+    try {
+      await unlink(COQUI_SOCKET)
+    } catch {}
+    
+    const serverProcess = spawn(venvPython, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+    })
+    
+    if (serverProcess.pid) {
+      await writeFile(COQUI_PID, String(serverProcess.pid))
+    }
+    
+    serverProcess.unref()
+    
+    const startTime = Date.now()
+    while (Date.now() - startTime < 180000) {  // 3 minutes for model download
+      if (await isCoquiServerRunning()) {
+        return true
+      }
+      await new Promise(r => setTimeout(r, 500))
+    }
+    
+    return false
+  } finally {
+    await releaseCoquiLock()
+  }
+}
+
+async function speakWithCoquiServer(text: string, config: TTSConfig): Promise<boolean> {
+  const net = await import("net")
+  const opts = config.coqui || {}
+  const outputPath = join(tmpdir(), `opencode_coqui_${Date.now()}.wav`)
+  
+  return new Promise((resolve) => {
+    const client = net.createConnection(COQUI_SOCKET, () => {
+      const request = JSON.stringify({
+        text,
+        output: outputPath,
+        voice_ref: opts.voiceRef,
+        speaker: opts.speaker,
+        language: opts.language || "en",
+      }) + "\n"
+      client.write(request)
+    })
+    
+    let response = ""
+    client.on("data", (data) => {
+      response += data.toString()
+    })
+    
+    client.on("end", async () => {
+      try {
+        const result = JSON.parse(response.trim())
+        if (!result.success) {
+          resolve(false)
+          return
+        }
+        
+        if (platform() === "darwin") {
+          await execAsync(`afplay "${outputPath}"`)
+        } else {
+          try {
+            await execAsync(`paplay "${outputPath}"`)
+          } catch {
+            await execAsync(`aplay "${outputPath}"`)
+          }
+        }
+        await unlink(outputPath).catch(() => {})
+        resolve(true)
+      } catch {
+        resolve(false)
+      }
+    })
+    
+    client.on("error", () => {
+      resolve(false)
+    })
+    
+    setTimeout(() => {
+      client.destroy()
+      resolve(false)
+    }, 120000)
+  })
+}
+
+async function isCoquiAvailable(config: TTSConfig): Promise<boolean> {
+  const installed = await setupCoqui()
+  if (!installed) return false
+  
+  const device = config.coqui?.device || "cuda"
+  if (device === "cpu" || device === "mps") return true
+  
+  const venvPython = join(COQUI_VENV, "bin", "python")
+  try {
+    const { stdout } = await execAsync(`"${venvPython}" -c "import torch; print(torch.cuda.is_available())"`, { timeout: 30000 })
+    return stdout.trim() === "True"
+  } catch {
+    return false
+  }
+}
+
+async function speakWithCoqui(text: string, config: TTSConfig): Promise<boolean> {
+  const opts = config.coqui || {}
+  const useServer = opts.serverMode !== false
+  
+  if (useServer) {
+    const serverReady = await startCoquiServer(config)
+    if (serverReady) {
+      const success = await speakWithCoquiServer(text, config)
+      if (success) return true
+    }
+  }
+  
+  // One-shot mode
+  const venvPython = join(COQUI_VENV, "bin", "python")
+  const device = opts.device || "cuda"
+  const model = opts.model || "xtts_v2"
+  const outputPath = join(tmpdir(), `opencode_coqui_${Date.now()}.wav`)
+  
+  const args = [
+    COQUI_SCRIPT,
+    "--output", outputPath,
+    "--model", model,
+    "--device", device,
+  ]
+  
+  if (opts.voiceRef) {
+    args.push("--voice-ref", opts.voiceRef)
+  }
+  
+  if (opts.speaker) {
+    args.push("--speaker", opts.speaker)
+  }
+  
+  if (opts.language) {
+    args.push("--language", opts.language)
+  }
+  
+  args.push(text)
+  
+  return new Promise((resolve) => {
+    const proc = spawn(venvPython, args)
+    
+    const timeout = device === "cpu" ? 300000 : 180000
+    const timer = setTimeout(() => {
+      proc.kill()
+      resolve(false)
+    }, timeout)
+    
+    proc.on("close", async (code) => {
+      clearTimeout(timer)
+      if (code !== 0) {
+        resolve(false)
+        return
+      }
+      
+      try {
+        if (platform() === "darwin") {
+          await execAsync(`afplay "${outputPath}"`)
+        } else {
+          try {
+            await execAsync(`paplay "${outputPath}"`)
+          } catch {
+            await execAsync(`aplay "${outputPath}"`)
+          }
+        }
+        await unlink(outputPath).catch(() => {})
+        resolve(true)
+      } catch {
+        await unlink(outputPath).catch(() => {})
+        resolve(false)
+      }
+    })
+    
+    proc.on("error", () => {
+      clearTimeout(timer)
+      resolve(false)
+    })
+  })
+}
+
+// ==================== OS TTS ====================
+
 async function speakWithOS(text: string, config: TTSConfig): Promise<boolean> {
   const escaped = text.replace(/'/g, "'\\''")
   const opts = config.os || {}
-  const voice = opts.voice || "Samantha"  // Female voice by default
+  const voice = opts.voice || "Samantha"
   const rate = opts.rate || 200
   
   try {
     if (platform() === "darwin") {
       await execAsync(`say -v "${voice}" -r ${rate} '${escaped}'`)
     } else {
-      // Linux: espeak
       await execAsync(`espeak '${escaped}'`)
     }
     return true
@@ -671,6 +1169,8 @@ async function speakWithOS(text: string, config: TTSConfig): Promise<boolean> {
     return false
   }
 }
+
+// ==================== PLUGIN ====================
 
 export const TTSPlugin: Plugin = async ({ client, directory }) => {
   function extractFinalResponse(messages: any[]): string | null {
@@ -707,19 +1207,37 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
       ? cleaned.slice(0, MAX_SPEECH_LENGTH) + "... message truncated."
       : cleaned
 
-    const config = await loadConfig()
-    const engine = await getEngine()
-    
-    if (engine === "chatterbox") {
-      const available = await isChatterboxAvailable(config)
-      if (available) {
-        const success = await speakWithChatterbox(toSpeak, config)
-        if (success) return
-      }
+    // Acquire speech lock - wait up to 60s for other agents to finish speaking
+    const lockAcquired = await waitForSpeechLock(60000)
+    if (!lockAcquired) {
+      return
     }
-    
-    // OS TTS (fallback or explicit choice)
-    await speakWithOS(toSpeak, config)
+
+    try {
+      const config = await loadConfig()
+      const engine = await getEngine()
+      
+      if (engine === "coqui") {
+        const available = await isCoquiAvailable(config)
+        if (available) {
+          const success = await speakWithCoqui(toSpeak, config)
+          if (success) return
+        }
+      }
+      
+      if (engine === "chatterbox") {
+        const available = await isChatterboxAvailable(config)
+        if (available) {
+          const success = await speakWithChatterbox(toSpeak, config)
+          if (success) return
+        }
+      }
+      
+      // OS TTS (fallback or explicit choice)
+      await speakWithOS(toSpeak, config)
+    } finally {
+      await releaseSpeechLock()
+    }
   }
 
   function isSessionComplete(messages: any[]): boolean {
