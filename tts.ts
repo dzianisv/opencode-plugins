@@ -47,7 +47,7 @@ const SPEECH_LOCK_TIMEOUT = 120000  // Max speech duration (2 minutes)
 type TTSEngine = "coqui" | "chatterbox" | "os"
 
 // Coqui TTS model types
-type CoquiModel = "bark" | "xtts_v2" | "tortoise" | "vits"
+type CoquiModel = "bark" | "xtts_v2" | "tortoise" | "vits" | "jenny"
 
 interface TTSConfig {
   enabled?: boolean
@@ -725,7 +725,7 @@ def main():
     parser = argparse.ArgumentParser(description="Coqui TTS")
     parser.add_argument("text", help="Text to synthesize")
     parser.add_argument("--output", "-o", required=True, help="Output WAV file")
-    parser.add_argument("--model", default="xtts_v2", choices=["bark", "xtts_v2", "tortoise", "vits"])
+    parser.add_argument("--model", default="xtts_v2", choices=["bark", "xtts_v2", "tortoise", "vits", "jenny"])
     parser.add_argument("--device", default="cuda", choices=["cuda", "mps", "cpu"])
     parser.add_argument("--voice-ref", help="Reference voice audio path (for XTTS voice cloning)")
     parser.add_argument("--language", default="en", help="Language code (for XTTS)")
@@ -781,6 +781,10 @@ def main():
             tts = TTS("tts_models/en/ljspeech/vits")
             tts = tts.to(device)
             tts.tts_to_file(text=args.text, file_path=args.output)
+        elif args.model == "jenny":
+            tts = TTS("tts_models/en/jenny/jenny")
+            tts = tts.to(device)
+            tts.tts_to_file(text=args.text, file_path=args.output)
         
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -804,7 +808,7 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description="Coqui TTS Server")
     parser.add_argument("--socket", required=True, help="Unix socket path")
-    parser.add_argument("--model", default="xtts_v2", choices=["bark", "xtts_v2", "tortoise", "vits"])
+    parser.add_argument("--model", default="xtts_v2", choices=["bark", "xtts_v2", "tortoise", "vits", "jenny"])
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu", "mps"])
     parser.add_argument("--voice-ref", help="Default reference voice (for XTTS)")
     parser.add_argument("--speaker", default="Ana Florence", help="Default XTTS speaker")
@@ -840,6 +844,8 @@ def main():
         tts = TTS("tts_models/en/multi-dataset/tortoise-v2")
     elif args.model == "vits":
         tts = TTS("tts_models/en/ljspeech/vits")
+    elif args.model == "jenny":
+        tts = TTS("tts_models/en/jenny/jenny")
     
     tts = tts.to(device)
     print(f"Model loaded on {device}", file=sys.stderr)
@@ -1322,29 +1328,79 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
     return false
   }
 
+  // Debug log file for TTS diagnostics
+  const debugLogPath = join(directory, ".tts-debug.log")
+  
+  async function debugLog(msg: string): Promise<void> {
+    const timestamp = new Date().toISOString()
+    const line = `[${timestamp}] ${msg}\n`
+    try {
+      const { appendFile } = await import("fs/promises")
+      await appendFile(debugLogPath, line)
+    } catch {}
+  }
+
   return {
     event: async ({ event }) => {
-      if (!(await isEnabled())) return
-
       if (event.type === "session.idle") {
         const sessionId = (event as any).properties?.sessionID
-        if (!sessionId || typeof sessionId !== "string") return
+        await debugLog(`session.idle fired for ${sessionId}`)
+        
+        const enabled = await isEnabled()
+        if (!enabled) {
+          await debugLog(`TTS disabled, skipping`)
+          return
+        }
 
-        if (spokenSessions.has(sessionId)) return
+        if (!sessionId || typeof sessionId !== "string") {
+          await debugLog(`Invalid sessionId: ${sessionId}`)
+          return
+        }
+
+        if (spokenSessions.has(sessionId)) {
+          await debugLog(`Already spoken for ${sessionId}`)
+          return
+        }
 
         try {
           const { data: messages } = await client.session.messages({ path: { id: sessionId } })
-          if (!messages || messages.length < 2) return
-          if (isJudgeSession(messages)) return
-          if (!isSessionComplete(messages)) return
+          await debugLog(`Got ${messages?.length || 0} messages`)
+          
+          if (!messages || messages.length < 2) {
+            await debugLog(`Not enough messages, skipping`)
+            return
+          }
+          
+          if (isJudgeSession(messages)) {
+            await debugLog(`Judge session detected, skipping`)
+            return
+          }
+          
+          const complete = isSessionComplete(messages)
+          await debugLog(`Session complete: ${complete}`)
+          
+          // Log the last assistant message structure for debugging
+          const lastAssistant = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
+          if (lastAssistant) {
+            await debugLog(`Last assistant msg.info: ${JSON.stringify(lastAssistant.info || {})}`)
+          }
+          
+          if (!complete) {
+            await debugLog(`Session not complete, skipping`)
+            return
+          }
 
           const finalResponse = extractFinalResponse(messages)
+          await debugLog(`Final response length: ${finalResponse?.length || 0}`)
+          
           if (finalResponse) {
             spokenSessions.add(sessionId)
+            await debugLog(`Speaking now...`)
             await speak(finalResponse, sessionId)
+            await debugLog(`Speech complete`)
           }
-        } catch {
-          // Silently fail
+        } catch (e: any) {
+          await debugLog(`Error: ${e?.message || e}`)
         }
       }
     }
