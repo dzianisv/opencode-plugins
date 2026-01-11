@@ -13,11 +13,20 @@ const MAX_ATTEMPTS = 3
 const JUDGE_RESPONSE_TIMEOUT = 180_000
 const POLL_INTERVAL = 2_000
 
+// Logging disabled to avoid breaking CLI output
+// Enable for debugging: uncomment the console.log line
+function log(_msg: string) {
+  // console.log(`[Reflection] ${_msg}`)
+}
+
 export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
+  log("Plugin initialized")
+  
   const attempts = new Map<string, number>()
   const lastHumanMsgCount = new Map<string, number>() // Track human message count to detect new input
   const processedSessions = new Set<string>()
   const activeReflections = new Set<string>()
+  const abortedSessions = new Set<string>() // Permanently track aborted sessions - never reflect on these
 
   async function showToast(message: string, variant: "info" | "success" | "warning" | "error" = "info") {
     try {
@@ -51,12 +60,32 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     return false
   }
 
-  function wasSessionAborted(messages: any[]): boolean {
-    // Check if the last assistant message has an abort error
+  function wasSessionAborted(sessionId: string, messages: any[]): boolean {
+    // Fast path: already known to be aborted
+    if (abortedSessions.has(sessionId)) return true
+    
+    // Check if ANY assistant message has an abort error
     // This happens when user presses Esc to cancel the task
-    const lastAssistant = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
-    if (!lastAssistant?.info?.error) return false
-    return lastAssistant.info.error.name === "MessageAbortedError"
+    // Once aborted, we should never reflect on this session again
+    for (const msg of messages) {
+      if (msg.info?.role === "assistant") {
+        const error = msg.info?.error
+        if (error) {
+          // Check for MessageAbortedError by name
+          if (error.name === "MessageAbortedError") {
+            abortedSessions.add(sessionId)
+            return true
+          }
+          // Also check error message content for abort indicators
+          const errorMsg = error.data?.message || error.message || ""
+          if (typeof errorMsg === "string" && errorMsg.toLowerCase().includes("abort")) {
+            abortedSessions.add(sessionId)
+            return true
+          }
+        }
+      }
+    }
+    return false
   }
 
   function countHumanMessages(messages: any[]): number {
@@ -85,7 +114,7 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
         for (const part of msg.parts || []) {
           if (part.type === "text" && part.text) {
             if (part.text.includes("## Reflection:")) continue
-            if (!task) task = part.text
+            task = part.text // Always update to most recent human message
             break
           }
         }
@@ -129,14 +158,34 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   }
 
   async function runReflection(sessionId: string): Promise<void> {
+    log(`Starting reflection for ${sessionId}`)
+    
     // Prevent concurrent reflections
-    if (activeReflections.has(sessionId)) return
+    if (activeReflections.has(sessionId)) {
+      log(`Already reflecting on ${sessionId}`)
+      return
+    }
     activeReflections.add(sessionId)
 
     try {
-      // Get messages first - needed for human message count check
+      // Get messages first - needed for all checks
       const { data: messages } = await client.session.messages({ path: { id: sessionId } })
       if (!messages || messages.length < 2) return
+
+      // Skip if session was aborted/cancelled by user (Esc key) - check FIRST
+      // This takes priority over everything else
+      if (wasSessionAborted(sessionId, messages)) {
+        log(`Session ${sessionId} was aborted, skipping`)
+        processedSessions.add(sessionId)
+        return
+      }
+
+      // Skip judge sessions
+      if (isJudgeSession(messages)) {
+        log(`Session ${sessionId} is a judge session, skipping`)
+        processedSessions.add(sessionId)
+        return
+      }
 
       // Check if human typed a new message - reset attempts if so
       const humanMsgCount = countHumanMessages(messages)
@@ -149,18 +198,6 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
 
       // Now check if already processed (after potential reset above)
       if (processedSessions.has(sessionId)) return
-
-      // Skip judge sessions
-      if (isJudgeSession(messages)) {
-        processedSessions.add(sessionId)
-        return
-      }
-
-      // Skip if session was aborted/cancelled by user (Esc key)
-      if (wasSessionAborted(messages)) {
-        processedSessions.add(sessionId)
-        return
-      }
 
       // Check attempt count
       const attemptCount = attempts.get(sessionId) || 0
@@ -216,14 +253,17 @@ Reply with JSON only:
       }
 
       const verdict = JSON.parse(jsonMatch[0])
+      log(`Verdict for ${sessionId}: ${verdict.complete ? "COMPLETE" : "INCOMPLETE"}`)
 
       if (verdict.complete) {
         // COMPLETE: mark as done, show toast only (no prompt!)
+        log(`Task COMPLETE for ${sessionId}`)
         processedSessions.add(sessionId)
         attempts.delete(sessionId)
         await showToast("Task complete ✓", "success")
       } else {
         // INCOMPLETE: send feedback to continue
+        log(`Task INCOMPLETE for ${sessionId}: ${verdict.feedback}`)
         attempts.set(sessionId, attemptCount + 1)
         await showToast(`Incomplete (${attemptCount + 1}/${MAX_ATTEMPTS})`, "warning")
         
@@ -250,9 +290,22 @@ Please address the above and continue.`
 
   return {
     event: async ({ event }) => {
+      // Track aborted sessions immediately when session.error fires
+      if (event.type === "session.error") {
+        const props = (event as any).properties
+        const sessionId = props?.sessionID
+        const error = props?.error
+        if (sessionId && error?.name === "MessageAbortedError") {
+          abortedSessions.add(sessionId)
+          processedSessions.add(sessionId)
+        }
+      }
+      
       if (event.type === "session.idle") {
         const sessionId = (event as any).properties?.sessionID
         if (sessionId && typeof sessionId === "string") {
+          // Fast path: skip if already known to be aborted
+          if (abortedSessions.has(sessionId)) return
           await runReflection(sessionId)
         }
       }
