@@ -1486,6 +1486,11 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
           await debugLog(`Already spoken for ${sessionId}`)
           return
         }
+        
+        // Mark session as processing IMMEDIATELY to prevent race conditions
+        // (session.idle can fire multiple times rapidly before async operations complete)
+        spokenSessions.add(sessionId)
+        let shouldKeepInSet = false
 
         try {
           const { data: messages } = await client.session.messages({ path: { id: sessionId } })
@@ -1498,6 +1503,8 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
           
           if (isJudgeSession(messages)) {
             await debugLog(`Judge session detected, skipping`)
+            // Keep in set - never speak judge sessions
+            shouldKeepInSet = true
             return
           }
           
@@ -1519,13 +1526,18 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
           await debugLog(`Final response length: ${finalResponse?.length || 0}`)
           
           if (finalResponse) {
-            spokenSessions.add(sessionId)
+            shouldKeepInSet = true
             await debugLog(`Speaking now...`)
             await speak(finalResponse, sessionId)
             await debugLog(`Speech complete`)
           }
         } catch (e: any) {
           await debugLog(`Error: ${e?.message || e}`)
+        } finally {
+          // Remove from set if we didn't actually speak (allow re-processing later)
+          if (!shouldKeepInSet) {
+            spokenSessions.delete(sessionId)
+          }
         }
       }
     }

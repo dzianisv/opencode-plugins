@@ -227,7 +227,9 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
       if (!extracted) return
 
       // Create judge session and evaluate
-      const { data: judgeSession } = await client.session.create({})
+      const { data: judgeSession } = await client.session.create({
+        query: { directory }
+      })
       if (!judgeSession?.id) return
 
       // Mark judge session as processed immediately
@@ -236,8 +238,14 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
       // Helper to clean up judge session (always called)
       const cleanupJudgeSession = async () => {
         try {
-          await client.session.delete({ path: { id: judgeSession.id } })
-        } catch {}
+          await client.session.delete({ 
+            path: { id: judgeSession.id },
+            query: { directory }
+          })
+        } catch (e) {
+          // Log deletion failures for debugging (but don't break the flow)
+          console.error(`[Reflection] Failed to delete judge session ${judgeSession.id}:`, e)
+        }
       }
 
       try {
