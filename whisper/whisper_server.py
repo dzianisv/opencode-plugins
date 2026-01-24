@@ -111,7 +111,7 @@ def get_model(model_name: str = DEFAULT_MODEL) -> WhisperModel:
             if torch.cuda.is_available():
                 device = "cuda"
             elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                device = "cpu"  # MPS not fully supported by faster-whisper, use CPU
+                device = "mps"
             else:
                 device = "cpu"
         except ImportError:
