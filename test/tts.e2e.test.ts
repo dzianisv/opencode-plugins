@@ -23,7 +23,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const RUN_E2E = process.env.OPENCODE_TTS_E2E === "1"
 
 // Paths
-const CHATTERBOX_DIR = join(process.env.HOME || "", ".config/opencode/chatterbox")
+const CHATTERBOX_DIR = join(process.env.HOME || "", ".config/opencode/opencode-helpers/chatterbox")
 const CHATTERBOX_VENV = join(CHATTERBOX_DIR, "venv")
 const CHATTERBOX_SCRIPT = join(CHATTERBOX_DIR, "tts.py")
 const VENV_PYTHON = join(CHATTERBOX_VENV, "bin/python")
