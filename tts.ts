@@ -79,7 +79,38 @@ interface TTSConfig {
     useTurbo?: boolean                // Use Turbo model for 10x faster inference
     serverMode?: boolean              // Keep model loaded for fast subsequent requests (default: true)
   }
+  // Telegram notification options
+  telegram?: {
+    enabled?: boolean                 // Enable Telegram notifications (default: false)
+    uuid?: string                     // User's unique identifier (required for subscription)
+    serviceUrl?: string               // Supabase Edge Function URL (has default)
+    sendText?: boolean                // Send text message (default: true)
+    sendVoice?: boolean               // Send voice message (default: true)
+    receiveReplies?: boolean          // Enable receiving replies from Telegram (default: true)
+    supabaseUrl?: string              // Supabase project URL (for realtime subscription)
+    supabaseAnonKey?: string          // Supabase anonymous key (for realtime subscription)
+  }
+  // Whisper STT options (for transcribing Telegram voice messages)
+  whisper?: {
+    enabled?: boolean                   // Enable Whisper STT for voice messages (default: true if telegram enabled)
+    model?: string                      // Whisper model: "tiny", "base", "small", "medium", "large-v2", "large-v3"
+    device?: "cuda" | "cpu" | "auto"    // Device for inference (default: auto)
+    port?: number                       // HTTP server port (default: 8787)
+  }
 }
+
+// ==================== WHISPER STT ====================
+
+const WHISPER_DIR = join(homedir(), ".config", "opencode", "whisper")
+const WHISPER_VENV = join(WHISPER_DIR, "venv")
+const WHISPER_SERVER_SCRIPT = join(WHISPER_DIR, "whisper_server.py")
+const WHISPER_PID = join(WHISPER_DIR, "server.pid")
+const WHISPER_LOCK = join(WHISPER_DIR, "server.lock")
+const WHISPER_DEFAULT_PORT = 8787
+
+let whisperInstalled: boolean | null = null
+let whisperSetupAttempted = false
+let whisperServerProcess: ReturnType<typeof spawn> | null = null
 
 // ==================== CHATTERBOX ====================
 
@@ -644,6 +675,14 @@ async function startChatterboxServer(config: TTSConfig): Promise<boolean> {
 }
 
 async function speakWithChatterboxServer(text: string, config: TTSConfig): Promise<boolean> {
+  const result = await speakWithChatterboxServerAndGetPath(text, config)
+  return result.success
+}
+
+/**
+ * Speak with Chatterbox server and return both success status and audio file path
+ */
+async function speakWithChatterboxServerAndGetPath(text: string, config: TTSConfig): Promise<{ success: boolean; audioPath?: string }> {
   const net = await import("net")
   const opts = config.chatterbox || {}
   const outputPath = join(tmpdir(), `opencode_tts_${Date.now()}.wav`)
@@ -668,10 +707,11 @@ async function speakWithChatterboxServer(text: string, config: TTSConfig): Promi
       try {
         const result = JSON.parse(response.trim())
         if (!result.success) {
-          resolve(false)
+          resolve({ success: false })
           return
         }
         
+        // Play the audio
         if (platform() === "darwin") {
           await execAsync(`afplay "${outputPath}"`)
         } else {
@@ -681,20 +721,20 @@ async function speakWithChatterboxServer(text: string, config: TTSConfig): Promi
             await execAsync(`aplay "${outputPath}"`)
           }
         }
-        await unlink(outputPath).catch(() => {})
-        resolve(true)
+        // Return the path - caller is responsible for cleanup
+        resolve({ success: true, audioPath: outputPath })
       } catch {
-        resolve(false)
+        resolve({ success: false })
       }
     })
     
     client.on("error", () => {
-      resolve(false)
+      resolve({ success: false })
     })
     
     setTimeout(() => {
       client.destroy()
-      resolve(false)
+      resolve({ success: false })
     }, 120000)
   })
 }
@@ -716,14 +756,23 @@ async function isChatterboxAvailable(config: TTSConfig): Promise<boolean> {
 }
 
 async function speakWithChatterbox(text: string, config: TTSConfig): Promise<boolean> {
+  const result = await speakWithChatterboxAndGetPath(text, config)
+  return result.success
+}
+
+/**
+ * Speak with Chatterbox TTS and return both success status and audio file path
+ * The caller is responsible for cleaning up the audio file
+ */
+async function speakWithChatterboxAndGetPath(text: string, config: TTSConfig): Promise<{ success: boolean; audioPath?: string }> {
   const opts = config.chatterbox || {}
   const useServer = opts.serverMode !== false
   
   if (useServer) {
     const serverReady = await startChatterboxServer(config)
     if (serverReady) {
-      const success = await speakWithChatterboxServer(text, config)
-      if (success) return true
+      const result = await speakWithChatterboxServerAndGetPath(text, config)
+      if (result.success) return result
     }
   }
   
@@ -757,17 +806,18 @@ async function speakWithChatterbox(text: string, config: TTSConfig): Promise<boo
     const timeout = device === "cpu" ? 300000 : 120000
     const timer = setTimeout(() => {
       proc.kill()
-      resolve(false)
+      resolve({ success: false })
     }, timeout)
     
     proc.on("close", async (code) => {
       clearTimeout(timer)
       if (code !== 0) {
-        resolve(false)
+        resolve({ success: false })
         return
       }
       
       try {
+        // Play the audio
         if (platform() === "darwin") {
           await execAsync(`afplay "${outputPath}"`)
         } else {
@@ -777,17 +827,17 @@ async function speakWithChatterbox(text: string, config: TTSConfig): Promise<boo
             await execAsync(`aplay "${outputPath}"`)
           }
         }
-        await unlink(outputPath).catch(() => {})
-        resolve(true)
+        // Return the path - caller is responsible for cleanup
+        resolve({ success: true, audioPath: outputPath })
       } catch {
         await unlink(outputPath).catch(() => {})
-        resolve(false)
+        resolve({ success: false })
       }
     })
     
     proc.on("error", () => {
       clearTimeout(timer)
-      resolve(false)
+      resolve({ success: false })
     })
   })
 }
@@ -1223,14 +1273,23 @@ async function isCoquiAvailable(config: TTSConfig): Promise<boolean> {
 }
 
 async function speakWithCoqui(text: string, config: TTSConfig): Promise<boolean> {
+  const result = await speakWithCoquiAndGetPath(text, config)
+  return result.success
+}
+
+/**
+ * Speak with Coqui TTS and return both success status and audio file path
+ * The caller is responsible for cleaning up the audio file
+ */
+async function speakWithCoquiAndGetPath(text: string, config: TTSConfig): Promise<{ success: boolean; audioPath?: string }> {
   const opts = config.coqui || {}
   const useServer = opts.serverMode !== false
   
   if (useServer) {
     const serverReady = await startCoquiServer(config)
     if (serverReady) {
-      const success = await speakWithCoquiServer(text, config)
-      if (success) return true
+      const result = await speakWithCoquiServerAndGetPath(text, config)
+      if (result.success) return result
     }
   }
   
@@ -1267,17 +1326,18 @@ async function speakWithCoqui(text: string, config: TTSConfig): Promise<boolean>
     const timeout = device === "cpu" ? 300000 : 180000
     const timer = setTimeout(() => {
       proc.kill()
-      resolve(false)
+      resolve({ success: false })
     }, timeout)
     
     proc.on("close", async (code) => {
       clearTimeout(timer)
       if (code !== 0) {
-        resolve(false)
+        resolve({ success: false })
         return
       }
       
       try {
+        // Play the audio
         if (platform() === "darwin") {
           await execAsync(`afplay "${outputPath}"`)
         } else {
@@ -1287,19 +1347,464 @@ async function speakWithCoqui(text: string, config: TTSConfig): Promise<boolean>
             await execAsync(`aplay "${outputPath}"`)
           }
         }
-        await unlink(outputPath).catch(() => {})
-        resolve(true)
+        // Return the path - caller is responsible for cleanup
+        resolve({ success: true, audioPath: outputPath })
       } catch {
         await unlink(outputPath).catch(() => {})
-        resolve(false)
+        resolve({ success: false })
       }
     })
     
     proc.on("error", () => {
       clearTimeout(timer)
-      resolve(false)
+      resolve({ success: false })
     })
   })
+}
+
+/**
+ * Speak with Coqui server and return both success status and audio file path
+ */
+async function speakWithCoquiServerAndGetPath(text: string, config: TTSConfig): Promise<{ success: boolean; audioPath?: string }> {
+  const net = await import("net")
+  const opts = config.coqui || {}
+  const outputPath = join(tmpdir(), `opencode_coqui_${Date.now()}.wav`)
+  
+  return new Promise((resolve) => {
+    const client = net.createConnection(COQUI_SOCKET, () => {
+      const request = JSON.stringify({
+        text,
+        output: outputPath,
+        voice_ref: opts.voiceRef,
+        speaker: opts.speaker,
+        language: opts.language || "en",
+      }) + "\n"
+      client.write(request)
+    })
+    
+    let response = ""
+    client.on("data", (data) => {
+      response += data.toString()
+    })
+    
+    client.on("end", async () => {
+      try {
+        const result = JSON.parse(response.trim())
+        if (!result.success) {
+          resolve({ success: false })
+          return
+        }
+        
+        // Play the audio
+        if (platform() === "darwin") {
+          await execAsync(`afplay "${outputPath}"`)
+        } else {
+          try {
+            await execAsync(`paplay "${outputPath}"`)
+          } catch {
+            await execAsync(`aplay "${outputPath}"`)
+          }
+        }
+        // Return the path - caller is responsible for cleanup
+        resolve({ success: true, audioPath: outputPath })
+      } catch {
+        resolve({ success: false })
+      }
+    })
+    
+    client.on("error", () => {
+      resolve({ success: false })
+    })
+    
+    setTimeout(() => {
+      client.destroy()
+      resolve({ success: false })
+    }, 120000)
+  })
+}
+
+// ==================== WHISPER STT ====================
+
+/**
+ * Ensure Whisper server script is installed
+ */
+async function ensureWhisperServerScript(): Promise<void> {
+  await mkdir(WHISPER_DIR, { recursive: true })
+  
+  // Copy the whisper_server.py from the plugin source
+  // For now, we embed a minimal version here
+  const script = `#!/usr/bin/env python3
+"""
+Faster Whisper STT Server for OpenCode TTS Plugin
+"""
+
+import os
+import sys
+import json
+import tempfile
+import logging
+import subprocess
+import shutil
+import base64
+from pathlib import Path
+from typing import Optional
+
+try:
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import JSONResponse
+    import uvicorn
+except ImportError:
+    print("Installing required packages...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "fastapi", "uvicorn", "python-multipart"])
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import JSONResponse
+    import uvicorn
+
+try:
+    from faster_whisper import WhisperModel
+except ImportError:
+    print("Installing faster-whisper...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "faster-whisper"])
+    from faster_whisper import WhisperModel
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="OpenCode Whisper STT Server", version="1.0.0")
+
+MODELS_DIR = os.environ.get("WHISPER_MODELS_DIR", str(Path.home() / ".cache" / "whisper"))
+DEFAULT_MODEL = os.environ.get("WHISPER_DEFAULT_MODEL", "base")
+DEVICE = os.environ.get("WHISPER_DEVICE", "auto")
+COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "auto")
+
+AVAILABLE_MODELS = ["tiny", "tiny.en", "base", "base.en", "small", "small.en", "medium", "medium.en", "large-v2", "large-v3"]
+
+model_cache: dict[str, WhisperModel] = {}
+current_model_name: Optional[str] = None
+
+
+def convert_to_wav(input_path: str) -> str:
+    output_path = input_path.rsplit('.', 1)[0] + '_converted.wav'
+    ffmpeg_path = shutil.which('ffmpeg')
+    if not ffmpeg_path:
+        return input_path
+    try:
+        result = subprocess.run([
+            ffmpeg_path, '-y', '-i', input_path,
+            '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
+            output_path
+        ], capture_output=True, timeout=30)
+        if result.returncode == 0 and os.path.exists(output_path):
+            return output_path
+        return input_path
+    except:
+        return input_path
+
+
+def get_model(model_name: str = DEFAULT_MODEL) -> WhisperModel:
+    global current_model_name
+    if model_name not in AVAILABLE_MODELS:
+        model_name = DEFAULT_MODEL
+    if model_name in model_cache:
+        return model_cache[model_name]
+    
+    logger.info(f"Loading Whisper model: {model_name}")
+    device = DEVICE
+    if device == "auto":
+        try:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            device = "cpu"
+    compute_type = COMPUTE_TYPE
+    if compute_type == "auto":
+        compute_type = "float16" if device == "cuda" else "int8"
+    
+    model = WhisperModel(model_name, device=device, compute_type=compute_type, download_root=MODELS_DIR)
+    model_cache[model_name] = model
+    current_model_name = model_name
+    logger.info(f"Model {model_name} loaded on {device}")
+    return model
+
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Starting OpenCode Whisper STT Server...")
+    try:
+        get_model(DEFAULT_MODEL)
+    except Exception as e:
+        logger.warning(f"Could not pre-load model: {e}")
+
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "model_loaded": current_model_name is not None, "current_model": current_model_name}
+
+
+@app.post("/transcribe")
+async def transcribe(request: dict):
+    audio_data = request.get("audio")
+    model_name = request.get("model", DEFAULT_MODEL)
+    language = request.get("language")
+    if language in ("auto", ""):
+        language = None
+    file_format = request.get("format", "ogg")
+    
+    if not audio_data:
+        raise HTTPException(status_code=400, detail="No audio data provided")
+    
+    tmp_path = None
+    converted_path = None
+    
+    try:
+        if "," in audio_data:
+            audio_data = audio_data.split(",")[1]
+        audio_bytes = base64.b64decode(audio_data)
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_format}") as tmp_file:
+            tmp_file.write(audio_bytes)
+            tmp_path = tmp_file.name
+        
+        audio_path = tmp_path
+        if file_format.lower() in ['webm', 'ogg', 'mp4', 'm4a', 'opus', 'oga']:
+            converted_path = convert_to_wav(tmp_path)
+            if converted_path != tmp_path:
+                audio_path = converted_path
+        
+        whisper_model = get_model(model_name)
+        segments, info = whisper_model.transcribe(
+            audio_path, language=language, task="transcribe",
+            vad_filter=True, vad_parameters=dict(min_silence_duration_ms=500, speech_pad_ms=400)
+        )
+        
+        segments_list = list(segments)
+        full_text = " ".join(segment.text.strip() for segment in segments_list)
+        
+        return JSONResponse(content={
+            "text": full_text, "language": info.language,
+            "language_probability": info.language_probability, "duration": info.duration
+        })
+    except Exception as e:
+        logger.error(f"Transcription error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if tmp_path:
+            try: os.unlink(tmp_path)
+            except: pass
+        if converted_path and converted_path != tmp_path:
+            try: os.unlink(converted_path)
+            except: pass
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("WHISPER_PORT", "8787"))
+    host = os.environ.get("WHISPER_HOST", "127.0.0.1")
+    logger.info(f"Starting Whisper server on {host}:{port}")
+    uvicorn.run(app, host=host, port=port, log_level="info")
+`
+  await writeFile(WHISPER_SERVER_SCRIPT, script, { mode: 0o755 })
+}
+
+/**
+ * Setup Whisper virtualenv and dependencies
+ */
+async function setupWhisper(): Promise<boolean> {
+  if (whisperSetupAttempted) return whisperInstalled === true
+  whisperSetupAttempted = true
+  
+  const python = await findPython311() || await findPython3()
+  if (!python) return false
+  
+  try {
+    await mkdir(WHISPER_DIR, { recursive: true })
+    
+    const venvPython = join(WHISPER_VENV, "bin", "python")
+    try {
+      await access(venvPython)
+      const { stdout } = await execAsync(`"${venvPython}" -c "from faster_whisper import WhisperModel; print('ok')"`, { timeout: 30000 })
+      if (stdout.includes("ok")) {
+        await ensureWhisperServerScript()
+        whisperInstalled = true
+        return true
+      }
+    } catch {
+      // Need to create/setup venv
+    }
+    
+    await execAsync(`"${python}" -m venv "${WHISPER_VENV}"`, { timeout: 60000 })
+    
+    const pip = join(WHISPER_VENV, "bin", "pip")
+    await execAsync(`"${pip}" install --upgrade pip`, { timeout: 120000 })
+    await execAsync(`"${pip}" install faster-whisper fastapi uvicorn python-multipart`, { timeout: 600000 })
+    
+    await ensureWhisperServerScript()
+    whisperInstalled = true
+    return true
+  } catch {
+    whisperInstalled = false
+    return false
+  }
+}
+
+/**
+ * Check if Whisper server is running
+ */
+async function isWhisperServerRunning(port: number = WHISPER_DEFAULT_PORT): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(2000)
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Acquire lock for starting Whisper server
+ */
+async function acquireWhisperLock(): Promise<boolean> {
+  const lockContent = `${process.pid}\n${Date.now()}`
+  try {
+    const { open } = await import("fs/promises")
+    const handle = await open(WHISPER_LOCK, "wx")
+    await handle.writeFile(lockContent)
+    await handle.close()
+    return true
+  } catch (e: any) {
+    if (e.code === "EEXIST") {
+      try {
+        const content = await readFile(WHISPER_LOCK, "utf-8")
+        const timestamp = parseInt(content.split("\n")[1] || "0", 10)
+        if (Date.now() - timestamp > 120000) {
+          await unlink(WHISPER_LOCK)
+          return acquireWhisperLock()
+        }
+      } catch {
+        await unlink(WHISPER_LOCK).catch(() => {})
+        return acquireWhisperLock()
+      }
+    }
+    return false
+  }
+}
+
+/**
+ * Release Whisper server lock
+ */
+async function releaseWhisperLock(): Promise<void> {
+  await unlink(WHISPER_LOCK).catch(() => {})
+}
+
+/**
+ * Start the Whisper STT server
+ */
+async function startWhisperServer(config: TTSConfig): Promise<boolean> {
+  const port = config.whisper?.port || WHISPER_DEFAULT_PORT
+  
+  if (await isWhisperServerRunning(port)) {
+    return true
+  }
+  
+  if (!(await acquireWhisperLock())) {
+    // Another process is starting the server, wait for it
+    const startTime = Date.now()
+    while (Date.now() - startTime < 120000) {
+      await new Promise(r => setTimeout(r, 1000))
+      if (await isWhisperServerRunning(port)) {
+        return true
+      }
+    }
+    return false
+  }
+  
+  try {
+    if (await isWhisperServerRunning(port)) {
+      return true
+    }
+    
+    const installed = await setupWhisper()
+    if (!installed) {
+      return false
+    }
+    
+    const venvPython = join(WHISPER_VENV, "bin", "python")
+    const model = config.whisper?.model || "base"
+    const device = config.whisper?.device || "auto"
+    
+    const env: Record<string, string> = {
+      ...process.env as Record<string, string>,
+      WHISPER_PORT: port.toString(),
+      WHISPER_HOST: "127.0.0.1",
+      WHISPER_DEFAULT_MODEL: model,
+      WHISPER_DEVICE: device,
+      PYTHONUNBUFFERED: "1"
+    }
+    
+    whisperServerProcess = spawn(venvPython, [WHISPER_SERVER_SCRIPT], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+    })
+    
+    if (whisperServerProcess.pid) {
+      await writeFile(WHISPER_PID, String(whisperServerProcess.pid))
+    }
+    
+    whisperServerProcess.unref()
+    
+    // Wait for server to be ready
+    const startTime = Date.now()
+    while (Date.now() - startTime < 180000) {  // 3 minutes for model download
+      if (await isWhisperServerRunning(port)) {
+        return true
+      }
+      await new Promise(r => setTimeout(r, 500))
+    }
+    
+    return false
+  } finally {
+    await releaseWhisperLock()
+  }
+}
+
+/**
+ * Transcribe audio using local Whisper server
+ */
+async function transcribeWithWhisper(
+  audioBase64: string, 
+  config: TTSConfig,
+  format: string = "ogg"
+): Promise<{ text: string; language: string; duration: number } | null> {
+  const port = config.whisper?.port || WHISPER_DEFAULT_PORT
+  
+  // Ensure server is running
+  const serverReady = await startWhisperServer(config)
+  if (!serverReady) {
+    return null
+  }
+  
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/transcribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        audio: audioBase64,
+        model: config.whisper?.model || "base",
+        format,
+      }),
+      signal: AbortSignal.timeout(120000)  // 2 minute timeout
+    })
+    
+    if (!response.ok) {
+      return null
+    }
+    
+    const result = await response.json() as { text: string; language: string; duration: number }
+    return result
+  } catch {
+    return null
+  }
 }
 
 // ==================== OS TTS ====================
@@ -1319,6 +1824,425 @@ async function speakWithOS(text: string, config: TTSConfig): Promise<boolean> {
     return true
   } catch {
     return false
+  }
+}
+
+// ==================== TELEGRAM NOTIFICATIONS ====================
+
+// Default Supabase Edge Function URL for sending notifications
+const DEFAULT_TELEGRAM_SERVICE_URL = "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/send-notify"
+
+/**
+ * Check if ffmpeg is available for audio conversion
+ */
+async function isFfmpegAvailable(): Promise<boolean> {
+  try {
+    await execAsync("which ffmpeg")
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Convert WAV file to OGG (Opus) format for Telegram voice messages
+ * Returns the path to the OGG file, or null if conversion failed
+ */
+async function convertWavToOgg(wavPath: string): Promise<string | null> {
+  const oggPath = wavPath.replace(/\.wav$/i, ".ogg")
+  
+  try {
+    // Use ffmpeg to convert WAV to OGG with Opus codec
+    // -c:a libopus: Use Opus codec (required for Telegram voice)
+    // -b:a 32k: 32kbps bitrate (good quality for speech)
+    // -ar 48000: 48kHz sample rate (Opus standard)
+    // -ac 1: Mono audio (voice doesn't need stereo)
+    await execAsync(
+      `ffmpeg -y -i "${wavPath}" -c:a libopus -b:a 32k -ar 48000 -ac 1 "${oggPath}"`,
+      { timeout: 30000 }
+    )
+    return oggPath
+  } catch (err) {
+    console.error("[TTS] Failed to convert WAV to OGG:", err)
+    return null
+  }
+}
+
+/**
+ * Send notification to Telegram via Supabase Edge Function
+ */
+async function sendTelegramNotification(
+  text: string,
+  voicePath: string | null,
+  config: TTSConfig,
+  context?: { model?: string; directory?: string; sessionId?: string }
+): Promise<{ success: boolean; error?: string }> {
+  const telegramConfig = config.telegram
+  if (!telegramConfig?.enabled) {
+    return { success: false, error: "Telegram notifications disabled" }
+  }
+
+  // Get UUID from config or environment variable
+  const uuid = telegramConfig.uuid || process.env.TELEGRAM_NOTIFICATION_UUID
+  if (!uuid) {
+    return { success: false, error: "No UUID configured for Telegram notifications" }
+  }
+
+  const serviceUrl = telegramConfig.serviceUrl || DEFAULT_TELEGRAM_SERVICE_URL
+  const sendText = telegramConfig.sendText !== false
+  const sendVoice = telegramConfig.sendVoice !== false
+
+  try {
+    const body: { 
+      uuid: string
+      text?: string
+      voice_base64?: string
+      session_id?: string
+      directory?: string 
+    } = { uuid }
+
+    // Add session context for reply support
+    if (context?.sessionId) {
+      body.session_id = context.sessionId
+    }
+    if (context?.directory) {
+      body.directory = context.directory
+    }
+
+    // Add text if enabled
+    if (sendText && text) {
+      // Build message with context header
+      const dirName = context?.directory ? context.directory.split("/").pop() || context.directory : undefined
+      const header = [
+        context?.model ? `Model: ${context.model}` : null,
+        dirName ? `Dir: ${dirName}` : null
+      ].filter(Boolean).join(" | ")
+      
+      const formattedText = header 
+        ? `${header}\n${"─".repeat(Math.min(header.length, 30))}\n\n${text}`
+        : text
+      
+      // Truncate to Telegram's limit (leave room for header)
+      body.text = formattedText.slice(0, 3900)
+    }
+
+    // Add voice if enabled and path provided
+    if (sendVoice && voicePath) {
+      try {
+        // First check if ffmpeg is available
+        const ffmpegAvailable = await isFfmpegAvailable()
+        
+        let audioPath = voicePath
+        let oggPath: string | null = null
+        
+        if (ffmpegAvailable && voicePath.endsWith(".wav")) {
+          // Convert WAV to OGG for better Telegram compatibility
+          oggPath = await convertWavToOgg(voicePath)
+          if (oggPath) {
+            audioPath = oggPath
+          }
+        }
+
+        // Read the audio file and encode to base64
+        const audioData = await readFile(audioPath)
+        body.voice_base64 = audioData.toString("base64")
+
+        // Clean up converted OGG file
+        if (oggPath) {
+          await unlink(oggPath).catch(() => {})
+        }
+      } catch (err) {
+        console.error("[TTS] Failed to read voice file for Telegram:", err)
+        // Continue without voice - text notification is still valuable
+      }
+    }
+
+    // Only send if we have something to send
+    if (!body.text && !body.voice_base64) {
+      return { success: false, error: "No content to send" }
+    }
+
+    // Send to Supabase Edge Function
+    const response = await fetch(serviceUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      let errorJson: any = {}
+      try {
+        errorJson = JSON.parse(errorText)
+      } catch {}
+      return { 
+        success: false, 
+        error: errorJson.error || `HTTP ${response.status}: ${errorText.slice(0, 100)}` 
+      }
+    }
+
+    const result = await response.json()
+    return { success: result.success, error: result.error }
+  } catch (err: any) {
+    return { success: false, error: err?.message || "Network error" }
+  }
+}
+
+/**
+ * Check if Telegram notifications are enabled
+ */
+async function isTelegramEnabled(): Promise<boolean> {
+  if (process.env.TELEGRAM_DISABLED === "1") return false
+  const config = await loadConfig()
+  return config.telegram?.enabled === true
+}
+
+// ==================== TELEGRAM REPLY SUBSCRIPTION ====================
+
+// Default Supabase configuration for reply subscription
+const DEFAULT_SUPABASE_URL = "https://slqxwymujuoipyiqscrl.supabase.co"
+// Note: Anon key is safe to expose - it only allows public access with RLS
+const DEFAULT_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNscXh3eW11anVvaXB5aXFzY3JsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxMTgwNDUsImV4cCI6MjA4MTY5NDA0NX0.cW79nLOdKsUhZaXIvgY4gGcO4Y4R0lDGNg7SE_zEfb8"
+
+// Global subscription state
+let replySubscription: any = null
+let supabaseClient: any = null
+
+interface TelegramReply {
+  id: string
+  uuid: string
+  session_id: string
+  directory: string | null
+  reply_text: string | null  // Can be null for voice messages before transcription
+  telegram_message_id: number
+  telegram_chat_id: number
+  created_at: string
+  processed: boolean
+  // Voice message fields (populated when is_voice = true)
+  is_voice?: boolean
+  audio_base64?: string | null
+  voice_file_type?: string | null
+  voice_duration_seconds?: number | null
+}
+
+/**
+ * Mark a reply as processed in the database
+ */
+async function markReplyProcessed(replyId: string): Promise<void> {
+  if (!supabaseClient) return
+  
+  try {
+    await supabaseClient
+      .from('telegram_replies')
+      .update({ 
+        processed: true, 
+        processed_at: new Date().toISOString() 
+      })
+      .eq('id', replyId)
+  } catch (err) {
+    console.error('[TTS] Failed to mark reply as processed:', err)
+  }
+}
+
+/**
+ * Initialize Supabase client for realtime subscriptions
+ * Uses dynamic import to avoid bundling issues
+ */
+async function initSupabaseClient(config: TTSConfig): Promise<any> {
+  if (supabaseClient) return supabaseClient
+  
+  const telegramConfig = config.telegram
+  if (!telegramConfig?.enabled) return null
+  if (telegramConfig.receiveReplies === false) return null
+  
+  const supabaseUrl = telegramConfig.supabaseUrl || DEFAULT_SUPABASE_URL
+  const supabaseKey = telegramConfig.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY
+  
+  if (!supabaseKey || supabaseKey.includes('example')) {
+    // Anon key not configured - skip realtime subscription
+    return null
+  }
+  
+  try {
+    // Dynamic import to avoid bundling issues in Node.js environment
+    const { createClient } = await import('@supabase/supabase-js')
+    supabaseClient = createClient(supabaseUrl, supabaseKey, {
+      realtime: {
+        params: {
+          eventsPerSecond: 2
+        }
+      }
+    })
+    return supabaseClient
+  } catch (err) {
+    console.error('[TTS] Failed to initialize Supabase client:', err)
+    console.error('[TTS] Install @supabase/supabase-js to enable Telegram reply subscription')
+    return null
+  }
+}
+
+/**
+ * Subscribe to Telegram replies for this user
+ * Replies are forwarded to the appropriate OpenCode session
+ */
+async function subscribeToReplies(
+  config: TTSConfig,
+  client: any,
+  debugLog: (msg: string) => Promise<void>
+): Promise<void> {
+  if (replySubscription) {
+    await debugLog('Already subscribed to Telegram replies')
+    return
+  }
+  
+  const telegramConfig = config.telegram
+  if (!telegramConfig?.enabled) return
+  if (telegramConfig.receiveReplies === false) return
+  
+  const uuid = telegramConfig.uuid || process.env.TELEGRAM_NOTIFICATION_UUID
+  if (!uuid) {
+    await debugLog('No UUID configured, skipping reply subscription')
+    return
+  }
+  
+  const supabase = await initSupabaseClient(config)
+  if (!supabase) {
+    await debugLog('Supabase client not available, skipping reply subscription')
+    return
+  }
+  
+  await debugLog(`Subscribing to Telegram replies for UUID: ${uuid.slice(0, 8)}...`)
+  
+  try {
+    // Subscribe to new replies for this user
+    replySubscription = supabase
+      .channel('telegram_replies')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'telegram_replies',
+          filter: `uuid=eq.${uuid}`
+        },
+        async (payload: { new: TelegramReply }) => {
+          const reply = payload.new
+          
+          if (reply.processed) {
+            await debugLog('Reply already processed, skipping')
+            return
+          }
+          
+          try {
+            let messageText: string
+            
+            // Check if this is a voice message that needs transcription
+            if (reply.is_voice && reply.audio_base64) {
+              await debugLog(`Received voice message (${reply.voice_duration_seconds}s ${reply.voice_file_type})`)
+              
+              // Transcribe the audio locally with Whisper
+              const format = reply.voice_file_type === 'voice' ? 'ogg' : 'mp4'
+              const transcription = await transcribeWithWhisper(reply.audio_base64, config, format)
+              
+              if (!transcription || !transcription.text) {
+                await debugLog('Transcription failed or returned empty text')
+                
+                // Show error toast
+                await client.tui.publish({
+                  body: {
+                    type: "toast",
+                    toast: {
+                      title: "Telegram Voice Error",
+                      description: "Failed to transcribe voice message",
+                      severity: "error"
+                    }
+                  }
+                })
+                
+                // Mark as processed even though it failed (to avoid retry loops)
+                await markReplyProcessed(reply.id)
+                return
+              }
+              
+              messageText = transcription.text
+              await debugLog(`Transcribed: "${messageText.slice(0, 100)}..."`)
+            } else if (reply.reply_text) {
+              // Regular text message
+              await debugLog(`Received Telegram reply: ${reply.reply_text.slice(0, 50)}...`)
+              messageText = reply.reply_text
+            } else {
+              await debugLog('Reply has no text and is not a voice message, skipping')
+              await markReplyProcessed(reply.id)
+              return
+            }
+            
+            // Forward the reply to the OpenCode session
+            const prefix = reply.is_voice ? '[User via Telegram Voice]' : '[User via Telegram]'
+            await debugLog(`Forwarding reply to session: ${reply.session_id}`)
+            
+            await client.session.promptAsync({
+              path: { id: reply.session_id },
+              body: {
+                parts: [{
+                  type: "text",
+                  text: `${prefix}: ${messageText}`
+                }]
+              }
+            })
+            
+            await debugLog('Reply forwarded successfully')
+            
+            // Mark as processed
+            await markReplyProcessed(reply.id)
+            
+            // Show toast notification
+            const toastTitle = reply.is_voice ? "Telegram Voice Message" : "Telegram Reply"
+            await client.tui.publish({
+              body: {
+                type: "toast",
+                toast: {
+                  title: toastTitle,
+                  description: `Received: "${messageText.slice(0, 50)}${messageText.length > 50 ? '...' : ''}"`,
+                  severity: "info"
+                }
+              }
+            })
+          } catch (err: any) {
+            await debugLog(`Failed to process reply: ${err?.message || err}`)
+            
+            // Show error toast
+            await client.tui.publish({
+              body: {
+                type: "toast",
+                toast: {
+                  title: "Telegram Reply Error",
+                  description: `Failed to process reply`,
+                  severity: "error"
+                }
+              }
+            })
+          }
+        }
+      )
+      .subscribe((status: string) => {
+        debugLog(`Reply subscription status: ${status}`)
+      })
+    
+    await debugLog('Successfully subscribed to Telegram replies')
+  } catch (err: any) {
+    await debugLog(`Failed to subscribe to replies: ${err?.message || err}`)
+  }
+}
+
+/**
+ * Cleanup reply subscription
+ */
+async function unsubscribeFromReplies(): Promise<void> {
+  if (replySubscription && supabaseClient) {
+    try {
+      await supabaseClient.removeChannel(replySubscription)
+      replySubscription = null
+    } catch {}
   }
 }
 
@@ -1375,7 +2299,7 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
       .trim()
   }
 
-  async function speak(text: string, sessionId: string): Promise<void> {
+  async function speak(text: string, sessionId: string, modelID?: string): Promise<void> {
     const cleaned = cleanTextForSpeech(text)
     if (!cleaned) return
 
@@ -1391,6 +2315,8 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
       return
     }
 
+    let generatedAudioPath: string | null = null
+
     try {
       const config = await loadConfig()
       const engine = await getEngine()
@@ -1403,30 +2329,56 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
         engine,
         timestamp: new Date().toISOString()
       })
+
+      // Check if Telegram is enabled - we may need to keep the audio file
+      const telegramEnabled = await isTelegramEnabled()
       
+      // Generate and play audio based on engine
       if (engine === "coqui") {
         const available = await isCoquiAvailable(config)
         if (available) {
-          const success = await speakWithCoqui(toSpeak, config)
-          if (success) {
-            return
+          const result = await speakWithCoquiAndGetPath(toSpeak, config)
+          if (result.success) {
+            generatedAudioPath = result.audioPath || null
           }
         }
       }
       
-      if (engine === "chatterbox") {
+      if (!generatedAudioPath && engine === "chatterbox") {
         const available = await isChatterboxAvailable(config)
         if (available) {
-          const success = await speakWithChatterbox(toSpeak, config)
-          if (success) {
-            return
+          const result = await speakWithChatterboxAndGetPath(toSpeak, config)
+          if (result.success) {
+            generatedAudioPath = result.audioPath || null
           }
         }
       }
       
-      // OS TTS (fallback or explicit choice)
-      await speakWithOS(toSpeak, config)
+      // OS TTS (fallback or explicit choice) - no audio file generated
+      if (!generatedAudioPath && engine === "os") {
+        await speakWithOS(toSpeak, config)
+      }
+
+      // Send Telegram notification if enabled (runs in parallel, non-blocking)
+      if (telegramEnabled) {
+        await debugLog(`Sending Telegram notification...`)
+        const telegramResult = await sendTelegramNotification(
+          cleaned, 
+          generatedAudioPath, 
+          config,
+          { model: modelID, directory, sessionId }
+        )
+        if (telegramResult.success) {
+          await debugLog(`Telegram notification sent successfully`)
+        } else {
+          await debugLog(`Telegram notification failed: ${telegramResult.error}`)
+        }
+      }
     } finally {
+      // Clean up generated audio file
+      if (generatedAudioPath) {
+        await unlink(generatedAudioPath).catch(() => {})
+      }
       await releaseSpeechLock(ticketId)
       await removeSpeechTicket(ticketId)
     }
@@ -1464,6 +2416,19 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
       await appendFile(debugLogPath, line)
     } catch {}
   }
+
+  // Initialize Telegram reply subscription (non-blocking)
+  // This handles both text replies and voice messages (voice messages are transcribed with Whisper)
+  ;(async () => {
+    try {
+      const config = await loadConfig()
+      if (config.telegram?.enabled) {
+        await subscribeToReplies(config, client, debugLog)
+      }
+    } catch (err: any) {
+      await debugLog(`Failed to initialize reply subscription: ${err?.message || err}`)
+    }
+  })()
 
   return {
     event: async ({ event }) => {
@@ -1525,10 +2490,15 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
           const finalResponse = extractFinalResponse(messages)
           await debugLog(`Final response length: ${finalResponse?.length || 0}`)
           
+          // Extract model ID from the last assistant message (use any to handle SDK type limitations)
+          const msgInfo = lastAssistant?.info as any
+          const modelID = msgInfo?.modelID || msgInfo?.model || undefined
+          await debugLog(`Model ID: ${modelID || "unknown"}`)
+          
           if (finalResponse) {
             shouldKeepInSet = true
             await debugLog(`Speaking now...`)
-            await speak(finalResponse, sessionId)
+            await speak(finalResponse, sessionId, modelID)
             await debugLog(`Speech complete`)
           }
         } catch (e: any) {
