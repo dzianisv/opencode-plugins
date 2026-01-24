@@ -286,3 +286,105 @@ opencode-reflection-plugin/
 └── docs/
     └── telegram.md                     # This file
 ```
+
+## Database Schema
+
+### Tables
+
+```sql
+-- User subscriptions
+telegram_subscribers (
+  uuid UUID PRIMARY KEY,
+  chat_id BIGINT NOT NULL,
+  username TEXT,
+  is_active BOOLEAN DEFAULT TRUE,
+  notifications_sent INTEGER DEFAULT 0
+)
+
+-- Reply context tracking (for multi-session support)
+telegram_reply_contexts (
+  id UUID PRIMARY KEY,
+  chat_id BIGINT NOT NULL,
+  uuid UUID REFERENCES telegram_subscribers(uuid),
+  session_id TEXT NOT NULL,        -- OpenCode session ID
+  message_id INTEGER,              -- Telegram message ID
+  directory TEXT,                  -- Working directory
+  expires_at TIMESTAMPTZ,          -- 24-hour expiration
+  is_active BOOLEAN DEFAULT TRUE
+)
+
+-- Incoming replies (Realtime-enabled) - unified for text + voice
+telegram_replies (
+  id UUID PRIMARY KEY,
+  uuid UUID REFERENCES telegram_subscribers(uuid),
+  session_id TEXT NOT NULL,
+  directory TEXT,
+  reply_text TEXT,                 -- Text content (nullable for voice)
+  telegram_message_id INTEGER,
+  telegram_chat_id BIGINT NOT NULL,
+  processed BOOLEAN DEFAULT FALSE,
+  processed_at TIMESTAMPTZ,
+  -- Voice message fields
+  is_voice BOOLEAN DEFAULT FALSE,
+  audio_base64 TEXT,               -- Base64 audio from Edge Function
+  voice_file_type TEXT,            -- 'voice', 'video_note', or 'video'
+  voice_duration_seconds INTEGER
+)
+```
+
+### Supported Audio/Video Formats
+
+| Telegram Type | File Format | Handling |
+|---------------|-------------|----------|
+| Voice Message | OGG Opus | Direct transcription |
+| Video Note | MP4 | Extract audio, transcribe |
+| Audio File | MP3/WAV/OGG | Direct transcription |
+| Video File | MP4/MOV | Extract audio, transcribe |
+
+## Multi-Session Support
+
+When multiple OpenCode sessions are running concurrently:
+
+```
+Session 1 (ses_abc)              Session 2 (ses_def)
+┌─────────────────┐              ┌─────────────────┐
+│ Working on      │              │ Working on      │
+│ auth module     │              │ API endpoints   │
+└────────┬────────┘              └────────┬────────┘
+         │                                │
+         ▼                                ▼
+Notification sent:               Notification sent:
+"[ses_abc] Auth done"            "[ses_def] API done"
+
+                    User replies:
+                    "Add tests"
+                         │
+                         ▼
+                    Routed to most recent
+                    context (ses_def)
+```
+
+**Routing Rules:**
+1. Each notification creates a new `reply_context` entry
+2. Previous contexts for same `chat_id` are deactivated
+3. User reply goes to the **most recent** active session
+
+## Security Model
+
+| Layer | Description |
+|-------|-------------|
+| UUID Authentication | User generates UUID locally, maps to chat_id |
+| Rate Limiting | 10 notifications per minute per UUID |
+| Row Level Security | All tables have RLS, only service_role can access |
+| Context Expiration | Reply contexts expire after 24 hours |
+| Local Whisper | Audio transcribed locally, never leaves machine |
+
+## Deployment Checklist
+
+- [ ] Apply database migrations: `supabase db push`
+- [ ] Deploy Edge Functions: `supabase functions deploy`
+- [ ] Set Telegram webhook URL to Edge Function
+- [ ] Configure `tts.json` with UUID
+- [ ] Copy plugin to `~/.config/opencode/plugin/`
+- [ ] Restart OpenCode
+- [ ] (Optional) Whisper server auto-starts on first voice message

@@ -900,6 +900,206 @@ describe("Telegram Reply Support - Structure Validation", () => {
 
 // ==================== VOICE MESSAGE SUPPORT TESTS ====================
 
+// ==================== WHISPER INTEGRATION TESTS ====================
+
+describe("Whisper Server - Integration Tests", () => {
+  const WHISPER_URL = "http://localhost:8787"
+  
+  /**
+   * Helper to check if Whisper server is running
+   */
+  async function isWhisperRunning(): Promise<boolean> {
+    try {
+      const response = await fetch(`${WHISPER_URL}/health`, { 
+        signal: AbortSignal.timeout(2000) 
+      })
+      return response.ok
+    } catch {
+      return false
+    }
+  }
+  
+  /**
+   * Generate a simple test audio (silence) as base64
+   * This is a minimal valid WAV file with 0.1s of silence
+   */
+  function generateTestSilenceWav(): string {
+    // Minimal WAV header for 16-bit PCM, mono, 16kHz
+    const sampleRate = 16000
+    const numChannels = 1
+    const bitsPerSample = 16
+    const durationSeconds = 0.1
+    const numSamples = Math.floor(sampleRate * durationSeconds)
+    const dataSize = numSamples * numChannels * (bitsPerSample / 8)
+    const fileSize = 44 + dataSize - 8
+    
+    const buffer = Buffer.alloc(44 + dataSize)
+    
+    // RIFF header
+    buffer.write('RIFF', 0)
+    buffer.writeUInt32LE(fileSize, 4)
+    buffer.write('WAVE', 8)
+    
+    // fmt chunk
+    buffer.write('fmt ', 12)
+    buffer.writeUInt32LE(16, 16) // chunk size
+    buffer.writeUInt16LE(1, 20) // audio format (PCM)
+    buffer.writeUInt16LE(numChannels, 22)
+    buffer.writeUInt32LE(sampleRate, 24)
+    buffer.writeUInt32LE(sampleRate * numChannels * (bitsPerSample / 8), 28) // byte rate
+    buffer.writeUInt16LE(numChannels * (bitsPerSample / 8), 32) // block align
+    buffer.writeUInt16LE(bitsPerSample, 34)
+    
+    // data chunk
+    buffer.write('data', 36)
+    buffer.writeUInt32LE(dataSize, 40)
+    // Audio data is already zeros (silence)
+    
+    return buffer.toString('base64')
+  }
+
+  it("health endpoint responds when server is running", async () => {
+    const running = await isWhisperRunning()
+    if (!running) {
+      console.log("  [SKIP] Whisper server not running on localhost:8787")
+      console.log("         Start with: cd ~/.config/opencode/whisper && python whisper_server.py")
+      return
+    }
+    
+    const response = await fetch(`${WHISPER_URL}/health`)
+    assert.ok(response.ok, "Health endpoint should return 200")
+    
+    const data = await response.json() as { status: string; model_loaded: boolean }
+    assert.strictEqual(data.status, "healthy", "Status should be healthy")
+    assert.ok("model_loaded" in data, "Should report model status")
+    console.log(`  [INFO] Whisper server healthy, model loaded: ${data.model_loaded}`)
+  })
+
+  it("models endpoint lists available models", async () => {
+    const running = await isWhisperRunning()
+    if (!running) {
+      console.log("  [SKIP] Whisper server not running")
+      return
+    }
+    
+    const response = await fetch(`${WHISPER_URL}/models`)
+    assert.ok(response.ok, "Models endpoint should return 200")
+    
+    const data = await response.json() as { models: string[]; default: string }
+    assert.ok(Array.isArray(data.models), "Should return array of models")
+    assert.ok(data.models.includes("base"), "Should include base model")
+    assert.ok(data.models.includes("tiny"), "Should include tiny model")
+  })
+
+  it("transcribe endpoint accepts audio and returns text", async () => {
+    const running = await isWhisperRunning()
+    if (!running) {
+      console.log("  [SKIP] Whisper server not running")
+      return
+    }
+    
+    // Use minimal silence audio - Whisper should return empty or minimal text
+    const testAudio = generateTestSilenceWav()
+    
+    const response = await fetch(`${WHISPER_URL}/transcribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        audio: testAudio,
+        format: "wav",
+        model: "base"  // Use base model for faster testing
+      }),
+      signal: AbortSignal.timeout(30000) // 30 second timeout for transcription
+    })
+    
+    assert.ok(response.ok, `Transcribe endpoint should return 200, got ${response.status}`)
+    
+    const data = await response.json() as { text: string; language: string; duration: number }
+    assert.ok("text" in data, "Response should include text field")
+    assert.ok("language" in data, "Response should include language field")
+    assert.ok("duration" in data, "Response should include duration field")
+    
+    console.log(`  [INFO] Transcription successful - text: "${data.text}", duration: ${data.duration}s`)
+  })
+
+  it("transcribe endpoint handles invalid audio gracefully", async () => {
+    const running = await isWhisperRunning()
+    if (!running) {
+      console.log("  [SKIP] Whisper server not running")
+      return
+    }
+    
+    // Send invalid base64 that decodes to garbage
+    const response = await fetch(`${WHISPER_URL}/transcribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        audio: Buffer.from("not valid audio data").toString("base64"),
+        format: "ogg"
+      }),
+      signal: AbortSignal.timeout(10000)
+    })
+    
+    // Server should return 500 for invalid audio, not crash
+    assert.ok(response.status === 500 || response.status === 400, 
+      `Should return error status for invalid audio, got ${response.status}`)
+  })
+
+  it("transcribe endpoint requires audio field", async () => {
+    const running = await isWhisperRunning()
+    if (!running) {
+      console.log("  [SKIP] Whisper server not running")
+      return
+    }
+    
+    const response = await fetch(`${WHISPER_URL}/transcribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    })
+    
+    assert.strictEqual(response.status, 400, "Should return 400 for missing audio")
+  })
+})
+
+describe("Whisper Dependencies - Availability Check", () => {
+  it("checks if faster-whisper can be imported", async () => {
+    try {
+      await execAsync('python3 -c "from faster_whisper import WhisperModel; print(\'ok\')"', { timeout: 10000 })
+      console.log("  [INFO] faster-whisper is installed and available")
+    } catch {
+      console.log("  [INFO] faster-whisper not installed")
+      console.log("         Install with: pip install faster-whisper")
+    }
+    // Test always passes - informational only
+    assert.ok(true)
+  })
+
+  it("checks if fastapi and uvicorn are available", async () => {
+    try {
+      await execAsync('python3 -c "from fastapi import FastAPI; import uvicorn; print(\'ok\')"', { timeout: 10000 })
+      console.log("  [INFO] FastAPI and uvicorn are installed")
+    } catch {
+      console.log("  [INFO] FastAPI/uvicorn not installed")
+      console.log("         Install with: pip install fastapi uvicorn")
+    }
+    assert.ok(true)
+  })
+
+  it("checks if ffmpeg is available for audio conversion", async () => {
+    try {
+      await execAsync("which ffmpeg")
+      console.log("  [INFO] ffmpeg is available for audio format conversion")
+    } catch {
+      console.log("  [INFO] ffmpeg not installed - audio conversion will be limited")
+      console.log("         Install with: brew install ffmpeg")
+    }
+    assert.ok(true)
+  })
+})
+
+// ==================== VOICE MESSAGE SUPPORT TESTS ====================
+
 describe("Telegram Voice Message Support - Structure Validation", () => {
   let ttsContent: string | null = null
   let webhookContent: string | null = null
