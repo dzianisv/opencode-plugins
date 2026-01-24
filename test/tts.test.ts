@@ -962,7 +962,7 @@ describe("Whisper Server - Integration Tests", () => {
     const running = await isWhisperRunning()
     if (!running) {
       console.log("  [SKIP] Whisper server not running on localhost:8787")
-      console.log("         Start with: cd ~/.config/opencode/whisper && python whisper_server.py")
+      console.log("         Start with: cd ~/.config/opencode/opencode-helpers/whisper && python whisper_server.py")
       return
     }
     

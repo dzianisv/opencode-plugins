@@ -99,9 +99,13 @@ interface TTSConfig {
   }
 }
 
+// ==================== HELPERS BASE DIRECTORY ====================
+
+const HELPERS_DIR = join(homedir(), ".config", "opencode", "opencode-helpers")
+
 // ==================== WHISPER STT ====================
 
-const WHISPER_DIR = join(homedir(), ".config", "opencode", "whisper")
+const WHISPER_DIR = join(HELPERS_DIR, "whisper")
 const WHISPER_VENV = join(WHISPER_DIR, "venv")
 const WHISPER_SERVER_SCRIPT = join(WHISPER_DIR, "whisper_server.py")
 const WHISPER_PID = join(WHISPER_DIR, "server.pid")
@@ -114,7 +118,7 @@ let whisperServerProcess: ReturnType<typeof spawn> | null = null
 
 // ==================== CHATTERBOX ====================
 
-const CHATTERBOX_DIR = join(homedir(), ".config", "opencode", "chatterbox")
+const CHATTERBOX_DIR = join(HELPERS_DIR, "chatterbox")
 const CHATTERBOX_VENV = join(CHATTERBOX_DIR, "venv")
 const CHATTERBOX_SCRIPT = join(CHATTERBOX_DIR, "tts.py")
 const CHATTERBOX_SERVER_SCRIPT = join(CHATTERBOX_DIR, "tts_server.py")
@@ -127,7 +131,7 @@ let chatterboxSetupAttempted = false
 
 // ==================== COQUI TTS ====================
 
-const COQUI_DIR = join(homedir(), ".config", "opencode", "coqui")
+const COQUI_DIR = join(HELPERS_DIR, "coqui")
 const COQUI_VENV = join(COQUI_DIR, "venv")
 const COQUI_SCRIPT = join(COQUI_DIR, "tts.py")
 const COQUI_SERVER_SCRIPT = join(COQUI_DIR, "tts_server.py")

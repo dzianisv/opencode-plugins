@@ -494,23 +494,24 @@ When using Coqui or Chatterbox with `serverMode: true` (default), the plugin run
 ```
 
 **Server files:**
-- Coqui: `~/.config/opencode/coqui/` (tts.sock, server.pid, server.lock, venv/)
-- Chatterbox: `~/.config/opencode/chatterbox/` (tts.sock, server.pid, server.lock, venv/)
+- Coqui: `~/.config/opencode/opencode-helpers/coqui/` (tts.sock, server.pid, server.lock, venv/)
+- Chatterbox: `~/.config/opencode/opencode-helpers/chatterbox/` (tts.sock, server.pid, server.lock, venv/)
+- Whisper: `~/.config/opencode/opencode-helpers/whisper/` (whisper_server.py, server.pid, venv/)
 - Speech lock: `~/.config/opencode/speech.lock`
 
 **Managing the server:**
 ```bash
 # Check if Coqui server is running
-ls -la ~/.config/opencode/coqui/tts.sock
+ls -la ~/.config/opencode/opencode-helpers/coqui/tts.sock
 
 # Stop the Coqui server manually
-kill $(cat ~/.config/opencode/coqui/server.pid)
+kill $(cat ~/.config/opencode/opencode-helpers/coqui/server.pid)
 
 # Check if Chatterbox server is running
-ls -la ~/.config/opencode/chatterbox/tts.sock
+ls -la ~/.config/opencode/opencode-helpers/chatterbox/tts.sock
 
 # Stop the Chatterbox server manually
-kill $(cat ~/.config/opencode/chatterbox/server.pid)
+kill $(cat ~/.config/opencode/opencode-helpers/chatterbox/server.pid)
 
 # Server restarts automatically on next TTS request
 ```
