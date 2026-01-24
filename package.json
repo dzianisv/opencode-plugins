@@ -22,6 +22,9 @@
   ],
   "author": "",
   "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.0"
+  },
   "devDependencies": {
     "@opencode-ai/plugin": "latest",
     "@opencode-ai/sdk": "latest",

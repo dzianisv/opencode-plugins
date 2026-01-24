@@ -265,6 +265,198 @@ Create/edit `~/.config/opencode/tts.json`:
 /tts off    Disable TTS
 ```
 
+### Telegram Notifications
+
+Get notified on Telegram when OpenCode tasks complete - includes text summaries and optional voice messages.
+
+#### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  SUPABASE (Backend)                                             │
+│  - PostgreSQL: telegram_subscribers table (uuid → chat_id)      │
+│  - Edge Function: /telegram-webhook (handles /start, /stop)     │
+│  - Edge Function: /send-notify (receives notifications)         │
+└─────────────────────────────────────────────────────────────────┘
+                              ↑
+                              │ HTTPS POST
+                              │
+┌─────────────────────────────────────────────────────────────────┐
+│  OpenCode TTS Plugin (tts.ts)                                   │
+│  - On task complete: generates TTS audio locally                │
+│  - Converts WAV → OGG (ffmpeg)                                  │
+│  - Sends text + voice_base64 to Supabase Edge Function          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Design principles:**
+- **Privacy-first**: Your UUID is never linked to your identity - only to your Telegram chat ID
+- **Serverless**: Supabase Edge Functions scale automatically, no server to maintain
+- **Self-hostable**: All backend code is in `supabase/` directory - deploy to your own Supabase project
+
+#### Quick Setup (Using Existing Backend)
+
+1. **Generate your UUID:**
+   ```bash
+   uuidgen | tr '[:upper:]' '[:lower:]'
+   # Example output: a0dcb5d4-30c2-4dd0-bfbe-e569a42f47bb
+   ```
+
+2. **Subscribe via Telegram:**
+   - Open [@OpenCodeMgrBot](https://t.me/OpenCodeMgrBot)
+   - Send: `/start <your-uuid>`
+   - You'll receive a confirmation message
+
+3. **Configure TTS plugin** (`~/.config/opencode/tts.json`):
+   ```json
+   {
+     "enabled": true,
+     "engine": "coqui",
+     "telegram": {
+       "enabled": true,
+       "uuid": "<your-uuid>",
+       "sendText": true,
+       "sendVoice": true
+     }
+   }
+   ```
+
+4. **Restart OpenCode** - you'll now receive Telegram notifications when tasks complete
+
+#### Telegram Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start <uuid>` | Subscribe with your UUID |
+| `/stop` | Unsubscribe from notifications |
+| `/status` | Check subscription status |
+| `/help` | Show available commands |
+
+#### Telegram Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `telegram.enabled` | boolean | `false` | Enable Telegram notifications |
+| `telegram.uuid` | string | - | Your subscription UUID (required) |
+| `telegram.sendText` | boolean | `true` | Send text message summaries |
+| `telegram.sendVoice` | boolean | `true` | Send voice messages (requires ffmpeg) |
+| `telegram.serviceUrl` | string | (default) | Custom backend URL (for self-hosted) |
+
+**Environment variables** (override config):
+- `TELEGRAM_DISABLED=1` - Disable Telegram notifications
+
+#### Self-Hosting the Backend
+
+To deploy your own Telegram notification backend:
+
+**Prerequisites:**
+- [Supabase CLI](https://supabase.com/docs/guides/cli) installed
+- A Supabase project (free tier works fine)
+- A Telegram bot token from [@BotFather](https://t.me/BotFather)
+
+**1. Link to your Supabase project:**
+```bash
+cd opencode-reflection-plugin
+supabase link --project-ref <your-project-ref>
+```
+
+**2. Push the database migration:**
+```bash
+supabase db push
+```
+
+This creates the `telegram_subscribers` table:
+```sql
+CREATE TABLE telegram_subscribers (
+  uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  chat_id BIGINT NOT NULL UNIQUE,
+  username TEXT,
+  is_active BOOLEAN DEFAULT true,
+  notifications_sent INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+**3. Deploy edge functions:**
+```bash
+supabase functions deploy telegram-webhook
+supabase functions deploy send-notify
+```
+
+**4. Set secrets:**
+```bash
+supabase secrets set TELEGRAM_BOT_TOKEN=<your-bot-token>
+```
+
+**5. Configure Telegram webhook:**
+```bash
+curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<project-ref>.supabase.co/functions/v1/telegram-webhook"
+```
+
+**6. Update your TTS config to use your backend:**
+```json
+{
+  "telegram": {
+    "enabled": true,
+    "uuid": "<your-uuid>",
+    "serviceUrl": "https://<your-project-ref>.supabase.co/functions/v1/send-notify"
+  }
+}
+```
+
+#### Backend Files
+
+```
+supabase/
+├── migrations/
+│   └── 20240113000000_create_subscribers.sql  # Database schema
+└── functions/
+    ├── telegram-webhook/
+    │   └── index.ts                            # Handles /start, /stop, /status
+    └── send-notify/
+        └── index.ts                            # Receives notifications from plugin
+```
+
+#### How UUID Subscription Works
+
+```
+┌──────────────────┐                    ┌──────────────────┐
+│  User generates  │                    │  Telegram Bot    │
+│  UUID locally    │                    │  @OpenCodeMgrBot │
+└────────┬─────────┘                    └────────┬─────────┘
+         │                                       │
+         │ 1. User sends                         │
+         │    /start <uuid>                      │
+         │ ─────────────────────────────────────▶│
+         │                                       │
+         │                              2. Bot stores mapping:
+         │                                 uuid → chat_id
+         │                                       │
+         │ 3. User configures                    │
+         │    tts.json with uuid                 │
+         │                                       │
+         ▼                                       ▼
+┌──────────────────┐                    ┌──────────────────┐
+│  OpenCode        │                    │  Supabase DB     │
+│  sends notify    │───────────────────▶│  looks up        │
+│  with uuid       │                    │  chat_id by uuid │
+└──────────────────┘                    └────────┬─────────┘
+                                                 │
+                                                 ▼
+                                        ┌──────────────────┐
+                                        │  Telegram API    │
+                                        │  sends message   │
+                                        │  to chat_id      │
+                                        └──────────────────┘
+```
+
+**Security model:**
+- UUID is generated locally and never transmitted except when subscribing
+- Backend only stores UUID → chat_id mapping (no personal data)
+- Rate limiting: 10 requests/minute per UUID
+- You can unsubscribe anytime with `/stop`
+
 ### Available macOS Voices
 
 Run `say -v ?` to list all available voices. Popular choices:
@@ -302,23 +494,24 @@ When using Coqui or Chatterbox with `serverMode: true` (default), the plugin run
 ```
 
 **Server files:**
-- Coqui: `~/.config/opencode/coqui/` (tts.sock, server.pid, server.lock, venv/)
-- Chatterbox: `~/.config/opencode/chatterbox/` (tts.sock, server.pid, server.lock, venv/)
+- Coqui: `~/.config/opencode/opencode-helpers/coqui/` (tts.sock, server.pid, server.lock, venv/)
+- Chatterbox: `~/.config/opencode/opencode-helpers/chatterbox/` (tts.sock, server.pid, server.lock, venv/)
+- Whisper: `~/.config/opencode/opencode-helpers/whisper/` (whisper_server.py, server.pid, venv/)
 - Speech lock: `~/.config/opencode/speech.lock`
 
 **Managing the server:**
 ```bash
 # Check if Coqui server is running
-ls -la ~/.config/opencode/coqui/tts.sock
+ls -la ~/.config/opencode/opencode-helpers/coqui/tts.sock
 
 # Stop the Coqui server manually
-kill $(cat ~/.config/opencode/coqui/server.pid)
+kill $(cat ~/.config/opencode/opencode-helpers/coqui/server.pid)
 
 # Check if Chatterbox server is running
-ls -la ~/.config/opencode/chatterbox/tts.sock
+ls -la ~/.config/opencode/opencode-helpers/chatterbox/tts.sock
 
 # Stop the Chatterbox server manually
-kill $(cat ~/.config/opencode/chatterbox/server.pid)
+kill $(cat ~/.config/opencode/opencode-helpers/chatterbox/server.pid)
 
 # Server restarts automatically on next TTS request
 ```

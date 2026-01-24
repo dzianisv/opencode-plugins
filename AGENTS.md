@@ -62,7 +62,7 @@ Edit `~/.config/opencode/tts.json`:
 ```
 
 ### Chatterbox Server Files
-Located in `~/.config/opencode/chatterbox/`:
+Located in `~/.config/opencode/opencode-helpers/chatterbox/`:
 - `tts.py` - One-shot TTS script
 - `tts_server.py` - Persistent server script
 - `tts.sock` - Unix socket for IPC
@@ -79,13 +79,13 @@ npm run test:tts:manual # Actually speaks test phrases
 ### Debugging
 ```bash
 # Check if Chatterbox server is running
-ls -la ~/.config/opencode/chatterbox/tts.sock
+ls -la ~/.config/opencode/opencode-helpers/chatterbox/tts.sock
 
 # Check server PID
-cat ~/.config/opencode/chatterbox/server.pid
+cat ~/.config/opencode/opencode-helpers/chatterbox/server.pid
 
 # Stop server manually
-kill $(cat ~/.config/opencode/chatterbox/server.pid)
+kill $(cat ~/.config/opencode/opencode-helpers/chatterbox/server.pid)
 
 # Check server logs (stderr)
 # Server automatically restarts on next TTS request

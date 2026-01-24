@@ -89,7 +89,7 @@ Ensures multiple OpenCode sessions speak one at a time in FIFO order.
 
 Single persistent process that keeps the TTS model loaded for fast inference.
 
-**Location:** `~/.config/opencode/coqui/`
+**Location:** `~/.config/opencode/opencode-helpers/coqui/`
 
 **Files:**
 - `tts_server.py` - Server script
@@ -175,10 +175,10 @@ Response (JSON):
 ps aux | grep tts_server
 
 # Check server PID
-cat ~/.config/opencode/coqui/server.pid
+cat ~/.config/opencode/opencode-helpers/coqui/server.pid
 
 # Stop server
-kill $(cat ~/.config/opencode/coqui/server.pid)
+kill $(cat ~/.config/opencode/opencode-helpers/coqui/server.pid)
 
 # Server auto-restarts on next TTS request
 
@@ -187,7 +187,7 @@ tail -f /tmp/tts_server.log
 
 # Test server directly
 echo '{"text": "Hello", "output": "/tmp/test.wav"}' | \
-  nc -U ~/.config/opencode/coqui/tts.sock && \
+  nc -U ~/.config/opencode/opencode-helpers/coqui/tts.sock && \
   afplay /tmp/test.wav
 ```
 
