@@ -2,13 +2,11 @@
  * Tests for OpenCode Reflection Plugin
  */
 
-import { describe, it, before } from "node:test"
-import assert from "node:assert"
+import assert from "assert"
 import { readFile } from "fs/promises"
-import { join, dirname } from "path"
-import { fileURLToPath } from "url"
+import { join, dirname, resolve } from "path"
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
+const testDir = resolve()
 
 describe("Reflection Plugin - Unit Tests", () => {
   it("parseJudgeResponse extracts PASS verdict", () => {
@@ -73,7 +71,7 @@ describe("Reflection Plugin - Unit Tests", () => {
 describe("Reflection Plugin - Structure Validation", () => {
   let pluginContent: string
 
-  before(async () => {
+  beforeAll(async () => {
     pluginContent = await readFile(
       join(__dirname, "../reflection.ts"),
       "utf-8"
@@ -121,7 +119,7 @@ describe("Reflection Plugin - Structure Validation", () => {
 describe("Reflection Plugin - Enhanced Prompt Features", () => {
   let pluginContent: string
 
-  before(async () => {
+  beforeAll(async () => {
     pluginContent = await readFile(
       join(__dirname, "../reflection.ts"),
       "utf-8"

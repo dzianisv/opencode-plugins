@@ -4,3 +4,13 @@ node_modules/
 *.log
 .DS_Store
 .env
+
+# Build artifacts
+*.js
+!jest.config.js
+*.js.map
+*.d.ts
+
+# Test artifacts
+fixtures/
+test/mocks/

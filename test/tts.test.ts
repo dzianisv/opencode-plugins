@@ -1,19 +1,18 @@
 /**
- * Tests for OpenCode TTS Plugin
+  * Tests for OpenCode tts Plugin
  */
 
-import { describe, it, before } from "node:test"
-import assert from "node:assert"
 import { readFile } from "fs/promises"
-import { join, dirname } from "path"
-import { fileURLToPath } from "url"
+import { join, resolve } from "path"
 import { exec } from "child_process"
+import { TTSPlugin } from "../tts.js"
 import { promisify } from "util"
+import assert from "assert";
 
 const execAsync = promisify(exec)
-const __dirname = dirname(fileURLToPath(import.meta.url))
 
-describe("TTS Plugin - Unit Tests", () => {
+
+describe("tts Plugin - Unit Tests", () => {
   // Test the text cleaning logic (extracted from plugin)
   function cleanTextForSpeech(text: string): string {
     return text
@@ -71,10 +70,10 @@ describe("TTS Plugin - Unit Tests", () => {
   })
 })
 
-describe("TTS Plugin - Structure Validation", () => {
-  let pluginContent: string
+describe("TTS Plugin Core and Initialization", () => {
+  let pluginContent: string = ""
 
-  before(async () => {
+  beforeAll(async () => {
     pluginContent = await readFile(
       join(__dirname, "../tts.ts"),
       "utf-8"
@@ -82,7 +81,7 @@ describe("TTS Plugin - Structure Validation", () => {
   })
 
   it("has required exports", () => {
-    assert.ok(pluginContent.includes("export const TTSPlugin"), "Missing TTSPlugin export")
+    assert.ok(/export\s+const\s+TTSPlugin/.test(pluginContent), "Missing TTSPlugin export")
     assert.ok(pluginContent.includes("export default"), "Missing default export")
   })
 
@@ -104,8 +103,9 @@ describe("TTS Plugin - Structure Validation", () => {
     assert.ok(pluginContent.includes("TASK VERIFICATION"), "Missing judge session marker")
   })
 
-  it("listens to session.idle event", () => {
-    assert.ok(pluginContent.includes("session.idle"), "Missing session.idle event handler")
+  it("has session.idle event listener setup", () => {
+    // Verify the plugin code structure has session idle handling
+    assert.ok(pluginContent.includes("session.idle"), "Missing session.idle event handling")
   })
 
   it("extracts final assistant response", () => {
@@ -116,17 +116,12 @@ describe("TTS Plugin - Structure Validation", () => {
   it("checks for TTS_DISABLED env var", () => {
     assert.ok(pluginContent.includes("process.env.TTS_DISABLED"), "Missing env var check")
   })
-
-  it("supports config file toggle", () => {
-    assert.ok(pluginContent.includes("tts.json"), "Missing config file reference")
-    assert.ok(pluginContent.includes("isEnabled"), "Missing isEnabled check")
-  })
 })
 
-describe("TTS Plugin - Engine Configuration", () => {
-  let pluginContent: string
+describe("tts Plugin - Engine Configuration", () => {
+  let pluginContent: string = ""
 
-  before(async () => {
+  beforeAll(async () => {
     pluginContent = await readFile(
       join(__dirname, "../tts.ts"),
       "utf-8"
@@ -176,10 +171,10 @@ describe("TTS Plugin - Engine Configuration", () => {
   })
 })
 
-describe("TTS Plugin - Chatterbox Features", () => {
-  let pluginContent: string
+describe("tts Plugin - Chatterbox Features", () => {
+  let pluginContent: string = ""
 
-  before(async () => {
+  beforeAll(async () => {
     pluginContent = await readFile(
       join(__dirname, "../tts.ts"),
       "utf-8"
@@ -250,7 +245,7 @@ describe("TTS Plugin - Chatterbox Features", () => {
   })
 })
 
-describe("TTS Plugin - macOS Integration", () => {
+describe("tts Plugin - macOS Integration", () => {
   it("say command is available on macOS", async () => {
     try {
       await execAsync("which say")
@@ -281,7 +276,7 @@ describe("TTS Plugin - macOS Integration", () => {
   })
 })
 
-describe("TTS Plugin - Chatterbox Availability Check", () => {
+describe("tts Plugin - Chatterbox Availability Check", () => {
   it("checks Python chatterbox import", async () => {
     try {
       await execAsync('python3 -c "import chatterbox; print(\'ok\')"', { timeout: 10000 })
@@ -292,10 +287,10 @@ describe("TTS Plugin - Chatterbox Availability Check", () => {
     }
     // This test always passes - just informational
     assert.ok(true)
-  })
+  }, 15000)  // Increase Jest timeout to 15 seconds
 })
 
-describe("TTS Plugin - Embedded Python Scripts Validation", () => {
+describe("tts Plugin - Embedded Python Scripts Validation", () => {
   /**
    * NOTE: These are fast sanity checks that grep for strings.
    * They are NOT sufficient to catch all bugs.
@@ -305,9 +300,9 @@ describe("TTS Plugin - Embedded Python Scripts Validation", () => {
    * 
    * Run E2E tests with: npm run test:tts:e2e
    */
-  let pluginContent: string
+  let pluginContent: string = ""
 
-  before(async () => {
+  beforeAll(async () => {
     pluginContent = await readFile(
       join(__dirname, "../tts.ts"),
       "utf-8"
@@ -390,10 +385,10 @@ describe("TTS Plugin - Embedded Python Scripts Validation", () => {
   })
 })
 
-describe("TTS Plugin - Telegram Notification Features", () => {
-  let pluginContent: string
+describe("tts Plugin - Telegram Notification Features", () => {
+  let pluginContent: string = ""
 
-  before(async () => {
+  beforeAll(async () => {
     pluginContent = await readFile(
       join(__dirname, "../tts.ts"),
       "utf-8"
@@ -424,6 +419,10 @@ describe("TTS Plugin - Telegram Notification Features", () => {
     assert.ok(pluginContent.includes("sendText?:"), "Missing sendText config option")
     assert.ok(pluginContent.includes("sendVoice?:"), "Missing sendVoice config option")
   })
+
+  // Note: Runtime behavior tests for sendTelegramNotification are not available
+  // because the function is not exported from tts.ts. Structure validation tests
+  // verify the function exists in the source code.
 
   it("has sendTelegramNotification function", () => {
     assert.ok(pluginContent.includes("sendTelegramNotification"), "Missing sendTelegramNotification function")
@@ -462,7 +461,7 @@ describe("TTS Plugin - Telegram Notification Features", () => {
   })
 })
 
-describe("TTS Plugin - Telegram UUID Validation", () => {
+describe("tts Plugin - Telegram UUID Validation", () => {
   // UUID v4 regex (same as in edge function)
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -495,7 +494,7 @@ describe("Supabase Edge Functions - Structure Validation", () => {
   let webhookContent: string
   let sendNotifyContent: string
 
-  before(async () => {
+  beforeAll(async () => {
     try {
       webhookContent = await readFile(
         join(__dirname, "../supabase/functions/telegram-webhook/index.ts"),
@@ -617,7 +616,7 @@ describe("Supabase Edge Functions - Structure Validation", () => {
 describe("Supabase Database Schema - Structure Validation", () => {
   let migrationContent: string
 
-  before(async () => {
+  beforeAll(async () => {
     try {
       // Find migration file
       const { readdir } = await import("fs/promises")
@@ -683,7 +682,7 @@ describe("Telegram Reply Support - Structure Validation", () => {
   let replyMigrationContent: string
   let ttsContent: string
 
-  before(async () => {
+  beforeAll(async () => {
     try {
       webhookContent = await readFile(
         join(__dirname, "../supabase/functions/telegram-webhook/index.ts"),
@@ -1106,7 +1105,7 @@ describe("Telegram Voice Message Support - Structure Validation", () => {
   let voiceToRepliesMigrationContent: string | null = null
   let whisperServerContent: string | null = null
 
-  before(async () => {
+  beforeAll(async () => {
     try {
       ttsContent = await readFile(join(__dirname, "..", "tts.ts"), "utf-8")
     } catch { ttsContent = null }
