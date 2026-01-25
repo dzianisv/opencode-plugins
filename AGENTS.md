@@ -2,6 +2,7 @@
 
 ## Skills
 
+- **[Feature Development Workflow](skills/feature-workflow/SKILL.md)** - 11-step process for developing features (plan, issue, branch, test, PR, CI)
 - **[Readiness Check Playbook](skills/readiness-check/SKILL.md)** - Verify all plugin services are healthy (Whisper, TTS, Supabase, Telegram)
 - **[Plugin Testing Checklist](skills/plugin-testing/SKILL.md)** - Verify plugin spec requirements with actionable test cases
 
