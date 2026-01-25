@@ -22,6 +22,7 @@ This plugin adds a **judge layer** that automatically evaluates task completion 
 |--------|-------------|
 | **reflection.ts** | Judge layer that verifies task completion and forces agent to continue if incomplete |
 | **tts.ts** | Text-to-speech + Telegram notifications with two-way communication |
+| **worktree-status.ts** | Git worktree status tool for checking dirty state, branch, and active sessions |
 
 ### Key Features
 
@@ -39,7 +40,11 @@ mkdir -p ~/.config/opencode/plugin && \
 curl -fsSL -o ~/.config/opencode/plugin/reflection.ts \
   https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts && \
 curl -fsSL -o ~/.config/opencode/plugin/tts.ts \
-  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/tts.ts
+  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/tts.ts && \
+curl -fsSL -o ~/.config/opencode/plugin/telegram.ts \
+  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/telegram.ts && \
+curl -fsSL -o ~/.config/opencode/plugin/worktree-status.ts \
+  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/worktree-status.ts
 
 # Install required dependencies
 cat > ~/.config/opencode/package.json << 'EOF'
@@ -65,25 +70,26 @@ Then restart OpenCode.
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────────┐   │
-│  │  reflection.ts   │    │     tts.ts       │    │   Supabase Backend   │   │
+│  │  reflection.ts   │    │     tts.ts       │    │  worktree-status.ts  │   │
 │  │                  │    │                  │    │                      │   │
-│  │ • Judge layer    │    │ • Local TTS      │◄──►│ • Edge Functions     │   │
-│  │ • Task verify    │    │ • Telegram notif │    │ • PostgreSQL + RLS   │   │
-│  │ • Auto-continue  │    │ • Voice replies  │    │ • Realtime subscr.   │   │
-│  └──────────────────┘    │ • Whisper STT    │    └──────────────────────┘   │
-│                          └──────────────────┘                                │
+│  │ • Judge layer    │    │ • Local TTS      │    │ • Git dirty check    │   │
+│  │ • Task verify    │    │ • Whisper STT    │    │ • Branch status      │   │
+│  │ • Auto-continue  │    │ • Telegram notif │    │ • Active sessions    │   │
+│  └──────────────────┘    └────────┬─────────┘    └──────────────────────┘   │
 │                                   │                                          │
-│                    ┌──────────────┴──────────────┐                          │
-│                    ▼                              ▼                          │
-│           ┌──────────────┐              ┌──────────────┐                    │
-│           │ TTS Engines  │              │ Telegram Bot │                    │
-│           │              │              │              │                    │
-│           │ • Coqui XTTS │              │ • Outbound   │                    │
-│           │ • Chatterbox │              │ • Text reply │                    │
-│           │ • macOS say  │              │ • Voice msg  │                    │
-│           └──────────────┘              └──────────────┘                    │
+│                    ┌──────────────┼──────────────┐                          │
+│                    ▼              ▼              ▼                          │
+│           ┌──────────────┐ ┌────────────┐ ┌──────────────────────┐          │
+│           │ TTS Engines  │ │telegram.ts │ │   Supabase Backend   │          │
+│           │              │ │  (helper)  │ │                      │          │
+│           │ • Coqui XTTS │ │            │ │ • Edge Functions     │          │
+│           │ • Chatterbox │ │ • Notifier │ │ • PostgreSQL + RLS   │          │
+│           │ • macOS say  │ │ • Supabase │ │ • Realtime subscr.   │          │
+│           └──────────────┘ └────────────┘ └──────────────────────┘          │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Note:** `telegram.ts` is a helper module (not a standalone plugin) that provides Telegram notification functions used by `tts.ts`.
 
 ---
 
@@ -383,8 +389,10 @@ Auto-started on first voice message:
 ├── opencode.json             # OpenCode config
 ├── tts.json                  # TTS + Telegram config
 ├── plugin/
-│   ├── reflection.ts         # Reflection plugin
-│   └── tts.ts                # TTS plugin
+│   ├── reflection.ts         # Reflection plugin (judge layer)
+│   ├── tts.ts                # TTS plugin (speech + Telegram)
+│   ├── telegram.ts           # Telegram helper module (used by tts.ts)
+│   └── worktree-status.ts    # Git worktree status tool
 ├── node_modules/             # Dependencies (@supabase/supabase-js)
 └── opencode-helpers/
     ├── coqui/                # Coqui TTS server
