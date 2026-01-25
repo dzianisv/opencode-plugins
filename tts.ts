@@ -2252,7 +2252,19 @@ async function unsubscribeFromReplies(): Promise<void> {
 
 // ==================== PLUGIN ====================
 
-export const TTSPlugin: Plugin = async ({ client, directory }) => {
+export const TTSPlugin: Plugin = ({ client, directory }) => {
+  // Tool definition required by Plugin interface
+  const tool = {
+    tts: {
+      name: 'tts',
+      description: 'Text-to-speech functionality for OpenCode sessions',
+      execute: async ({ client, params }: { client: any; params: any }) => {
+        // TTS is triggered via session.idle events, not direct tool invocation
+        return 'TTS plugin active - speech triggered on session completion'
+      },
+    },
+  }
+
   // Directory for storing TTS output data
   const ttsDir = join(directory, ".tts")
 
@@ -2435,6 +2447,7 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
   })()
 
   return {
+    tool,
     event: async ({ event }) => {
       if (event.type === "session.idle") {
         const sessionId = (event as any).properties?.sessionID
