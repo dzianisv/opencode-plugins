@@ -382,7 +382,9 @@ Notification sent:               Notification sent:
 ## Deployment Checklist
 
 - [ ] Apply database migrations: `supabase db push`
-- [ ] Deploy Edge Functions: `supabase functions deploy`
+- [ ] Deploy Edge Functions:
+  - `supabase functions deploy telegram-webhook --no-verify-jwt` (IMPORTANT: must disable JWT for Telegram)
+  - `supabase functions deploy send-notify`
 - [ ] Set Telegram webhook URL to Edge Function
 - [ ] Configure `tts.json` with UUID
 - [ ] Copy plugin to `~/.config/opencode/plugin/`
