@@ -10,6 +10,6 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["node", "jest", "bun"]
   },
-  "include": ["*.ts", "test/**/*.ts", "@types/**/*"],
+  "include": ["*.ts", "test/**/*.ts"],
   "exclude": ["node_modules"]
 }

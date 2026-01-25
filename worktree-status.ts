@@ -1,16 +1,15 @@
 import type { Plugin } from "@opencode-ai/plugin";
-import { tool } from "@opencode-ai/plugin";
 import { spawnSync } from "child_process";
 
-export const WorktreeStatusPlugin: Plugin = (ctx) => {
+export const WorktreeStatusPlugin: Plugin = async (ctx) => {
   const { directory, client } = ctx;
 
   return {
     tool: {
-      worktree_status: tool({
+      worktree_status: {
+        name: "worktree_status",
         description:
           "Check the current worktree state: dirty, busy, branch status, and active sessions.",
-        args: {},
         async execute() {
           // Check if the worktree is dirty using git status
           const gitStatus = spawnSync("git", ["status", "--porcelain"], {
@@ -31,12 +30,12 @@ export const WorktreeStatusPlugin: Plugin = (ctx) => {
           return JSON.stringify({
             dirty: (gitStatus.stdout || "").trim().length > 0,
             busy: (sessionsResult.data || []).filter(
-              (s) => s.directory === directory
+              (s: any) => s.directory === directory
             ).length > 1,
             currentBranch: (branchResult.stdout || "").trim(),
           });
         },
-      }),
+      },
     },
   };
 };
