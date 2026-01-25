@@ -44,7 +44,7 @@ jobs:
 
       - name: Deploy (push event)
         if: github.event_name == 'push'
-        run: ./scripts/deploy-supabase.sh all
+        run: ./scripts/deploy-supabase.sh functions
 
       - name: Deploy (manual trigger)
         if: github.event_name == 'workflow_dispatch'

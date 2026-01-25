@@ -95,15 +95,23 @@ deploy_functions() {
 run_migrations() {
     log_info "Running database migrations..."
     
-    # Check if DB password is set for CI
-    if [[ -n "${CI:-}" ]] && [[ -z "${SUPABASE_DB_PASSWORD:-}" ]]; then
-        log_warn "SUPABASE_DB_PASSWORD not set, skipping migrations in CI"
-        log_warn "Migrations should be run manually or via Supabase dashboard"
-        return 0
+    # In CI, we need to link the project first (db push doesn't accept --project-ref)
+    if [[ -n "${CI:-}" ]]; then
+        if [[ -z "${SUPABASE_DB_PASSWORD:-}" ]]; then
+            log_warn "SUPABASE_DB_PASSWORD not set, skipping migrations in CI"
+            log_warn "Migrations should be run manually or via Supabase dashboard"
+            return 0
+        fi
+        
+        log_info "Linking project in CI..."
+        if ! supabase link --project-ref "$PROJECT_REF"; then
+            log_error "Failed to link project"
+            exit 1
+        fi
     fi
     
     # Push migrations to remote database
-    if supabase db push --project-ref "$PROJECT_REF"; then
+    if supabase db push --password "${SUPABASE_DB_PASSWORD:-}"; then
         log_info "Migrations applied successfully"
     else
         log_error "Failed to apply migrations"
