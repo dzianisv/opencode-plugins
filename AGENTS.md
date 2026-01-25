@@ -1,9 +1,20 @@
 # OpenCode Plugins - Development Guidelines
 
+## Skills
+
+- **[Readiness Check Playbook](skills/readiness-check/SKILL.md)** - Verify all plugin services are healthy (Whisper, TTS, Supabase, Telegram)
+- **[Plugin Testing Checklist](skills/plugin-testing/SKILL.md)** - Verify plugin spec requirements with actionable test cases
+
 ## Available Plugins
 
 1. **reflection.ts** - Judge layer that evaluates task completion and provides feedback
 2. **tts.ts** - Text-to-speech that reads agent responses aloud (macOS)
+
+## IMPORTANT: OpenCode CLI Only
+
+**These plugins ONLY work with the OpenCode CLI (`opencode` command), NOT with VS Code's GitHub Copilot extension!**
+
+If you're using VS Code's Copilot Chat or another IDE integration, the reflection plugin won't trigger.
 
 ## CRITICAL: Plugin Installation Location
 
@@ -22,6 +33,69 @@ cp /Users/engineer/workspace/opencode-reflection-plugin/tts.ts ~/.config/opencod
 ```
 
 The npm global install (`npm install -g`) is NOT used by OpenCode - it reads directly from the config directory.
+
+## CRITICAL: Plugin Dependencies
+
+**Local plugins can use external npm packages by adding them to `~/.config/opencode/package.json`.**
+
+OpenCode runs `bun install` at startup to install dependencies listed there. The `node_modules` are placed in `~/.config/opencode/node_modules/`.
+
+If you see errors like:
+```
+Cannot find module '@supabase/supabase-js'
+```
+
+Fix by adding the dependency to the config directory's package.json:
+
+```bash
+# Check current dependencies
+cat ~/.config/opencode/package.json
+
+# Add the required dependency (edit the file or use jq):
+# Example package.json:
+{
+  "dependencies": {
+    "@opencode-ai/plugin": "1.1.36",
+    "@supabase/supabase-js": "^2.49.0"
+  }
+}
+
+# Run bun install in the config directory
+cd ~/.config/opencode && bun install
+```
+
+**When adding new dependencies to plugins:**
+1. Add to `~/.config/opencode/package.json` (deployed config directory)
+2. Run `bun install` in `~/.config/opencode/`
+3. Restart OpenCode (or it will auto-install on next startup)
+
+**Note:** Do NOT put package.json inside `~/.config/opencode/plugin/` - dependencies must be at the config root level.
+
+## Reflection Plugin Debugging
+
+### Enable Debug Logging
+To diagnose why reflection isn't triggering, enable debug mode:
+
+```bash
+REFLECTION_DEBUG=1 opencode
+```
+
+This will print debug logs to stderr showing:
+- When `session.idle` events are received
+- Why sessions are skipped (aborted, judge session, etc.)
+- Whether task/result extraction succeeded
+- Judge verdict details
+
+### Common Skip Reasons
+1. **Session aborted**: User pressed Esc to cancel
+2. **Judge session**: Plugin's own evaluation session (ignored)
+3. **Empty messages**: Session has < 2 messages
+4. **Already reflected**: Same task already evaluated
+5. **Max attempts**: Already tried 3 times
+6. **Extract failed**: No task text or result text found
+
+### Reflection Data Location
+Reflection verdicts are saved to `<workspace>/.reflection/` directory as JSON files.
 
 ## TTS Plugin (`tts.ts`)
 

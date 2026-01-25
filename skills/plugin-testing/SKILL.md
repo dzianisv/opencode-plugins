@@ -1,4 +1,14 @@
-# OpenCode Plugins - Testing Guide
+---
+name: plugin-testing
+description: Verify plugin spec requirements with actionable test cases. Use when testing reflection or TTS plugins, validating code changes, or running the test suite before deployment.
+metadata:
+  author: opencode-reflection-plugin
+  version: "1.0"
+---
+
+# Plugin Testing Checklist
+
+Verify plugin spec requirements with actionable test cases for the reflection and TTS plugins.
 
 ## Plugin Specifications
 
@@ -203,39 +213,6 @@ cat .reflection/*.json | head -50
 ls -la .tts/
 cat .tts/*.json | head -50
 ```
-
----
-
-## Test Results
-
-| Date | Tester | Tests Run | Pass | Fail | Notes |
-|------|--------|-----------|------|------|-------|
-| 2026-01-11 | Claude | Unit: 58, E2E: 4 | 62 | 0 | All tests pass |
-
-### Latest Test Run Details
-
-**Unit Tests (58 tests)**
-- Reflection Plugin - Unit Tests: 6 tests
-- Reflection Plugin - Structure Validation: 7 tests
-- TTS Plugin - Unit Tests: 6 tests
-- TTS Plugin - Structure Validation: 9 tests
-- TTS Plugin - Engine Configuration: 8 tests
-- TTS Plugin - Chatterbox Features: 12 tests
-- TTS Plugin - macOS Integration: 3 tests
-- TTS Plugin - Chatterbox Availability Check: 1 test
-- TTS Plugin - Embedded Python Scripts Validation: 6 tests
-
-**E2E Tests (4 tests)**
-- Python: creates hello.py with tests, reflection evaluates ✓
-- Node.js: creates hello.js with tests, reflection evaluates ✓
-- Reflection plugin ran and evaluated tasks ✓
-- Files are valid and runnable ✓
-
-**E2E Evidence:**
-- Python `.reflection/` files: 1
-- Node `.reflection/` files: 1
-- Tasks produced files: true
-- Reflection evidence found: true
 
 ---
 

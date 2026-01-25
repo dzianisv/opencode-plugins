@@ -2,7 +2,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { spawnSync } from "child_process";
 
-export const WorktreeStatusPlugin: Plugin = async (ctx) => {
+export const WorktreeStatusPlugin: Plugin = (ctx) => {
   const { directory, client } = ctx;
 
   return {
