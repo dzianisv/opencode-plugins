@@ -380,7 +380,8 @@ CREATE TABLE telegram_subscribers (
 
 **3. Deploy edge functions:**
 ```bash
-supabase functions deploy telegram-webhook
+# IMPORTANT: telegram-webhook must use --no-verify-jwt so Telegram can call it
+supabase functions deploy telegram-webhook --no-verify-jwt
 supabase functions deploy send-notify
 ```
 
