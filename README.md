@@ -1,6 +1,6 @@
 # OpenCode Plugins
 
-[![Tests](https://github.com/dzianisv/opencode-reflection-plugin/actions/workflows/test.yml/badge.svg)](https://github.com/dzianisv/opencode-reflection-plugin/actions/workflows/test.yml)
+[![Tests](https://github.com/dzianisv/opencode-plugins/actions/workflows/test.yml/badge.svg)](https://github.com/dzianisv/opencode-plugins/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![OpenCode](https://img.shields.io/badge/OpenCode-v1.0+-blue.svg)](https://github.com/sst/opencode)
 
@@ -38,13 +38,13 @@ This plugin adds a **judge layer** that automatically evaluates task completion 
 # Install plugins
 mkdir -p ~/.config/opencode/plugin && \
 curl -fsSL -o ~/.config/opencode/plugin/reflection.ts \
-  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/reflection.ts && \
+  https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/reflection.ts && \
 curl -fsSL -o ~/.config/opencode/plugin/tts.ts \
-  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/tts.ts && \
+  https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/tts.ts && \
 curl -fsSL -o ~/.config/opencode/plugin/telegram.ts \
-  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/telegram.ts && \
+  https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/telegram.ts && \
 curl -fsSL -o ~/.config/opencode/plugin/worktree-status.ts \
-  https://raw.githubusercontent.com/dzianisv/opencode-reflection-plugin/main/worktree-status.ts
+  https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/worktree-status.ts
 
 # Install required dependencies
 cat > ~/.config/opencode/package.json << 'EOF'
@@ -415,8 +415,8 @@ Auto-started on first voice message:
 
 ```bash
 # Clone
-git clone https://github.com/dzianisv/opencode-reflection-plugin
-cd opencode-reflection-plugin
+git clone https://github.com/dzianisv/opencode-plugins
+cd opencode-plugins
 
 # Install dependencies
 npm install
