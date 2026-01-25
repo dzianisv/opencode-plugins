@@ -231,12 +231,8 @@ Deno.serve(async (req) => {
         return new Response('OK')
       }
 
-      // Confirm to user
-      await sendTelegramMessage(chatId,
-        `🎤 *Voice message received*\n\n` +
-        `Your ${duration}s ${fileType === 'video_note' ? 'video' : 'voice'} message will be transcribed and sent to OpenCode.\n\n` +
-        `_Processing may take a few seconds..._`
-      )
+      // Confirm to user (simple emoji - processing happens in background)
+      await sendTelegramMessage(chatId, `🎤`)
 
       return new Response('OK')
     }
@@ -473,11 +469,8 @@ Deno.serve(async (req) => {
       return new Response('OK')
     }
 
-    // Confirm to user that reply was sent
-    await sendTelegramMessage(chatId,
-      `✓ *Reply sent to OpenCode*\n\n` +
-      `Your message has been forwarded to the active session.`
-    )
+    // Confirm to user that reply was sent (simple emoji acknowledgment)
+    await sendTelegramMessage(chatId, `✅`)
 
     return new Response('OK')
   } catch (error) {

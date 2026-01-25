@@ -1,0 +1,55 @@
+name: Deploy Supabase
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'supabase/**'
+      - '.github/workflows/deploy-supabase.yml'
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: 'What to deploy'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - functions
+          - migrations
+
+jobs:
+  deploy:
+    name: Deploy to Supabase
+    runs-on: ubuntu-latest
+    
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF || 'slqxwymujuoipyiqscrl' }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Verify Supabase CLI
+        run: supabase --version
+
+      - name: Deploy (push event)
+        if: github.event_name == 'push'
+        run: ./scripts/deploy-supabase.sh all
+
+      - name: Deploy (manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        run: ./scripts/deploy-supabase.sh ${{ inputs.deploy_target }}
+
+      - name: List deployed functions
+        run: |
+          supabase functions list --project-ref "$SUPABASE_PROJECT_REF"

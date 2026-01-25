@@ -1947,6 +1947,8 @@ const DEFAULT_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3Mi
 // Global subscription state
 let replySubscription: any = null
 let supabaseClient: any = null
+// Track processed reply IDs to prevent duplicate processing across multiple instances
+const processedReplyIds = new Set<string>()
 
 interface TelegramReply {
   id: string
@@ -2065,10 +2067,29 @@ async function subscribeToReplies(
         async (payload: { new: TelegramReply }) => {
           const reply = payload.new
           
+          // Deduplication: skip if we've already processed this reply ID
+          if (processedReplyIds.has(reply.id)) {
+            await debugLog(`Reply ${reply.id.slice(0, 8)}... already processed locally, skipping duplicate`)
+            return
+          }
+          processedReplyIds.add(reply.id)
+          
+          // Limit set size to prevent memory leaks (keep last 100 IDs)
+          if (processedReplyIds.size > 100) {
+            const firstId = processedReplyIds.values().next().value
+            if (firstId) processedReplyIds.delete(firstId)
+          }
+          
           if (reply.processed) {
             await debugLog('Reply already processed, skipping')
             return
           }
+          
+          // CRITICAL: Mark as processed in database IMMEDIATELY to prevent race conditions
+          // between multiple OpenCode instances. This must happen BEFORE any processing
+          // (transcription, forwarding, etc.) to ensure only one instance handles the reply.
+          await markReplyProcessed(reply.id)
+          await debugLog(`Marked reply ${reply.id.slice(0, 8)}... as processed in database`)
           
           try {
             let messageText: string
@@ -2096,8 +2117,7 @@ async function subscribeToReplies(
                   }
                 })
                 
-                // Mark as processed even though it failed (to avoid retry loops)
-                await markReplyProcessed(reply.id)
+                // Already marked as processed at start of handler
                 return
               }
               
@@ -2109,7 +2129,7 @@ async function subscribeToReplies(
               messageText = reply.reply_text
             } else {
               await debugLog('Reply has no text and is not a voice message, skipping')
-              await markReplyProcessed(reply.id)
+              // Already marked as processed at start of handler
               return
             }
             
@@ -2129,17 +2149,15 @@ async function subscribeToReplies(
             
             await debugLog('Reply forwarded successfully')
             
-            // Mark as processed
-            await markReplyProcessed(reply.id)
-            
-            // Show toast notification
+            // Show toast notification with session info so user knows where reply went
             const toastTitle = reply.is_voice ? "Telegram Voice Message" : "Telegram Reply"
+            const shortSessionId = reply.session_id.slice(0, 12)
             await client.tui.publish({
               body: {
                 type: "toast",
                 toast: {
-                  title: toastTitle,
-                  description: `Received: "${messageText.slice(0, 50)}${messageText.length > 50 ? '...' : ''}"`,
+                  title: `${toastTitle} → ${shortSessionId}...`,
+                  description: `"${messageText.slice(0, 40)}${messageText.length > 40 ? '...' : ''}"`,
                   severity: "info"
                 }
               }

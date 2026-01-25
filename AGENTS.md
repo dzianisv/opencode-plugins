@@ -165,6 +165,47 @@ kill $(cat ~/.config/opencode/opencode-helpers/chatterbox/server.pid)
 # Server automatically restarts on next TTS request
 ```
 
+## Supabase Deployment
+
+### Overview
+The Telegram integration uses Supabase Edge Functions and database tables:
+- **send-notify** - Sends notifications to Telegram, stores reply context
+- **telegram-webhook** - Receives replies from Telegram, forwards to OpenCode
+
+### Automatic Deployment (CI)
+Supabase functions deploy automatically on merge to `main`/`master` via GitHub Actions.
+
+The workflow triggers when files in `supabase/` change.
+
+### Manual Deployment
+```bash
+# Deploy all functions
+./scripts/deploy-supabase.sh functions
+
+# Deploy specific function
+supabase functions deploy send-notify --project-ref slqxwymujuoipyiqscrl
+supabase functions deploy telegram-webhook --project-ref slqxwymujuoipyiqscrl
+
+# Check deployed versions
+supabase functions list --project-ref slqxwymujuoipyiqscrl
+```
+
+### GitHub Secrets Required
+Add these secrets to GitHub repository settings for CI to work:
+
+| Secret | Description | How to get it |
+|--------|-------------|---------------|
+| `SUPABASE_ACCESS_TOKEN` | CLI authentication token | Run `supabase login` then check `~/.supabase/access-token` |
+| `SUPABASE_PROJECT_REF` | Project reference ID | `slqxwymujuoipyiqscrl` (or from Supabase dashboard URL) |
+| `SUPABASE_DB_PASSWORD` | Database password (for migrations) | Supabase dashboard → Settings → Database |
+
+### Troubleshooting Deployment
+If Telegram replies aren't working:
+1. Check function versions: `supabase functions list`
+2. Verify `send-notify` was deployed AFTER the reply context code was added
+3. Check Edge Function logs in Supabase dashboard
+4. Verify `telegram_reply_contexts` table has entries after sending notifications
+
 ## Plugin Architecture
 
 ### Message Flow

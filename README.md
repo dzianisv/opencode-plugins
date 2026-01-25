@@ -1,11 +1,35 @@
 # OpenCode Plugins
 
-A collection of plugins for [OpenCode](https://github.com/sst/opencode):
+[![Tests](https://github.com/dzianisv/opencode-reflection-plugin/actions/workflows/test.yml/badge.svg)](https://github.com/dzianisv/opencode-reflection-plugin/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![OpenCode](https://img.shields.io/badge/OpenCode-v1.0+-blue.svg)](https://github.com/sst/opencode)
+
+**Make your AI coding assistant actually finish the job.** Self-reflection and task verification for [OpenCode](https://github.com/sst/opencode) - the open-source AI coding agent.
+
+## The Problem
+
+AI coding assistants often:
+- Stop before the task is truly complete
+- Miss edge cases or skip steps
+- Say "done" when tests are failing
+- Require constant human supervision
+
+## The Solution
+
+This plugin adds a **judge layer** that automatically evaluates task completion and forces the agent to continue until the work is actually done. Plus, get notified on Telegram when long-running tasks finish - and reply back via text or voice.
 
 | Plugin | Description |
 |--------|-------------|
 | **reflection.ts** | Judge layer that verifies task completion and forces agent to continue if incomplete |
 | **tts.ts** | Text-to-speech + Telegram notifications with two-way communication |
+
+### Key Features
+
+- **Automatic task verification** - Judge evaluates completion after each agent response
+- **Self-healing workflow** - Agent receives feedback and continues if work is incomplete
+- **Telegram notifications** - Get notified when tasks finish, reply via text or voice
+- **Local TTS** - Hear responses read aloud (Coqui XTTS, Chatterbox, macOS)
+- **Voice-to-text** - Reply to Telegram with voice messages, transcribed by local Whisper
 
 ## Quick Install
 
@@ -421,6 +445,36 @@ npm run test:tts:manual
 - **Telegram voice**: ffmpeg (`brew install ffmpeg`)
 - **Dependencies**: `bun` (OpenCode installs deps from package.json)
 
+## Why Use This?
+
+| Without Reflection Plugin | With Reflection Plugin |
+|--------------------------|------------------------|
+| Agent says "done" but tests fail | Agent runs tests, sees failures, fixes them |
+| You manually check every response | Automatic verification after each response |
+| Context switching interrupts your flow | Get notified on Telegram, reply hands-free |
+| Agent stops at first attempt | Up to 3 self-correction attempts |
+| Hope it worked | Know it worked |
+
+## Related Projects
+
+- [OpenCode](https://github.com/sst/opencode) - Open-source AI coding agent (required)
+- [Claude Code](https://docs.anthropic.com/en/docs/build-with-claude/claude-code) - Anthropic's AI coding assistant
+- [Cursor](https://cursor.sh/) - AI-powered code editor
+
+## Keywords
+
+`opencode` `ai-coding-assistant` `llm-agent` `task-verification` `self-reflection` `autonomous-coding` `telegram-bot` `text-to-speech` `whisper` `developer-tools` `productivity` `ai-automation`
+
+## Contributing
+
+Contributions welcome! Please read the [AGENTS.md](AGENTS.md) for development guidelines.
+
 ## License
 
 MIT
+
+---
+
+<p align="center">
+  <sub>Built for developers who want their AI to finish the job.</sub>
+</p>

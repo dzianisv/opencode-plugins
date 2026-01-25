@@ -1,6 +1,8 @@
 .tts
 .reflection
+.opencode/
 node_modules/
+__pycache__/
 *.log
 .DS_Store
 .env

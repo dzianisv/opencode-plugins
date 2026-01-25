@@ -829,9 +829,10 @@ describe("Telegram Reply Support - Structure Validation", () => {
       assert.ok(webhookContent.includes("telegram_replies"), "Missing reply storage")
     })
 
-    it("confirms reply receipt to user", () => {
+    it("confirms reply receipt to user with emoji", () => {
       if (!webhookContent) return
-      assert.ok(webhookContent.includes("Reply sent"), "Missing confirmation message")
+      // Simple emoji confirmation for text replies
+      assert.ok(webhookContent.includes("✅"), "Missing confirmation emoji for text replies")
     })
 
     it("handles missing reply context gracefully", () => {
@@ -875,9 +876,17 @@ describe("Telegram Reply Support - Structure Validation", () => {
       assert.ok(ttsContent.includes("[User via Telegram]"), "Missing Telegram reply prefix")
     })
 
-    it("marks replies as processed after forwarding", () => {
+    it("marks replies as processed BEFORE forwarding (race condition fix)", () => {
       if (!ttsContent) return
       assert.ok(ttsContent.includes("markReplyProcessed"), "Missing reply processed marking")
+      
+      // Verify the fix: markReplyProcessed must be called BEFORE promptAsync
+      // to prevent race conditions between multiple OpenCode instances
+      const markProcessedIndex = ttsContent.indexOf("CRITICAL: Mark as processed in database IMMEDIATELY")
+      const promptAsyncIndex = ttsContent.indexOf("promptAsync", markProcessedIndex)
+      
+      assert.ok(markProcessedIndex > 0, "Missing CRITICAL comment about early marking")
+      assert.ok(promptAsyncIndex > markProcessedIndex, "markReplyProcessed must be called BEFORE promptAsync")
     })
 
     it("passes sessionId to sendTelegramNotification", () => {
