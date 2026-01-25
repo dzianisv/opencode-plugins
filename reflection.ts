@@ -21,7 +21,7 @@ function debug(...args: any[]) {
   if (DEBUG) console.error("[Reflection]", ...args)
 }
 
-export const ReflectionPlugin: Plugin = ({ client, directory }) => {
+export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   
   // Track attempts per (sessionId, humanMsgCount) - resets automatically for new messages
   const attempts = new Map<string, number>()

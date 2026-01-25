@@ -2203,7 +2203,7 @@ async function unsubscribeFromReplies(): Promise<void> {
 
 // ==================== PLUGIN ====================
 
-export const TTSPlugin: Plugin = ({ client, directory }) => {
+export const TTSPlugin: Plugin = async ({ client, directory }) => {
   // Tool definition required by Plugin interface
   const tool = {
     tts: {
@@ -2399,7 +2399,7 @@ export const TTSPlugin: Plugin = ({ client, directory }) => {
 
   return {
     tool,
-    event: async ({ event }) => {
+    event: async ({ event }: { event: any }) => {
       if (event.type === "session.idle") {
         const sessionId = (event as any).properties?.sessionID
         await debugLog(`session.idle fired for ${sessionId}`)
