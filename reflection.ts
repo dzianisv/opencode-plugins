@@ -12,8 +12,14 @@ import { join } from "path"
 const MAX_ATTEMPTS = 3
 const JUDGE_RESPONSE_TIMEOUT = 180_000
 const POLL_INTERVAL = 2_000
+const DEBUG = process.env.REFLECTION_DEBUG === "1"
+const SESSION_CLEANUP_INTERVAL = 300_000 // Clean old sessions every 5 minutes
+const SESSION_MAX_AGE = 1800_000 // Sessions older than 30 minutes can be cleaned
 
-// No logging to avoid breaking CLI output
+// Debug logging (only when REFLECTION_DEBUG=1)
+function debug(...args: any[]) {
+  if (DEBUG) console.error("[Reflection]", ...args)
+}
 
 export const ReflectionPlugin: Plugin = ({ client, directory }) => {
   
@@ -24,9 +30,34 @@ export const ReflectionPlugin: Plugin = ({ client, directory }) => {
   const activeReflections = new Set<string>()
   const abortedSessions = new Set<string>() // Permanently track aborted sessions - never reflect on these
   const judgeSessionIds = new Set<string>() // Track judge session IDs to skip them
+  // Track session last-seen timestamps for cleanup
+  const sessionTimestamps = new Map<string, number>()
+  
+  // Periodic cleanup of old session data to prevent memory leaks
+  const cleanupOldSessions = () => {
+    const now = Date.now()
+    for (const [sessionId, timestamp] of sessionTimestamps) {
+      if (now - timestamp > SESSION_MAX_AGE) {
+        // Clean up all data for this old session
+        sessionTimestamps.delete(sessionId)
+        lastReflectedMsgCount.delete(sessionId)
+        abortedSessions.delete(sessionId)
+        // Clean attempt keys for this session
+        for (const key of attempts.keys()) {
+          if (key.startsWith(sessionId)) attempts.delete(key)
+        }
+        debug("Cleaned up old session:", sessionId.slice(0, 8))
+      }
+    }
+  }
+  setInterval(cleanupOldSessions, SESSION_CLEANUP_INTERVAL)
 
   // Directory for storing reflection input/output
   const reflectionDir = join(directory, ".reflection")
+  
+  // Cache for AGENTS.md content (avoid re-reading on every reflection)
+  let agentsFileCache: { content: string; timestamp: number } | null = null
+  const AGENTS_CACHE_TTL = 60_000 // Cache for 1 minute
 
   async function ensureReflectionDir(): Promise<void> {
     try {
@@ -69,11 +100,19 @@ export const ReflectionPlugin: Plugin = ({ client, directory }) => {
   }
 
   async function getAgentsFile(): Promise<string> {
+    // Return cached content if still valid
+    if (agentsFileCache && Date.now() - agentsFileCache.timestamp < AGENTS_CACHE_TTL) {
+      return agentsFileCache.content
+    }
+    
     for (const name of ["AGENTS.md", ".opencode/AGENTS.md", "agents.md"]) {
       try {
-        return await readFile(join(directory, name), "utf-8")
+        const content = await readFile(join(directory, name), "utf-8")
+        agentsFileCache = { content, timestamp: Date.now() }
+        return content
       } catch {}
     }
+    agentsFileCache = { content: "", timestamp: Date.now() }
     return ""
   }
 
@@ -169,6 +208,7 @@ export const ReflectionPlugin: Plugin = ({ client, directory }) => {
       }
     }
 
+    debug("extractTaskAndResult - task empty?", !task, "result empty?", !result)
     if (!task || !result) return null
     return { task, result, tools: tools.slice(-10).join("\n") }
   }
@@ -195,8 +235,11 @@ export const ReflectionPlugin: Plugin = ({ client, directory }) => {
   }
 
   async function runReflection(sessionId: string): Promise<void> {
+    debug("runReflection called for session:", sessionId)
+    
     // Prevent concurrent reflections on same session
     if (activeReflections.has(sessionId)) {
+      debug("SKIP: activeReflections already has session")
       return
     }
     activeReflections.add(sessionId)
@@ -204,43 +247,58 @@ export const ReflectionPlugin: Plugin = ({ client, directory }) => {
     try {
       // Get messages first - needed for all checks
       const { data: messages } = await client.session.messages({ path: { id: sessionId } })
-      if (!messages || messages.length < 2) return
+      if (!messages || messages.length < 2) {
+        debug("SKIP: messages length < 2, got:", messages?.length)
+        return
+      }
 
       // Skip if session was aborted/cancelled by user (Esc key) - check FIRST
       if (wasSessionAborted(sessionId, messages)) {
+        debug("SKIP: session was aborted")
         return
       }
 
       // Skip judge sessions
       if (isJudgeSession(sessionId, messages)) {
+        debug("SKIP: is judge session")
         return
       }
 
       // Count human messages to determine current "task"
       const humanMsgCount = countHumanMessages(messages)
-      if (humanMsgCount === 0) return
+      debug("humanMsgCount:", humanMsgCount)
+      if (humanMsgCount === 0) {
+        debug("SKIP: no human messages")
+        return
+      }
 
       // Check if we already completed reflection for this exact message count
       const lastReflected = lastReflectedMsgCount.get(sessionId) || 0
       if (humanMsgCount <= lastReflected) {
-        // Already handled this task
+        debug("SKIP: already reflected for this message count", { humanMsgCount, lastReflected })
         return
       }
 
       // Get attempt count for THIS specific task (session + message count)
       const attemptKey = getAttemptKey(sessionId, humanMsgCount)
       const attemptCount = attempts.get(attemptKey) || 0
+      debug("attemptCount:", attemptCount, "/ MAX:", MAX_ATTEMPTS)
       
       if (attemptCount >= MAX_ATTEMPTS) {
         // Max attempts for this task - mark as reflected and stop
         lastReflectedMsgCount.set(sessionId, humanMsgCount)
         await showToast(`Max attempts (${MAX_ATTEMPTS}) reached`, "warning")
+        debug("SKIP: max attempts reached")
         return
       }
 
       // Extract task info
       const extracted = extractTaskAndResult(messages)
-      if (!extracted) return
+      if (!extracted) {
+        debug("SKIP: extractTaskAndResult returned null")
+        return
+      }
+      debug("extracted task length:", extracted.task.length, "result length:", extracted.result.length)
 
       // Create judge session and evaluate
       const { data: judgeSession } = await client.session.create({
@@ -327,6 +385,15 @@ Reject if:
 - Later output contradicts earlier "done" claim
 - Failures downgraded after-the-fact without new evidence
 
+### Progress Status Detection
+If the agent's response contains explicit progress indicators like:
+- "IN PROGRESS", "in progress", "not yet committed"
+- "Next steps:", "Remaining tasks:", "TODO:"
+- "Phase X of Y complete" (where X < Y)
+- "Continue to Phase N", "Proceed to step N"
+Then the task is INCOMPLETE (complete: false) regardless of other indicators.
+The agent must finish all stated work, not just report status.
+
 ---
 
 Reply with JSON only (no other text):
@@ -342,22 +409,27 @@ Reply with JSON only (no other text):
           path: { id: judgeSession.id },
           body: { parts: [{ type: "text", text: prompt }] }
         })
+        debug("judge prompt sent, waiting for response...")
 
         const response = await waitForResponse(judgeSession.id)
         
         if (!response) {
+          debug("SKIP: waitForResponse returned null (timeout)")
           // Timeout - mark this task as reflected to avoid infinite retries
           lastReflectedMsgCount.set(sessionId, humanMsgCount)
           return
         }
+        debug("judge response received, length:", response.length)
 
         const jsonMatch = response.match(/\{[\s\S]*\}/)
         if (!jsonMatch) {
+          debug("SKIP: no JSON found in response")
           lastReflectedMsgCount.set(sessionId, humanMsgCount)
           return
         }
 
         const verdict = JSON.parse(jsonMatch[0])
+        debug("verdict:", JSON.stringify(verdict))
 
         // Save reflection data to .reflection/ directory
         await saveReflectionData(sessionId, {
@@ -413,8 +485,9 @@ Please address the above and continue.`
         // Always clean up judge session to prevent clutter in /session list
         await cleanupJudgeSession()
       }
-    } catch {
+    } catch (e) {
       // On error, don't mark as reflected - allow retry
+      debug("ERROR in runReflection:", e)
     } finally {
       activeReflections.delete(sessionId)
     }
@@ -430,6 +503,8 @@ Please address the above and continue.`
       }
     },
     event: async ({ event }: { event: { type: string; properties?: any } }) => {
+      debug("event received:", event.type, (event as any).properties?.sessionID?.slice(0, 8))
+      
       // Track aborted sessions immediately when session.error fires
       if (event.type === "session.error") {
         const props = (event as any).properties
@@ -442,10 +517,20 @@ Please address the above and continue.`
       
       if (event.type === "session.idle") {
         const sessionId = (event as any).properties?.sessionID
+        debug("session.idle received for:", sessionId)
         if (sessionId && typeof sessionId === "string") {
+          // Update timestamp for cleanup tracking
+          sessionTimestamps.set(sessionId, Date.now())
+          
           // Fast path: skip if already known to be aborted or a judge session
-          if (abortedSessions.has(sessionId)) return
-          if (judgeSessionIds.has(sessionId)) return
+          if (abortedSessions.has(sessionId)) {
+            debug("SKIP: session in abortedSessions set")
+            return
+          }
+          if (judgeSessionIds.has(sessionId)) {
+            debug("SKIP: session in judgeSessionIds set")
+            return
+          }
           await runReflection(sessionId)
         }
       }

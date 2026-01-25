@@ -24,9 +24,10 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { exec, spawn } from "child_process"
 import { promisify } from "util"
-import { readFile, writeFile, access, unlink, mkdir } from "fs/promises"
+import { readFile, writeFile, access, unlink, mkdir, open, readdir, appendFile } from "fs/promises"
 import { join } from "path"
 import { homedir, tmpdir, platform } from "os"
+import * as net from "net"
 
 const execAsync = promisify(exec)
 
@@ -233,7 +234,7 @@ async function removeSpeechTicket(ticketId: string): Promise<void> {
 
 async function getQueuedTickets(): Promise<{ id: string; ticket: SpeechTicket }[]> {
   await ensureQueueDir()
-  const { readdir } = await import("fs/promises")
+  // readdir is now statically imported
   try {
     const files = await readdir(SPEECH_QUEUE_DIR)
     const tickets: { id: string; ticket: SpeechTicket }[] = []
@@ -286,7 +287,7 @@ async function acquireSpeechLock(ticketId: string): Promise<boolean> {
   })
   
   try {
-    const { open } = await import("fs/promises")
+    // open is now statically imported
     const handle = await open(SPEECH_LOCK_PATH, "wx")
     await handle.writeFile(lockContent)
     await handle.close()
@@ -561,7 +562,7 @@ if __name__ == "__main__":
 async function isChatterboxServerRunning(): Promise<boolean> {
   try {
     await access(CHATTERBOX_SOCKET)
-    const net = await import("net")
+    // net is now statically imported
     return new Promise((resolve) => {
       const client = net.createConnection(CHATTERBOX_SOCKET, () => {
         client.destroy()
@@ -581,7 +582,7 @@ async function isChatterboxServerRunning(): Promise<boolean> {
 async function acquireChatterboxLock(): Promise<boolean> {
   const lockContent = `${process.pid}\n${Date.now()}`
   try {
-    const { open } = await import("fs/promises")
+    // open is now statically imported
     const handle = await open(CHATTERBOX_LOCK, "wx")
     await handle.writeFile(lockContent)
     await handle.close()
@@ -687,7 +688,7 @@ async function speakWithChatterboxServer(text: string, config: TTSConfig): Promi
  * Speak with Chatterbox server and return both success status and audio file path
  */
 async function speakWithChatterboxServerAndGetPath(text: string, config: TTSConfig): Promise<{ success: boolean; audioPath?: string }> {
-  const net = await import("net")
+  // net is now statically imported
   const opts = config.chatterbox || {}
   const outputPath = join(tmpdir(), `opencode_tts_${Date.now()}.wav`)
   
@@ -757,11 +758,6 @@ async function isChatterboxAvailable(config: TTSConfig): Promise<boolean> {
   } catch {
     return false
   }
-}
-
-async function speakWithChatterbox(text: string, config: TTSConfig): Promise<boolean> {
-  const result = await speakWithChatterboxAndGetPath(text, config)
-  return result.success
 }
 
 /**
@@ -1080,7 +1076,7 @@ if __name__ == "__main__":
 async function isCoquiServerRunning(): Promise<boolean> {
   try {
     await access(COQUI_SOCKET)
-    const net = await import("net")
+    // net is now statically imported
     return new Promise((resolve) => {
       const client = net.createConnection(COQUI_SOCKET, () => {
         client.destroy()
@@ -1100,7 +1096,7 @@ async function isCoquiServerRunning(): Promise<boolean> {
 async function acquireCoquiLock(): Promise<boolean> {
   const lockContent = `${process.pid}\n${Date.now()}`
   try {
-    const { open } = await import("fs/promises")
+    // open is now statically imported
     const handle = await open(COQUI_LOCK, "wx")
     await handle.writeFile(lockContent)
     await handle.close()
@@ -1203,62 +1199,7 @@ async function startCoquiServer(config: TTSConfig): Promise<boolean> {
   }
 }
 
-async function speakWithCoquiServer(text: string, config: TTSConfig): Promise<boolean> {
-  const net = await import("net")
-  const opts = config.coqui || {}
-  const outputPath = join(tmpdir(), `opencode_coqui_${Date.now()}.wav`)
-  
-  return new Promise((resolve) => {
-    const client = net.createConnection(COQUI_SOCKET, () => {
-      const request = JSON.stringify({
-        text,
-        output: outputPath,
-        voice_ref: opts.voiceRef,
-        speaker: opts.speaker,
-        language: opts.language || "en",
-      }) + "\n"
-      client.write(request)
-    })
-    
-    let response = ""
-    client.on("data", (data) => {
-      response += data.toString()
-    })
-    
-    client.on("end", async () => {
-      try {
-        const result = JSON.parse(response.trim())
-        if (!result.success) {
-          resolve(false)
-          return
-        }
-        
-        if (platform() === "darwin") {
-          await execAsync(`afplay "${outputPath}"`)
-        } else {
-          try {
-            await execAsync(`paplay "${outputPath}"`)
-          } catch {
-            await execAsync(`aplay "${outputPath}"`)
-          }
-        }
-        await unlink(outputPath).catch(() => {})
-        resolve(true)
-      } catch {
-        resolve(false)
-      }
-    })
-    
-    client.on("error", () => {
-      resolve(false)
-    })
-    
-    setTimeout(() => {
-      client.destroy()
-      resolve(false)
-    }, 120000)
-  })
-}
+// NOTE: speakWithCoquiServer removed - use speakWithCoquiServerAndGetPath instead
 
 async function isCoquiAvailable(config: TTSConfig): Promise<boolean> {
   const installed = await setupCoqui()
@@ -1274,11 +1215,6 @@ async function isCoquiAvailable(config: TTSConfig): Promise<boolean> {
   } catch {
     return false
   }
-}
-
-async function speakWithCoqui(text: string, config: TTSConfig): Promise<boolean> {
-  const result = await speakWithCoquiAndGetPath(text, config)
-  return result.success
 }
 
 /**
@@ -1370,7 +1306,7 @@ async function speakWithCoquiAndGetPath(text: string, config: TTSConfig): Promis
  * Speak with Coqui server and return both success status and audio file path
  */
 async function speakWithCoquiServerAndGetPath(text: string, config: TTSConfig): Promise<{ success: boolean; audioPath?: string }> {
-  const net = await import("net")
+  // net is now statically imported
   const opts = config.coqui || {}
   const outputPath = join(tmpdir(), `opencode_coqui_${Date.now()}.wav`)
   
@@ -1670,7 +1606,7 @@ async function isWhisperServerRunning(port: number = WHISPER_DEFAULT_PORT): Prom
 async function acquireWhisperLock(): Promise<boolean> {
   const lockContent = `${process.pid}\n${Date.now()}`
   try {
-    const { open } = await import("fs/promises")
+    // open is now statically imported
     const handle = await open(WHISPER_LOCK, "wx")
     await handle.writeFile(lockContent)
     await handle.close()
@@ -2031,18 +1967,15 @@ interface TelegramReply {
 
 /**
  * Mark a reply as processed in the database
+ * Uses the mark_reply_processed RPC function which has SECURITY DEFINER
+ * to bypass RLS restrictions
  */
 async function markReplyProcessed(replyId: string): Promise<void> {
   if (!supabaseClient) return
   
   try {
-    await supabaseClient
-      .from('telegram_replies')
-      .update({ 
-        processed: true, 
-        processed_at: new Date().toISOString() 
-      })
-      .eq('id', replyId)
+    // Use RPC function instead of direct update to work with RLS
+    await supabaseClient.rpc('mark_reply_processed', { p_reply_id: replyId })
   } catch (err) {
     console.error('[TTS] Failed to mark reply as processed:', err)
   }
@@ -2428,7 +2361,7 @@ export const TTSPlugin: Plugin = ({ client, directory }) => {
     const timestamp = new Date().toISOString()
     const line = `[${timestamp}] ${msg}\n`
     try {
-      const { appendFile } = await import("fs/promises")
+      // appendFile is now statically imported
       await appendFile(debugLogPath, line)
     } catch {}
   }

@@ -11,7 +11,7 @@
     "test:e2e": "jest test/e2e.test.ts",
     "test:tts:manual": "node --experimental-strip-types test/tts-manual.ts",
     "typecheck": "npx tsc --noEmit",
-    "install:global": "mkdir -p ~/.config/opencode/plugin && cp reflection.ts tts.ts ~/.config/opencode/plugin/"
+    "install:global": "mkdir -p ~/.config/opencode/plugin && cp reflection.ts tts.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install"
   },
   "keywords": [
     "opencode",
