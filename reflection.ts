@@ -15,7 +15,7 @@ const POLL_INTERVAL = 2_000
 
 // No logging to avoid breaking CLI output
 
-export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
+export const ReflectionPlugin: Plugin = ({ client, directory }) => {
   
   // Track attempts per (sessionId, humanMsgCount) - resets automatically for new messages
   const attempts = new Map<string, number>()
@@ -421,7 +421,15 @@ Please address the above and continue.`
   }
 
   return {
-    event: async ({ event }) => {
+    // Tool definition required by Plugin interface (reflection operates via events, not tools)
+    tool: {
+      reflection: {
+        name: 'reflection',
+        description: 'Judge layer that evaluates task completion - operates via session.idle events',
+        execute: async () => 'Reflection plugin active - evaluation triggered on session idle'
+      }
+    },
+    event: async ({ event }: { event: { type: string; properties?: any } }) => {
       // Track aborted sessions immediately when session.error fires
       if (event.type === "session.error") {
         const props = (event as any).properties

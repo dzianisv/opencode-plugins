@@ -1,17 +1,20 @@
 export default {
-  preset: 'ts-jest',
+  preset: 'ts-jest/presets/default-esm',
   testEnvironment: 'node',
   testMatch: ['**/test/**/*.test.ts'],
+  testPathIgnorePatterns: ['/node_modules/', 'session-fork-directory.test.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   moduleNameMapper: {
     '^opencode$': '<rootDir>/test/mocks/opencodeMock.js'
   },
-  globals: {
-    'ts-jest': {
-      useESM: true
-    }
-  },
+  extensionsToTreatAsEsm: ['.ts'],
   transform: {
-    '^.+\.ts$': 'ts-jest'
+    '^.+\\.ts$': ['ts-jest', {
+      useESM: true,
+      tsconfig: {
+        module: 'ESNext',
+        moduleResolution: 'bundler'
+      }
+    }]
   }
 };

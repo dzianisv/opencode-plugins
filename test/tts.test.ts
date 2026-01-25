@@ -85,6 +85,25 @@ describe("TTS Plugin Core and Initialization", () => {
     assert.ok(pluginContent.includes("export default"), "Missing default export")
   })
 
+  it("has tool property for Plugin interface compliance", () => {
+    // The Plugin interface requires a tool property
+    assert.ok(pluginContent.includes("const tool = {"), "Missing tool definition")
+    assert.ok(pluginContent.includes("return {\n    tool,"), "Missing tool in return object")
+  })
+
+  it("tool has tts entry with required PluginTool properties", () => {
+    // PluginTool requires name, description, and execute
+    assert.ok(pluginContent.includes("tts: {"), "Missing tts tool entry")
+    assert.ok(pluginContent.includes("name: 'tts'"), "Missing tool name")
+    assert.ok(pluginContent.includes("description:"), "Missing tool description")
+    assert.ok(pluginContent.includes("execute: async"), "Missing execute function")
+  })
+
+  it("tool execute returns a string (Promise<string>)", () => {
+    // PluginTool.execute must return Promise<string>
+    assert.ok(pluginContent.includes("return 'TTS plugin active"), "execute must return a string")
+  })
+
   it("uses macOS say command for OS TTS", () => {
     assert.ok(pluginContent.includes("say"), "Missing say command")
     assert.ok(pluginContent.includes("execAsync"), "Missing exec for say command")
