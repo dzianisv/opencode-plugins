@@ -59,6 +59,12 @@ export async function isFfmpegAvailable(): Promise<boolean> {
  * Convert WAV file to OGG for Telegram voice messages
  */
 export async function convertWavToOgg(wavPath: string): Promise<string | null> {
+  // Type guard - ensure wavPath is actually a string
+  if (!wavPath || typeof wavPath !== 'string') {
+    console.error('[Telegram] convertWavToOgg called with invalid wavPath:', typeof wavPath, wavPath)
+    return null
+  }
+  
   const oggPath = wavPath.replace(/\.wav$/i, ".ogg")
   try {
     await execAsync( // Use ffmpeg to convert WAV to OGG
