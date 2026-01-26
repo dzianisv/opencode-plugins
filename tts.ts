@@ -1937,7 +1937,8 @@ async function sendTelegramNotification(
 
 /**
  * Update a message reaction in Telegram
- * Used to change from 👀 (received) to ✅ (delivered) after forwarding to OpenCode
+ * Used to change from 👀 (received) to 👍 (delivered) after forwarding to OpenCode
+ * Note: ✅ is not a valid Telegram reaction emoji, valid ones include: 👍 👎 ❤️ 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡 🥱 🥴 😍 🐳 ❤️‍🔥 🌚 🌭 💯 🤣 ⚡️ 🍌 🏆 💔 🤨 😐 🍓 🍾 💋 🖕 😈 😴 😭 🤓 👻 👨‍💻 👀 🎃 🙈 😇 😨 🤝 ✍️ 🤗 🫡 🎅 🎄 ☃️ 💅 🤪 🗿 🆒 💘 🙉 🦄 😘 💊 🙊 😎 👾 🤷 🤷‍♀️ 🤷‍♂️ 😡
  */
 async function updateMessageReaction(
   chatId: number,
@@ -2195,15 +2196,16 @@ async function subscribeToReplies(
             
             await debugLog('Reply forwarded successfully')
             
-            // Update Telegram reaction from 👀 to ✅ to indicate delivery
+            // Update Telegram reaction from 👀 to 👍 to indicate delivery
+            // Note: ✅ is not a valid Telegram reaction emoji, using 👍 instead
             const reactionResult = await updateMessageReaction(
               reply.telegram_chat_id,
               reply.telegram_message_id,
-              '✅',
+              '👍',
               config
             )
             if (reactionResult.success) {
-              await debugLog('Updated Telegram reaction to ✅')
+              await debugLog('Updated Telegram reaction to 👍')
             } else {
               await debugLog(`Failed to update reaction: ${reactionResult.error}`)
             }
@@ -2485,6 +2487,21 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
         let shouldKeepInSet = false
 
         try {
+          // First, check if this is a subagent session (has parentID)
+          // Subagent sessions (like @explore, @task) should not trigger TTS/Telegram
+          // because replies to subagents can't be properly forwarded
+          try {
+            const { data: sessionInfo } = await client.session.get({ path: { id: sessionId } })
+            if (sessionInfo?.parentID) {
+              await debugLog(`Subagent session (parent: ${sessionInfo.parentID}), skipping`)
+              shouldKeepInSet = true // Don't process subagent sessions again
+              return
+            }
+          } catch (e: any) {
+            // If we can't get session info, continue anyway
+            await debugLog(`Could not get session info: ${e?.message || e}`)
+          }
+          
           const { data: messages } = await client.session.messages({ path: { id: sessionId } })
           await debugLog(`Got ${messages?.length || 0} messages`)
           
