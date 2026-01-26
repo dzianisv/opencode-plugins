@@ -9,7 +9,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { readFile, writeFile, mkdir } from "fs/promises"
 import { join } from "path"
 
-const MAX_ATTEMPTS = 3
+const MAX_ATTEMPTS = 16
 const JUDGE_RESPONSE_TIMEOUT = 180_000
 const POLL_INTERVAL = 2_000
 const DEBUG = process.env.REFLECTION_DEBUG === "1"
@@ -35,7 +35,7 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   // Track session last-seen timestamps for cleanup
   const sessionTimestamps = new Map<string, number>()
   // Track sessions that have pending nudge timers (to avoid duplicate nudges)
-  const pendingNudges = new Map<string, NodeJS.Timeout>()
+  const pendingNudges = new Map<string, { timer: NodeJS.Timeout; reason: "reflection" | "compression" }>()
   // Track sessions that were recently compacted (to prompt GitHub update)
   const recentlyCompacted = new Set<string>()
   
@@ -53,9 +53,9 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
           if (key.startsWith(sessionId)) attempts.delete(key)
         }
         // Clean pending nudges for this session
-        const nudgeTimer = pendingNudges.get(sessionId)
-        if (nudgeTimer) {
-          clearTimeout(nudgeTimer)
+        const nudgeData = pendingNudges.get(sessionId)
+        if (nudgeData) {
+          clearTimeout(nudgeData.timer)
           pendingNudges.delete(sessionId)
         }
         recentlyCompacted.delete(sessionId)
@@ -265,7 +265,7 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     // Clear any pending nudge timer
     const existing = pendingNudges.get(sessionId)
     if (existing) {
-      clearTimeout(existing)
+      clearTimeout(existing.timer)
       pendingNudges.delete(sessionId)
     }
 
@@ -319,7 +319,7 @@ Use \`gh pr comment\` or \`gh issue comment\` to add the update.`
     // Clear any existing timer
     const existing = pendingNudges.get(sessionId)
     if (existing) {
-      clearTimeout(existing)
+      clearTimeout(existing.timer)
     }
 
     const timer = setTimeout(async () => {
@@ -327,17 +327,23 @@ Use \`gh pr comment\` or \`gh issue comment\` to add the update.`
       await nudgeSession(sessionId, reason)
     }, delay)
 
-    pendingNudges.set(sessionId, timer)
+    pendingNudges.set(sessionId, { timer, reason })
     debug("Scheduled nudge for session:", sessionId.slice(0, 8), "delay:", delay, "reason:", reason)
   }
 
   // Cancel a pending nudge (called when session becomes active)
-  function cancelNudge(sessionId: string): void {
-    const timer = pendingNudges.get(sessionId)
-    if (timer) {
-      clearTimeout(timer)
+  // onlyReason: if specified, only cancel nudges with this reason
+  function cancelNudge(sessionId: string, onlyReason?: "reflection" | "compression"): void {
+    const nudgeData = pendingNudges.get(sessionId)
+    if (nudgeData) {
+      // If onlyReason is specified, only cancel if reason matches
+      if (onlyReason && nudgeData.reason !== onlyReason) {
+        debug("Not cancelling nudge - reason mismatch:", nudgeData.reason, "!=", onlyReason)
+        return
+      }
+      clearTimeout(nudgeData.timer)
       pendingNudges.delete(sessionId)
-      debug("Cancelled pending nudge for session:", sessionId.slice(0, 8))
+      debug("Cancelled pending nudge for session:", sessionId.slice(0, 8), "reason:", nudgeData.reason)
     }
   }
 
@@ -663,8 +669,9 @@ Please address the above and continue.`
           // Update timestamp for cleanup tracking
           sessionTimestamps.set(sessionId, Date.now())
           
-          // Cancel any pending nudge since the session just went idle naturally
-          cancelNudge(sessionId)
+          // Only cancel reflection nudges when session goes idle
+          // Keep compression nudges so they can fire and prompt GitHub update
+          cancelNudge(sessionId, "reflection")
           
           // Fast path: skip if already known to be aborted or a judge session
           if (abortedSessions.has(sessionId)) {
