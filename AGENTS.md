@@ -173,22 +173,64 @@ The Telegram integration uses Supabase Edge Functions and database tables:
 - **send-notify** - Sends notifications to Telegram, stores reply context
 - **telegram-webhook** - Receives replies from Telegram, forwards to OpenCode
 
+### CRITICAL: telegram-webhook Requires --no-verify-jwt
+
+**THIS IS THE #1 CAUSE OF TELEGRAM REPLY FAILURES!**
+
+Telegram sends webhook requests **without any Authorization header**. By default, Supabase Edge Functions require JWT authentication, which causes all Telegram webhooks to fail with `401 Unauthorized`.
+
+**Symptoms of this problem:**
+- Telegram notifications work (send-notify uses auth)
+- Telegram replies DON'T work (webhook gets 401)
+- User replies in Telegram but nothing happens in OpenCode
+- `getWebhookInfo` shows: `"last_error_message": "Wrong response from the webhook: 401 Unauthorized"`
+
+**The fix:**
+```bash
+# ALWAYS use --no-verify-jwt for telegram-webhook
+supabase functions deploy telegram-webhook --no-verify-jwt --project-ref slqxwymujuoipyiqscrl
+
+# Or use the deployment script (handles this automatically):
+./scripts/deploy-supabase.sh webhook
+```
+
+**Verification:**
+```bash
+# Test webhook accepts requests without auth
+curl -s -X POST "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/telegram-webhook" \
+  -H "Content-Type: application/json" \
+  -d '{"update_id": 0, "message": {"message_id": 0, "chat": {"id": 0, "type": "private"}}}'
+# Should return: OK
+# If returns 401 or "Missing authorization header": redeploy with --no-verify-jwt
+```
+
 ### Automatic Deployment (CI)
 Supabase functions deploy automatically on merge to `main`/`master` via GitHub Actions.
 
-The workflow triggers when files in `supabase/` change.
+The workflow uses `./scripts/deploy-supabase.sh` which **automatically applies --no-verify-jwt** for telegram-webhook.
 
 ### Manual Deployment
 ```bash
-# Deploy all functions
+# Deploy all functions (RECOMMENDED - handles --no-verify-jwt automatically)
 ./scripts/deploy-supabase.sh functions
 
-# Deploy specific function
-supabase functions deploy send-notify --project-ref slqxwymujuoipyiqscrl
-supabase functions deploy telegram-webhook --project-ref slqxwymujuoipyiqscrl
+# Deploy webhook only (useful for fixing 401 errors)
+./scripts/deploy-supabase.sh webhook
+
+# Verify webhook configuration
+./scripts/deploy-supabase.sh verify
 
 # Check deployed versions
 supabase functions list --project-ref slqxwymujuoipyiqscrl
+```
+
+**DO NOT deploy telegram-webhook directly without --no-verify-jwt:**
+```bash
+# WRONG - will cause 401 errors!
+supabase functions deploy telegram-webhook --project-ref slqxwymujuoipyiqscrl
+
+# CORRECT - always include --no-verify-jwt
+supabase functions deploy telegram-webhook --no-verify-jwt --project-ref slqxwymujuoipyiqscrl
 ```
 
 ### GitHub Secrets Required
@@ -200,12 +242,42 @@ Add these secrets to GitHub repository settings for CI to work:
 | `SUPABASE_PROJECT_REF` | Project reference ID | `slqxwymujuoipyiqscrl` (or from Supabase dashboard URL) |
 | `SUPABASE_DB_PASSWORD` | Database password (for migrations) | Supabase dashboard → Settings → Database |
 
-### Troubleshooting Deployment
-If Telegram replies aren't working:
-1. Check function versions: `supabase functions list`
-2. Verify `send-notify` was deployed AFTER the reply context code was added
-3. Check Edge Function logs in Supabase dashboard
-4. Verify `telegram_reply_contexts` table has entries after sending notifications
+### Troubleshooting Telegram Replies
+
+**If Telegram replies aren't working:**
+
+1. **Check for 401 errors first** (most common issue):
+   ```bash
+   ./scripts/deploy-supabase.sh verify
+   # Look for "401 UNAUTHORIZED ERROR DETECTED"
+   ```
+
+2. **Fix 401 errors by redeploying webhook:**
+   ```bash
+   ./scripts/deploy-supabase.sh webhook
+   ```
+
+3. **Check function versions:**
+   ```bash
+   supabase functions list --project-ref slqxwymujuoipyiqscrl
+   ```
+
+4. **Check reply contexts are being stored:**
+   ```bash
+   # After sending a notification, check the table has entries
+   curl -s "https://slqxwymujuoipyiqscrl.supabase.co/rest/v1/telegram_reply_contexts?order=created_at.desc&limit=3" \
+     -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+     -H "apikey: $SUPABASE_ANON_KEY" | jq .
+   ```
+
+5. **Check replies are being received:**
+   ```bash
+   curl -s "https://slqxwymujuoipyiqscrl.supabase.co/rest/v1/telegram_replies?order=created_at.desc&limit=3" \
+     -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+     -H "apikey: $SUPABASE_ANON_KEY" | jq .
+   ```
+
+6. **Check Edge Function logs** in Supabase dashboard for errors
 
 ## Plugin Architecture
 

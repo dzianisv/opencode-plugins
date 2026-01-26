@@ -19,8 +19,9 @@ interface TTSConfig {
   }
 }
 
-// Default Supabase Edge Function URL for sending notifications
+// Default Supabase Edge Function URLs
 const DEFAULT_TELEGRAM_SERVICE_URL = "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/send-notify"
+const DEFAULT_UPDATE_REACTION_URL = "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/update-reaction"
 const DEFAULT_SUPABASE_URL = "https://slqxwymujuoipyiqscrl.supabase.co"
 const DEFAULT_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1..."
 
@@ -74,6 +75,49 @@ export async function convertWavToOgg(wavPath: string): Promise<string | null> {
     return oggPath
   } catch {
     return null
+  }
+}
+
+/**
+ * Update a message reaction in Telegram
+ * Used to change from 👀 (received) to ✅ (delivered) after forwarding to OpenCode
+ */
+export async function updateMessageReaction(
+  chatId: number,
+  messageId: number,
+  emoji: string,
+  config: TTSConfig
+): Promise<{ success: boolean; error?: string }> {
+  const telegramConfig = config.telegram
+  const supabaseKey = telegramConfig?.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY
+
+  if (!supabaseKey || supabaseKey.includes("example")) {
+    return { success: false, error: "No Supabase key configured" }
+  }
+
+  try {
+    const response = await fetch(DEFAULT_UPDATE_REACTION_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${supabaseKey}`,
+        "apikey": supabaseKey,
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        emoji,
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      return { success: false, error }
+    }
+
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: String(err) }
   }
 }
 
