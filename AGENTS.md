@@ -314,18 +314,142 @@ The plugin has 5 defense layers against infinite reflection loops. Do not remove
 
 ## Testing Checklist
 
-**CRITICAL: ALWAYS run E2E tests after ANY code changes to reflection.ts. No exceptions.**
+**CRITICAL: ALWAYS run ALL tests after ANY code changes before deploying. No exceptions.**
 
-Before committing changes to reflection logic:
+### Before Committing ANY Changes
+
+**MANDATORY - These steps MUST be completed for EVERY change, no matter how small:**
+
+#### 1. Type Checking (REQUIRED)
+```bash
+npm run typecheck
+```
+- **MUST pass** with zero errors
+- If it fails, FIX THE CODE immediately
+- TypeScript errors indicate real bugs
+
+#### 2. Unit Tests (REQUIRED)
+```bash
+npm test
+```
+- **MUST pass** all 178 tests
+- If any test fails, FIX THE CODE immediately
+- Unit tests validate isolated logic
+
+#### 3. E2E Tests (REQUIRED for reflection.ts changes)
+```bash
+OPENCODE_E2E=1 npm run test:e2e
+```
+- **MUST pass** all 4 E2E tests
+- If tests fail, FIX THE CODE immediately
+- E2E tests validate full plugin integration
+- E2E tests use the model specified in `~/.config/opencode/opencode.json`
+
+#### 4. Manual Smoke Test (REQUIRED - ALWAYS)
+**CRITICAL: Even if all automated tests pass, you MUST manually test the plugin in a real OpenCode session before deploying!**
+
+```bash
+# 1. Deploy to local OpenCode
+npm run install:global
+
+# 2. Kill all existing OpenCode sessions (plugins load at startup)
+pkill -f 'opencode.*-c'
+
+# 3. Start fresh OpenCode session
+cd /tmp && mkdir -p test-plugin-$(date +%s) && cd test-plugin-$(date +%s)
+opencode -c
+
+# 4. Test basic functionality
+# In OpenCode, run: "Create a hello.js file that prints 'Hello World'"
+
+# 5. Verify plugin loads without errors
+# Check for errors in terminal output
+# No "TypeError", "ReferenceError", "Cannot read property" errors allowed
+
+# 6. For reflection.ts changes: Verify reflection triggers
+# Wait for agent to complete
+# Check for reflection feedback or toast notification
+# Verify .reflection/ directory has new JSON files
+
+# 7. For tts.ts/telegram.ts changes: Test TTS/Telegram
+# Run: "Say hello"
+# Verify TTS speaks or Telegram notification sent
+# Check for conversion errors (WAV/OGG)
+
+# 8. Check for runtime errors
+grep -i "error\|exception\|undefined" ~/.config/opencode/opencode.log || echo "No errors found"
+```
+
+**If ANY error occurs during manual testing:**
+1. **STOP immediately** - DO NOT commit or deploy
+2. FIX THE BUG
+3. Re-run ALL tests (typecheck, unit, E2E, manual)
+4. Only proceed when manual test shows ZERO errors
+
+#### 5. Verify Deployment (REQUIRED)
+```bash
+# Verify all files deployed correctly
+ls -la ~/.config/opencode/plugin/*.ts
+
+# Check deployed file has your changes
+grep "YOUR_CHANGE_PATTERN" ~/.config/opencode/plugin/reflection.ts
+
+# Verify no syntax errors in deployed files
+node --check ~/.config/opencode/plugin/reflection.ts
+node --check ~/.config/opencode/plugin/tts.ts
+node --check ~/.config/opencode/plugin/telegram.ts
+```
+
+### Common Bugs to Check For
+
+**Type Safety:**
+- [ ] Check all function parameters are validated before use
+- [ ] Add type guards for optional/nullable parameters
+- [ ] Never assume a parameter is a string without checking `typeof`
+
+**Example - WRONG:**
+```typescript
+function convert(path: string) {
+  const output = path.replace(/\.wav$/i, ".ogg")  // BUG: path might be undefined!
+}
+```
+
+**Example - CORRECT:**
+```typescript
+function convert(path: string) {
+  if (!path || typeof path !== 'string') {
+    console.error('Invalid path:', typeof path, path)
+    return null
+  }
+  const output = path.replace(/\.wav$/i, ".ogg")
+}
+```
+
+**Runtime Validation:**
+- [ ] All external data (config, API responses) validated before use
+- [ ] All file paths exist before reading/writing
+- [ ] All async operations have error handling
+- [ ] All external commands (ffmpeg, etc.) checked for availability
+
+**OpenCode Integration:**
+- [ ] Plugin loads without errors on OpenCode startup
+- [ ] Plugin restarts correctly when OpenCode restarts
+- [ ] No infinite loops or recursive calls
+- [ ] Events (session.idle, etc.) handled correctly
+
+### Test Coverage Requirements
+
+Before committing changes to reflection.ts:
 
 - [ ] `npm run typecheck` passes
-- [ ] Unit tests pass: `npm test`
-- [ ] **E2E tests MUST ALWAYS run: `OPENCODE_E2E=1 npm run test:e2e`**
-- [ ] **E2E tests MUST pass - if they fail, you MUST fix the code immediately**
-- [ ] **NEVER skip E2E tests - they are CRITICAL to verify the plugin works**
+- [ ] Unit tests pass: `npm test` (178 tests)
+- [ ] **E2E tests MUST ALWAYS run: `OPENCODE_E2E=1 npm run test:e2e` (4 tests)**
+- [ ] **Manual smoke test MUST pass with ZERO errors**
 - [ ] Check E2E logs for "SKIPPED" (hidden failures)
 - [ ] Verify no "Already reflecting" spam in logs
 - [ ] Verify judge sessions are properly skipped
+- [ ] Verify deployed files have your changes
+- [ ] Verify OpenCode loads plugin without errors
 
 **E2E Test Requirements:**
 - E2E tests use the model specified in `~/.config/opencode/opencode.json`
