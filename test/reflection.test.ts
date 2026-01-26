@@ -110,9 +110,10 @@ describe("Reflection Plugin - Structure Validation", () => {
     assert.ok(pluginContent.includes("judgeSessionIds.add"), "Missing judge session tracking")
   })
 
-  it("detects aborted sessions to skip reflection", () => {
-    assert.ok(pluginContent.includes("wasSessionAborted"), "Missing wasSessionAborted function")
+  it("detects aborted tasks to skip reflection", () => {
+    assert.ok(pluginContent.includes("wasCurrentTaskAborted"), "Missing wasCurrentTaskAborted function")
     assert.ok(pluginContent.includes("MessageAbortedError"), "Missing MessageAbortedError check")
+    assert.ok(pluginContent.includes("abortedMsgCounts"), "Missing per-task abort tracking")
   })
 })
 
