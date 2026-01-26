@@ -1903,9 +1903,15 @@ async function sendTelegramNotification(
     }
 
     // Send to Supabase Edge Function
+    // Supabase Edge Functions require Authorization header with anon key
+    const supabaseKey = telegramConfig.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY
     const response = await fetch(serviceUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { 
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${supabaseKey}`,
+        "apikey": supabaseKey,
+      },
       body: JSON.stringify(body),
     })
 
