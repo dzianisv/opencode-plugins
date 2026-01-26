@@ -1771,6 +1771,7 @@ async function speakWithOS(text: string, config: TTSConfig): Promise<boolean> {
 
 // Default Supabase Edge Function URL for sending notifications
 const DEFAULT_TELEGRAM_SERVICE_URL = "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/send-notify"
+const DEFAULT_UPDATE_REACTION_URL = "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/update-reaction"
 
 /**
  * Check if ffmpeg is available for audio conversion
@@ -1929,6 +1930,45 @@ async function sendTelegramNotification(
 
     const result = await response.json()
     return { success: result.success, error: result.error }
+  } catch (err: any) {
+    return { success: false, error: err?.message || "Network error" }
+  }
+}
+
+/**
+ * Update a message reaction in Telegram
+ * Used to change from 👀 (received) to ✅ (delivered) after forwarding to OpenCode
+ */
+async function updateMessageReaction(
+  chatId: number,
+  messageId: number,
+  emoji: string,
+  config: TTSConfig
+): Promise<{ success: boolean; error?: string }> {
+  const telegramConfig = config.telegram
+  const supabaseKey = telegramConfig?.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY
+
+  try {
+    const response = await fetch(DEFAULT_UPDATE_REACTION_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${supabaseKey}`,
+        "apikey": supabaseKey,
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        emoji,
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      return { success: false, error }
+    }
+
+    return { success: true }
   } catch (err: any) {
     return { success: false, error: err?.message || "Network error" }
   }
@@ -2154,6 +2194,19 @@ async function subscribeToReplies(
             })
             
             await debugLog('Reply forwarded successfully')
+            
+            // Update Telegram reaction from 👀 to ✅ to indicate delivery
+            const reactionResult = await updateMessageReaction(
+              reply.telegram_chat_id,
+              reply.telegram_message_id,
+              '✅',
+              config
+            )
+            if (reactionResult.success) {
+              await debugLog('Updated Telegram reaction to ✅')
+            } else {
+              await debugLog(`Failed to update reaction: ${reactionResult.error}`)
+            }
             
             // Show toast notification with session info so user knows where reply went
             const toastTitle = reply.is_voice ? "Telegram Voice Message" : "Telegram Reply"

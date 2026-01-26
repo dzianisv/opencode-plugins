@@ -88,6 +88,34 @@ async function sendTelegramMessage(chatId: number, text: string, parseMode: stri
   }
 }
 
+/**
+ * Set a reaction emoji on a message
+ * @param chatId - Chat ID
+ * @param messageId - Message ID to react to
+ * @param emoji - Emoji to use as reaction (e.g., '👀', '✅', '❌')
+ */
+async function setMessageReaction(chatId: number, messageId: number, emoji: string): Promise<boolean> {
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/setMessageReaction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        reaction: [{ type: 'emoji', emoji }],
+      }),
+    })
+    if (!response.ok) {
+      const error = await response.text()
+      console.error('Failed to set reaction:', error)
+    }
+    return response.ok
+  } catch (error) {
+    console.error('Failed to set message reaction:', error)
+    return false
+  }
+}
+
 Deno.serve(async (req) => {
   // Only accept POST requests
   if (req.method !== 'POST') {
@@ -231,8 +259,9 @@ Deno.serve(async (req) => {
         return new Response('OK')
       }
 
-      // Confirm to user (simple emoji - processing happens in background)
-      await sendTelegramMessage(chatId, `🎤`)
+      // React with 👀 to indicate message received and being processed
+      // The plugin will update to ✅ when successfully forwarded to OpenCode
+      await setMessageReaction(chatId, messageId, '👀')
 
       return new Response('OK')
     }
@@ -469,8 +498,9 @@ Deno.serve(async (req) => {
       return new Response('OK')
     }
 
-    // Confirm to user that reply was sent (simple emoji acknowledgment)
-    await sendTelegramMessage(chatId, `✅`)
+    // React with 👀 to indicate message received and being processed
+    // The plugin will update to ✅ when successfully forwarded to OpenCode
+    await setMessageReaction(chatId, messageId, '👀')
 
     return new Response('OK')
   } catch (error) {
