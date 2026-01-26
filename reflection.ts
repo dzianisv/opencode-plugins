@@ -15,6 +15,8 @@ const POLL_INTERVAL = 2_000
 const DEBUG = process.env.REFLECTION_DEBUG === "1"
 const SESSION_CLEANUP_INTERVAL = 300_000 // Clean old sessions every 5 minutes
 const SESSION_MAX_AGE = 1800_000 // Sessions older than 30 minutes can be cleaned
+const STUCK_CHECK_DELAY = 30_000 // Check if agent is stuck 30 seconds after prompt
+const STUCK_NUDGE_DELAY = 15_000 // Nudge agent 15 seconds after compression
 
 // Debug logging (only when REFLECTION_DEBUG=1)
 function debug(...args: any[]) {
@@ -32,6 +34,10 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   const judgeSessionIds = new Set<string>() // Track judge session IDs to skip them
   // Track session last-seen timestamps for cleanup
   const sessionTimestamps = new Map<string, number>()
+  // Track sessions that have pending nudge timers (to avoid duplicate nudges)
+  const pendingNudges = new Map<string, NodeJS.Timeout>()
+  // Track sessions that were recently compacted (to prompt GitHub update)
+  const recentlyCompacted = new Set<string>()
   
   // Periodic cleanup of old session data to prevent memory leaks
   const cleanupOldSessions = () => {
@@ -46,6 +52,13 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
         for (const key of attempts.keys()) {
           if (key.startsWith(sessionId)) attempts.delete(key)
         }
+        // Clean pending nudges for this session
+        const nudgeTimer = pendingNudges.get(sessionId)
+        if (nudgeTimer) {
+          clearTimeout(nudgeTimer)
+          pendingNudges.delete(sessionId)
+        }
+        recentlyCompacted.delete(sessionId)
         debug("Cleaned up old session:", sessionId.slice(0, 8))
       }
     }
@@ -232,6 +245,100 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   // Generate a key for tracking attempts per task (session + human message count)
   function getAttemptKey(sessionId: string, humanMsgCount: number): string {
     return `${sessionId}:${humanMsgCount}`
+  }
+
+  // Check if a session is currently idle (agent not responding)
+  async function isSessionIdle(sessionId: string): Promise<boolean> {
+    try {
+      const { data: statuses } = await client.session.status({ query: { directory } })
+      if (!statuses) return true // Assume idle on no data
+      const status = statuses[sessionId]
+      // Session is idle if status type is "idle" or if not found
+      return !status || status.type === "idle"
+    } catch {
+      return true // Assume idle on error
+    }
+  }
+
+  // Nudge a stuck session to continue working
+  async function nudgeSession(sessionId: string, reason: "reflection" | "compression"): Promise<void> {
+    // Clear any pending nudge timer
+    const existing = pendingNudges.get(sessionId)
+    if (existing) {
+      clearTimeout(existing)
+      pendingNudges.delete(sessionId)
+    }
+
+    // Check if session is actually idle/stuck
+    if (!(await isSessionIdle(sessionId))) {
+      debug("Session not idle, skipping nudge:", sessionId.slice(0, 8))
+      return
+    }
+
+    // Skip judge sessions and aborted sessions
+    if (judgeSessionIds.has(sessionId) || abortedSessions.has(sessionId)) {
+      debug("Session is judge/aborted, skipping nudge:", sessionId.slice(0, 8))
+      return
+    }
+
+    debug("Nudging stuck session:", sessionId.slice(0, 8), "reason:", reason)
+
+    let nudgeMessage: string
+    if (reason === "compression") {
+      // After compression, prompt to update GitHub PR/issue
+      nudgeMessage = `Context was just compressed. Before continuing with the task:
+
+1. **If you have an active GitHub PR or issue for this work**, please add a comment summarizing:
+   - What has been completed so far
+   - Current status and any blockers
+   - Next steps planned
+
+2. Then continue with the original task.
+
+Use \`gh pr comment\` or \`gh issue comment\` to add the update.`
+    } else {
+      // After reflection feedback, nudge to continue
+      nudgeMessage = `Please continue working on the task. The reflection feedback above indicates there are outstanding items to address.`
+    }
+
+    try {
+      await client.session.promptAsync({
+        path: { id: sessionId },
+        body: {
+          parts: [{ type: "text", text: nudgeMessage }]
+        }
+      })
+      await showToast(reason === "compression" ? "Prompted GitHub update" : "Nudged agent to continue", "info")
+    } catch (e) {
+      debug("Failed to nudge session:", e)
+    }
+  }
+
+  // Schedule a nudge after a delay (for stuck detection)
+  function scheduleNudge(sessionId: string, delay: number, reason: "reflection" | "compression"): void {
+    // Clear any existing timer
+    const existing = pendingNudges.get(sessionId)
+    if (existing) {
+      clearTimeout(existing)
+    }
+
+    const timer = setTimeout(async () => {
+      pendingNudges.delete(sessionId)
+      await nudgeSession(sessionId, reason)
+    }, delay)
+
+    pendingNudges.set(sessionId, timer)
+    debug("Scheduled nudge for session:", sessionId.slice(0, 8), "delay:", delay, "reason:", reason)
+  }
+
+  // Cancel a pending nudge (called when session becomes active)
+  function cancelNudge(sessionId: string): void {
+    const timer = pendingNudges.get(sessionId)
+    if (timer) {
+      clearTimeout(timer)
+      pendingNudges.delete(sessionId)
+      debug("Cancelled pending nudge for session:", sessionId.slice(0, 8))
+    }
   }
 
   async function runReflection(sessionId: string): Promise<void> {
@@ -479,6 +586,8 @@ Please address the above and continue.`
               }]
             }
           })
+          // Schedule a nudge in case the agent gets stuck after receiving feedback
+          scheduleNudge(sessionId, STUCK_CHECK_DELAY, "reflection")
           // Don't mark as reflected yet - we want to check again after agent responds
         }
       } finally {
@@ -512,6 +621,38 @@ Please address the above and continue.`
         const error = props?.error
         if (sessionId && error?.name === "MessageAbortedError") {
           abortedSessions.add(sessionId)
+          cancelNudge(sessionId)
+        }
+      }
+      
+      // Handle session status changes - cancel nudges when session becomes busy
+      if (event.type === "session.status") {
+        const props = (event as any).properties
+        const sessionId = props?.sessionID
+        const status = props?.status
+        if (sessionId && status?.type === "busy") {
+          // Agent is actively working, cancel any pending nudge
+          cancelNudge(sessionId)
+        }
+      }
+      
+      // Handle compression/compaction - schedule nudge to prompt GitHub update
+      if (event.type === "session.compacted") {
+        const sessionId = (event as any).properties?.sessionID
+        debug("session.compacted received for:", sessionId)
+        if (sessionId && typeof sessionId === "string") {
+          // Skip judge sessions
+          if (judgeSessionIds.has(sessionId)) {
+            debug("SKIP compaction handling: is judge session")
+            return
+          }
+          if (abortedSessions.has(sessionId)) {
+            debug("SKIP compaction handling: session aborted")
+            return
+          }
+          // Mark as recently compacted and schedule a nudge
+          recentlyCompacted.add(sessionId)
+          scheduleNudge(sessionId, STUCK_NUDGE_DELAY, "compression")
         }
       }
       
@@ -521,6 +662,9 @@ Please address the above and continue.`
         if (sessionId && typeof sessionId === "string") {
           // Update timestamp for cleanup tracking
           sessionTimestamps.set(sessionId, Date.now())
+          
+          // Cancel any pending nudge since the session just went idle naturally
+          cancelNudge(sessionId)
           
           // Fast path: skip if already known to be aborted or a judge session
           if (abortedSessions.has(sessionId)) {
