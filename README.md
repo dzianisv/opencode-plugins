@@ -101,26 +101,46 @@ Evaluates task completion after each agent response and provides feedback if wor
 
 1. **Trigger**: `session.idle` event fires when agent finishes responding
 2. **Context Collection**: Extracts task, AGENTS.md, tool calls, agent output
-3. **Judge Session**: Creates separate hidden session for unbiased evaluation
+3. **Judge Session**: Creates separate hidden session via OpenCode Sessions API for unbiased evaluation
 4. **Verdict**: PASS → toast notification | FAIL → feedback injected into chat
 5. **Continuation**: Agent receives feedback and continues working
 
 ### Features
 
+- **OpenCode Sessions API**: Uses OpenCode's session management to create isolated judge sessions
+- **Project-aware evaluation**: Reads `AGENTS.md` and skills to understand project-specific policies, testing requirements, and deployment rules
+- **Rich context**: Task description, last 10 tool calls, agent response, and project guidelines
 - Automatic trigger on session idle
-- Rich context (task, AGENTS.md, last 10 tool calls, response)
 - Non-blocking async evaluation with polling (supports slow models like Opus 4.5)
-- Max 3 attempts per task to prevent loops
+- Max 16 attempts per task to prevent loops
 - Infinite loop prevention (skips judge sessions)
+- Auto-reset counter when user provides new feedback
 
 ### Configuration
 
 Constants in `reflection.ts`:
 ```typescript
-const MAX_ATTEMPTS = 3           // Max reflection attempts per task
+const MAX_ATTEMPTS = 16          // Max reflection attempts per task (auto-resets on new user feedback)
 const JUDGE_RESPONSE_TIMEOUT = 180_000  // 3 min timeout for judge
 const POLL_INTERVAL = 2_000      // Poll every 2s
+const STUCK_CHECK_DELAY = 30_000 // Check if agent stuck 30s after reflection feedback
+const STUCK_NUDGE_DELAY = 15_000 // Nudge agent 15s after compression
 ```
+
+### Judge Context
+
+The judge session receives:
+- **User's original task** - What was requested
+- **AGENTS.md content** (first 1500 chars) - Project-specific policies, testing requirements, deployment checklist, and development workflows
+- **Last 10 tool calls** - What actions the agent took
+- **Agent's final response** (first 2000 chars) - What the agent reported
+
+This allows the judge to verify compliance with project-specific rules defined in `AGENTS.md` and related skills, such as:
+- Required testing procedures
+- Build/deployment steps
+- Code quality standards
+- Security policies
+- Documentation requirements
 
 ---
 
