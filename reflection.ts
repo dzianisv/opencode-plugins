@@ -30,7 +30,8 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   // Track which human message count we last completed reflection on
   const lastReflectedMsgCount = new Map<string, number>()
   const activeReflections = new Set<string>()
-  const abortedSessions = new Set<string>() // Permanently track aborted sessions - never reflect on these
+  // Track aborted message counts per session - only skip reflection for the aborted task, not future tasks
+  const abortedMsgCounts = new Map<string, Set<number>>()
   const judgeSessionIds = new Set<string>() // Track judge session IDs to skip them
   // Track session last-seen timestamps for cleanup
   const sessionTimestamps = new Map<string, number>()
@@ -47,7 +48,7 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
         // Clean up all data for this old session
         sessionTimestamps.delete(sessionId)
         lastReflectedMsgCount.delete(sessionId)
-        abortedSessions.delete(sessionId)
+        abortedMsgCounts.delete(sessionId)
         // Clean attempt keys for this session
         for (const key of attempts.keys()) {
           if (key.startsWith(sessionId)) attempts.delete(key)
@@ -144,31 +145,44 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     return false
   }
 
-  function wasSessionAborted(sessionId: string, messages: any[]): boolean {
-    // Fast path: already known to be aborted
-    if (abortedSessions.has(sessionId)) return true
+  // Check if the CURRENT task (identified by human message count) was aborted
+  // Returns true only if the most recent assistant response for this task was aborted
+  // This allows reflection to run on NEW tasks after an abort
+  function wasCurrentTaskAborted(sessionId: string, messages: any[], humanMsgCount: number): boolean {
+    // Fast path: check if this specific message count was already marked as aborted
+    const abortedCounts = abortedMsgCounts.get(sessionId)
+    if (abortedCounts?.has(humanMsgCount)) return true
     
-    // Check if ANY assistant message has an abort error
-    // This happens when user presses Esc to cancel the task
-    // Once aborted, we should never reflect on this session again
-    for (const msg of messages) {
-      if (msg.info?.role === "assistant") {
-        const error = msg.info?.error
-        if (error) {
-          // Check for MessageAbortedError by name
-          if (error.name === "MessageAbortedError") {
-            abortedSessions.add(sessionId)
-            return true
-          }
-          // Also check error message content for abort indicators
-          const errorMsg = error.data?.message || error.message || ""
-          if (typeof errorMsg === "string" && errorMsg.toLowerCase().includes("abort")) {
-            abortedSessions.add(sessionId)
-            return true
-          }
-        }
+    // Check if the LAST assistant message has an abort error
+    // Only the last message matters - previous aborts don't block new tasks
+    const lastAssistant = [...messages].reverse().find(m => m.info?.role === "assistant")
+    if (!lastAssistant) return false
+    
+    const error = lastAssistant.info?.error
+    if (!error) return false
+    
+    // Check for MessageAbortedError
+    if (error.name === "MessageAbortedError") {
+      // Mark this specific message count as aborted
+      if (!abortedMsgCounts.has(sessionId)) {
+        abortedMsgCounts.set(sessionId, new Set())
       }
+      abortedMsgCounts.get(sessionId)!.add(humanMsgCount)
+      debug("Marked task as aborted:", sessionId.slice(0, 8), "msgCount:", humanMsgCount)
+      return true
     }
+    
+    // Also check error message content for abort indicators
+    const errorMsg = error.data?.message || error.message || ""
+    if (typeof errorMsg === "string" && errorMsg.toLowerCase().includes("abort")) {
+      if (!abortedMsgCounts.has(sessionId)) {
+        abortedMsgCounts.set(sessionId, new Set())
+      }
+      abortedMsgCounts.get(sessionId)!.add(humanMsgCount)
+      debug("Marked task as aborted:", sessionId.slice(0, 8), "msgCount:", humanMsgCount)
+      return true
+    }
+    
     return false
   }
 
@@ -275,9 +289,9 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
       return
     }
 
-    // Skip judge sessions and aborted sessions
-    if (judgeSessionIds.has(sessionId) || abortedSessions.has(sessionId)) {
-      debug("Session is judge/aborted, skipping nudge:", sessionId.slice(0, 8))
+    // Skip judge sessions (aborted tasks are handled per-task in runReflection)
+    if (judgeSessionIds.has(sessionId)) {
+      debug("Session is judge, skipping nudge:", sessionId.slice(0, 8))
       return
     }
 
@@ -315,15 +329,23 @@ Use \`gh pr comment\` or \`gh issue comment\` to add the update.`
   }
 
   // Schedule a nudge after a delay (for stuck detection)
+  // NOTE: Only one nudge per session is supported. If a new nudge is scheduled
+  // before the existing one fires, the existing one is replaced.
+  // This is intentional: compression nudges should fire before reflection runs,
+  // and reflection nudges replace any stale compression nudges.
   function scheduleNudge(sessionId: string, delay: number, reason: "reflection" | "compression"): void {
-    // Clear any existing timer
+    // Clear any existing timer (warn if replacing a different type)
     const existing = pendingNudges.get(sessionId)
     if (existing) {
+      if (existing.reason !== reason) {
+        debug("WARNING: Replacing", existing.reason, "nudge with", reason, "nudge for session:", sessionId.slice(0, 8))
+      }
       clearTimeout(existing.timer)
     }
 
     const timer = setTimeout(async () => {
       pendingNudges.delete(sessionId)
+      debug("Nudge timer fired for session:", sessionId.slice(0, 8), "reason:", reason)
       await nudgeSession(sessionId, reason)
     }, delay)
 
@@ -365,12 +387,6 @@ Use \`gh pr comment\` or \`gh issue comment\` to add the update.`
         return
       }
 
-      // Skip if session was aborted/cancelled by user (Esc key) - check FIRST
-      if (wasSessionAborted(sessionId, messages)) {
-        debug("SKIP: session was aborted")
-        return
-      }
-
       // Skip judge sessions
       if (isJudgeSession(sessionId, messages)) {
         debug("SKIP: is judge session")
@@ -382,6 +398,13 @@ Use \`gh pr comment\` or \`gh issue comment\` to add the update.`
       debug("humanMsgCount:", humanMsgCount)
       if (humanMsgCount === 0) {
         debug("SKIP: no human messages")
+        return
+      }
+
+      // Skip if current task was aborted/cancelled by user (Esc key)
+      // This only skips the specific aborted task, not future tasks in the same session
+      if (wasCurrentTaskAborted(sessionId, messages, humanMsgCount)) {
+        debug("SKIP: current task was aborted")
         return
       }
 
@@ -629,25 +652,28 @@ Please address the above and continue.`
     event: async ({ event }: { event: { type: string; properties?: any } }) => {
       debug("event received:", event.type, (event as any).properties?.sessionID?.slice(0, 8))
       
-      // Track aborted sessions immediately when session.error fires
+      // Track aborted sessions immediately when session.error fires - cancel any pending nudges
       if (event.type === "session.error") {
         const props = (event as any).properties
         const sessionId = props?.sessionID
         const error = props?.error
         if (sessionId && error?.name === "MessageAbortedError") {
-          abortedSessions.add(sessionId)
+          // Cancel nudges for this session - the abort will be detected per-task in runReflection
           cancelNudge(sessionId)
+          debug("Session aborted, cancelled nudges:", sessionId.slice(0, 8))
         }
       }
       
-      // Handle session status changes - cancel nudges when session becomes busy
+      // Handle session status changes - cancel reflection nudges when session becomes busy
+      // BUT keep compression nudges so they can fire after agent finishes
       if (event.type === "session.status") {
         const props = (event as any).properties
         const sessionId = props?.sessionID
         const status = props?.status
         if (sessionId && status?.type === "busy") {
-          // Agent is actively working, cancel any pending nudge
-          cancelNudge(sessionId)
+          // Agent is actively working, cancel only reflection nudges
+          // Keep compression nudges - they should fire after agent finishes to prompt GitHub update
+          cancelNudge(sessionId, "reflection")
         }
       }
       
@@ -661,10 +687,7 @@ Please address the above and continue.`
             debug("SKIP compaction handling: is judge session")
             return
           }
-          if (abortedSessions.has(sessionId)) {
-            debug("SKIP compaction handling: session aborted")
-            return
-          }
+          // Don't skip for aborted sessions - user may continue after abort
           // Mark as recently compacted and schedule a nudge
           recentlyCompacted.add(sessionId)
           scheduleNudge(sessionId, STUCK_NUDGE_DELAY, "compression")
@@ -682,11 +705,7 @@ Please address the above and continue.`
           // Keep compression nudges so they can fire and prompt GitHub update
           cancelNudge(sessionId, "reflection")
           
-          // Fast path: skip if already known to be aborted or a judge session
-          if (abortedSessions.has(sessionId)) {
-            debug("SKIP: session in abortedSessions set")
-            return
-          }
+          // Fast path: skip judge sessions (abort check happens per-task in runReflection)
           if (judgeSessionIds.has(sessionId)) {
             debug("SKIP: session in judgeSessionIds set")
             return
