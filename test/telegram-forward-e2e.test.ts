@@ -388,4 +388,132 @@ describe("E2E: Telegram Reply Forwarding", { timeout: TIMEOUT * 2 }, () => {
     // Clean up
     await supabase.from("telegram_replies").delete().eq("id", dupReplyId)
   })
+
+  it("should forward reply via webhook simulation (full flow)", async function () {
+    if (!RUN_E2E) {
+      skip("E2E tests disabled")
+      return
+    }
+
+    if (!sessionId) {
+      skip("No session created")
+      return
+    }
+
+    console.log("\n=== Test: Webhook Simulation (Full Flow) ===\n")
+
+    // This tests the complete path:
+    // 1. Create a reply context (like send-notify does)
+    // 2. Send a simulated webhook request (like Telegram does)
+    // 3. Verify the reply appears in the session
+
+    // Step 1: Create a reply context
+    const contextId = randomUUID()
+    const fakeNotificationMessageId = Math.floor(Math.random() * 1000000)
+
+    console.log("Creating reply context...")
+    const { error: contextError } = await supabase.from("telegram_reply_contexts").insert({
+      id: contextId,
+      uuid: TEST_UUID,
+      session_id: sessionId,
+      message_id: fakeNotificationMessageId,
+      chat_id: TEST_CHAT_ID,
+      is_active: true
+    })
+
+    if (contextError) {
+      throw new Error(`Failed to create reply context: ${contextError.message}`)
+    }
+
+    console.log(`Reply context created: ${contextId}`)
+
+    // Step 2: Send a simulated webhook request (like Telegram would)
+    const webhookMessageId = Math.floor(Math.random() * 1000000)
+    const webhookReplyText = `Webhook Test ${Date.now()}`
+
+    console.log(`Sending webhook with reply: "${webhookReplyText}"`)
+
+    const webhookPayload = {
+      update_id: webhookMessageId,
+      message: {
+        message_id: webhookMessageId,
+        from: {
+          id: TEST_CHAT_ID,
+          is_bot: false,
+          first_name: "E2E Test"
+        },
+        chat: {
+          id: TEST_CHAT_ID,
+          type: "private"
+        },
+        date: Math.floor(Date.now() / 1000),
+        text: webhookReplyText,
+        reply_to_message: {
+          message_id: fakeNotificationMessageId,
+          from: { id: 0, is_bot: true, first_name: "Bot" },
+          chat: { id: TEST_CHAT_ID, type: "private" },
+          date: Math.floor(Date.now() / 1000) - 60,
+          text: "Original notification"
+        }
+      }
+    }
+
+    const webhookResponse = await fetch(
+      "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/telegram-webhook",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(webhookPayload)
+      }
+    )
+
+    assert.ok(webhookResponse.ok, `Webhook failed: ${webhookResponse.status}`)
+    console.log(`Webhook response: ${webhookResponse.status}`)
+
+    // Step 3: Wait for reply to appear in session
+    console.log("Waiting for reply to appear in session...")
+
+    const result = await waitForMessage(client, sessionId, webhookReplyText, 30_000)
+
+    // Debug if not found
+    if (!result.found) {
+      console.log("\nSession messages:")
+      for (const msg of result.allMessages || []) {
+        const role = msg.info?.role || "unknown"
+        for (const part of msg.parts || []) {
+          if (part.type === "text") {
+            console.log(`  [${role}] ${part.text?.slice(0, 100)}...`)
+          }
+        }
+      }
+
+      // Check if reply was stored and processed
+      const { data: replies } = await supabase
+        .from("telegram_replies")
+        .select("id, processed, processed_at, reply_text")
+        .eq("telegram_message_id", webhookMessageId)
+        .limit(1)
+
+      console.log("\nReply in database:", replies?.[0])
+    }
+
+    // Clean up context
+    await supabase.from("telegram_reply_contexts").delete().eq("id", contextId)
+
+    assert.ok(
+      result.found,
+      `Webhook reply "${webhookReplyText}" not found in session`
+    )
+
+    console.log("Full webhook flow verified!")
+
+    // Verify prefix
+    const messageText = result.message?.parts?.find((p: any) => p.type === "text")?.text
+    assert.ok(
+      messageText?.includes("[User via Telegram]"),
+      "Reply should have Telegram prefix"
+    )
+
+    console.log("Webhook simulation test passed")
+  })
 })
