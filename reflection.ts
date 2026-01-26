@@ -507,6 +507,15 @@ If the agent's response contains explicit progress indicators like:
 Then the task is INCOMPLETE (complete: false) regardless of other indicators.
 The agent must finish all stated work, not just report status.
 
+### Delegation/Deferral Detection
+If the agent's response asks the user to choose or act instead of completing the task:
+- "What would you like me to do?"
+- "Which option would you prefer?"
+- "Let me know if you want me to..."
+- "I can help you with..." followed by numbered options
+- Presenting options (1. 2. 3.) without taking action
+Then the task is INCOMPLETE (complete: false). The agent should execute the task, not ask permission or delegate back to the user.
+
 ---
 
 Reply with JSON only (no other text):
