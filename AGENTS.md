@@ -371,10 +371,47 @@ opencode -c
 # Check for reflection feedback or toast notification
 # Verify .reflection/ directory has new JSON files
 
-# 7. For tts.ts/telegram.ts changes: Test TTS/Telegram
-# Run: "Say hello"
-# Verify TTS speaks or Telegram notification sent
-# Check for conversion errors (WAV/OGG)
+# 7. For tts.ts/telegram.ts changes: Test TTS/Telegram (COMPREHENSIVE)
+**WARNING: As of 2026-01-26, there is NO reliable way to verify TTS/Telegram plugins are loaded and working**
+**This is a critical gap in the testing process**
+
+# Create test workspace
+cd /tmp && mkdir -p test-tts-$(date +%s) && cd test-tts-*
+
+# Run a real task that should trigger TTS
+opencode run "Create a hello.js file that prints 'Hello World'" 2>&1 | tee test-output.log
+
+# Check TTS/Telegram logs (OFTEN PRODUCES NO OUTPUT even when working)
+grep -i "\[TTS\]\|\[Telegram\]" test-output.log
+
+# Should see logs like:
+# - "[TTS] Speaking message..."
+# - "[Telegram] Sending notification..."
+# Should NOT see:
+# - "TypeError: wavPath.replace is not a function"
+# - "convertWavToOgg called with invalid wavPath"
+# - "is not a function"
+
+# **CRITICAL**: If you see NO logs, this could mean:
+# 1. Plugins are not loaded (BAD - need to fix)
+# 2. Plugins are loaded but not triggering (BAD - need to fix)  
+# 3. Plugins are working but not logging (UNCLEAR - cannot verify)
+
+# **MANUAL VERIFICATION REQUIRED**:
+# If Telegram enabled: Check Telegram app for notification
+# If TTS enabled: Listen for audio playback
+# If NEITHER happens: Plugin is broken or not loaded
+
+# Test Telegram reply (if receiveReplies enabled):
+# 1. Reply to notification in Telegram
+# 2. Check if reply forwarded to OpenCode session
+# 3. Verify session continues with your reply
+
+# Check for audio conversion errors
+grep -i "error.*wav\|error.*ogg\|ffmpeg.*error" ~/.config/opencode/opencode.log
+
+# **TODO**: Add plugin health check command to verify plugins are loaded:
+# opencode plugins list  # Should show: reflection, tts, worktree-status
 
 # 8. Check for runtime errors
 grep -i "error\|exception\|undefined" ~/.config/opencode/opencode.log || echo "No errors found"
