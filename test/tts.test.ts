@@ -1341,3 +1341,71 @@ describe("Telegram Voice Message Support - Structure Validation", () => {
     })
   })
 })
+
+// ==================== BUG FIXES VERIFICATION ====================
+
+describe("Telegram Bug Fixes - Verification", () => {
+  let ttsContent: string | null = null
+
+  beforeAll(async () => {
+    try {
+      ttsContent = await readFile(join(__dirname, "..", "tts.ts"), "utf-8")
+    } catch { ttsContent = null }
+  })
+
+  it("uses thumbs up emoji (👍) for reaction updates, not checkmark (✅)", () => {
+    if (!ttsContent) {
+      console.log("  [SKIP] tts.ts not found")
+      return
+    }
+    
+    // ✅ is not a valid Telegram reaction emoji - causes REACTION_INVALID error
+    // The plugin should use 👍 which is in the approved list
+    
+    // Find the updateMessageReaction call after forwarding reply
+    const reactionUpdateSection = ttsContent.match(/Update Telegram reaction from.*?updateMessageReaction/s)
+    assert.ok(reactionUpdateSection, "Should have reaction update after forwarding")
+    
+    // Verify we're using 👍
+    const usesThumbsUp = ttsContent.includes("'👍'") && 
+                         ttsContent.match(/updateMessageReaction\([^)]*'👍'/)
+    assert.ok(usesThumbsUp, "Should use 👍 emoji for reaction updates")
+    
+    // Verify we're NOT using ✅ in the actual reaction call
+    // (✅ may appear in comments explaining the bug, but not in actual code)
+    const checkmarkInCall = ttsContent.match(/updateMessageReaction\([^)]*,\s*['"]✅['"]/)
+    assert.ok(!checkmarkInCall, "Should NOT use ✅ in updateMessageReaction call")
+  })
+
+  it("skips subagent sessions (sessions with parentID)", () => {
+    if (!ttsContent) {
+      console.log("  [SKIP] tts.ts not found")
+      return
+    }
+    
+    // Subagent sessions (@explore, @task) have a parentID
+    // Notifications from subagents can't have replies properly forwarded
+    // because the subagent session runs in the background
+    
+    assert.ok(ttsContent.includes("parentID"), "Should check for parentID")
+    assert.ok(ttsContent.includes("Subagent session"), "Should have comment about subagent skip")
+    assert.ok(ttsContent.includes("client.session.get"), "Should call session.get to check session info")
+    
+    // Verify the logic is in the right place (session.idle handler)
+    const sessionIdleHandler = ttsContent.match(/session\.idle.*?parentID/s)
+    assert.ok(sessionIdleHandler, "parentID check should be in session.idle handler")
+  })
+
+  it("documents valid Telegram reaction emojis", () => {
+    if (!ttsContent) {
+      console.log("  [SKIP] tts.ts not found")
+      return
+    }
+    
+    // The plugin should document which emojis are valid for reactions
+    // to prevent future bugs with invalid emojis
+    const hasEmojiDocumentation = ttsContent.includes("valid Telegram reaction emoji") ||
+                                   ttsContent.includes("👍 👎 ❤️ 🔥")
+    assert.ok(hasEmojiDocumentation, "Should document valid reaction emojis")
+  })
+})
