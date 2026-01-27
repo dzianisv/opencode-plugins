@@ -516,4 +516,309 @@ describe("E2E: Telegram Reply Forwarding", { timeout: TIMEOUT * 2 }, () => {
 
     console.log("Webhook simulation test passed")
   })
+
+  it("should route replies to correct session with 2 parallel sessions", async function () {
+    if (!RUN_E2E) {
+      skip("E2E tests disabled")
+      return
+    }
+
+    console.log("\n=== Test: Parallel Sessions - Correct Routing ===\n")
+
+    // This is the KEY test for issue #22:
+    // With 2 sessions active, replying to Session 1's notification should
+    // go to Session 1, not Session 2 (the most recent one)
+
+    // Step 1: Create two sessions
+    const { data: session1 } = await client.session.create({})
+    const { data: session2 } = await client.session.create({})
+    
+    assert.ok(session1?.id, "Failed to create session 1")
+    assert.ok(session2?.id, "Failed to create session 2")
+    
+    console.log(`Session 1: ${session1.id}`)
+    console.log(`Session 2: ${session2.id}`)
+
+    // Step 2: Create reply contexts for both sessions (simulating send-notify)
+    const context1Id = randomUUID()
+    const context2Id = randomUUID()
+    const notification1MessageId = Math.floor(Math.random() * 1000000)
+    const notification2MessageId = Math.floor(Math.random() * 1000000)
+
+    console.log("\nCreating reply contexts...")
+    
+    // Context for Session 1 (created first - "older" notification)
+    const { error: ctx1Error } = await supabase.from("telegram_reply_contexts").insert({
+      id: context1Id,
+      uuid: TEST_UUID,
+      session_id: session1.id,
+      message_id: notification1MessageId,
+      chat_id: TEST_CHAT_ID,
+      is_active: true,
+      created_at: new Date(Date.now() - 60000).toISOString() // 1 minute ago
+    })
+    if (ctx1Error) throw new Error(`Failed to create context 1: ${ctx1Error.message}`)
+    console.log(`  Context 1 (Session 1): message_id=${notification1MessageId}`)
+
+    // Wait a bit to ensure different timestamps
+    await new Promise(r => setTimeout(r, 100))
+
+    // Context for Session 2 (created second - "newer" notification)
+    const { error: ctx2Error } = await supabase.from("telegram_reply_contexts").insert({
+      id: context2Id,
+      uuid: TEST_UUID,
+      session_id: session2.id,
+      message_id: notification2MessageId,
+      chat_id: TEST_CHAT_ID,
+      is_active: true
+    })
+    if (ctx2Error) throw new Error(`Failed to create context 2: ${ctx2Error.message}`)
+    console.log(`  Context 2 (Session 2): message_id=${notification2MessageId}`)
+
+    // Step 3: Send a reply to the FIRST (older) notification
+    // This is the critical test - before the fix, this would go to Session 2
+    const reply1Text = `Reply to Session 1 - ${Date.now()}`
+    const reply1MessageId = Math.floor(Math.random() * 1000000)
+
+    console.log(`\nSending reply to Session 1's notification: "${reply1Text}"`)
+    console.log(`  reply_to_message.message_id = ${notification1MessageId}`)
+
+    const webhook1Response = await fetch(
+      "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/telegram-webhook",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          update_id: reply1MessageId,
+          message: {
+            message_id: reply1MessageId,
+            from: { id: TEST_CHAT_ID, is_bot: false, first_name: "E2E Test" },
+            chat: { id: TEST_CHAT_ID, type: "private" },
+            date: Math.floor(Date.now() / 1000),
+            text: reply1Text,
+            reply_to_message: {
+              message_id: notification1MessageId, // Reply to Session 1's notification
+              from: { id: 0, is_bot: true, first_name: "Bot" },
+              chat: { id: TEST_CHAT_ID, type: "private" },
+              date: Math.floor(Date.now() / 1000) - 60,
+              text: "Notification for Session 1"
+            }
+          }
+        })
+      }
+    )
+    assert.ok(webhook1Response.ok, `Webhook 1 failed: ${webhook1Response.status}`)
+
+    // Step 4: Send a reply to the SECOND (newer) notification
+    const reply2Text = `Reply to Session 2 - ${Date.now()}`
+    const reply2MessageId = Math.floor(Math.random() * 1000000)
+
+    console.log(`Sending reply to Session 2's notification: "${reply2Text}"`)
+    console.log(`  reply_to_message.message_id = ${notification2MessageId}`)
+
+    const webhook2Response = await fetch(
+      "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/telegram-webhook",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          update_id: reply2MessageId,
+          message: {
+            message_id: reply2MessageId,
+            from: { id: TEST_CHAT_ID, is_bot: false, first_name: "E2E Test" },
+            chat: { id: TEST_CHAT_ID, type: "private" },
+            date: Math.floor(Date.now() / 1000),
+            text: reply2Text,
+            reply_to_message: {
+              message_id: notification2MessageId, // Reply to Session 2's notification
+              from: { id: 0, is_bot: true, first_name: "Bot" },
+              chat: { id: TEST_CHAT_ID, type: "private" },
+              date: Math.floor(Date.now() / 1000) - 30,
+              text: "Notification for Session 2"
+            }
+          }
+        })
+      }
+    )
+    assert.ok(webhook2Response.ok, `Webhook 2 failed: ${webhook2Response.status}`)
+
+    // Step 5: Wait for replies to be processed
+    console.log("\nWaiting for replies to be stored...")
+    await new Promise(r => setTimeout(r, 2000))
+
+    // Step 6: Verify replies were stored with correct session IDs
+    const { data: storedReplies } = await supabase
+      .from("telegram_replies")
+      .select("session_id, reply_text, telegram_message_id")
+      .in("telegram_message_id", [reply1MessageId, reply2MessageId])
+
+    console.log("\nStored replies:")
+    for (const reply of storedReplies || []) {
+      console.log(`  message_id=${reply.telegram_message_id} -> session=${reply.session_id}`)
+      console.log(`    text: "${reply.reply_text?.slice(0, 50)}..."`)
+    }
+
+    // Find the replies
+    const storedReply1 = storedReplies?.find(r => r.telegram_message_id === reply1MessageId)
+    const storedReply2 = storedReplies?.find(r => r.telegram_message_id === reply2MessageId)
+
+    // CRITICAL ASSERTIONS: Each reply should be routed to the correct session
+    assert.ok(storedReply1, "Reply 1 not found in database")
+    assert.ok(storedReply2, "Reply 2 not found in database")
+
+    assert.strictEqual(
+      storedReply1.session_id,
+      session1.id,
+      `Reply 1 should go to Session 1, but went to ${storedReply1.session_id}`
+    )
+
+    assert.strictEqual(
+      storedReply2.session_id,
+      session2.id,
+      `Reply 2 should go to Session 2, but went to ${storedReply2.session_id}`
+    )
+
+    console.log("\n✅ VERIFIED: Replies routed to correct sessions!")
+    console.log(`  Reply 1 -> Session 1: ${session1.id}`)
+    console.log(`  Reply 2 -> Session 2: ${session2.id}`)
+
+    // Step 7: Verify replies appear in correct session messages
+    console.log("\nWaiting for replies to appear in sessions...")
+
+    const [result1, result2] = await Promise.all([
+      waitForMessage(client, session1.id, reply1Text, 30_000),
+      waitForMessage(client, session2.id, reply2Text, 30_000)
+    ])
+
+    // Debug if not found
+    if (!result1.found) {
+      console.log("\nSession 1 messages (reply 1 NOT found):")
+      for (const msg of result1.allMessages || []) {
+        for (const part of msg.parts || []) {
+          if (part.type === "text") {
+            console.log(`  ${part.text?.slice(0, 80)}...`)
+          }
+        }
+      }
+    }
+
+    if (!result2.found) {
+      console.log("\nSession 2 messages (reply 2 NOT found):")
+      for (const msg of result2.allMessages || []) {
+        for (const part of msg.parts || []) {
+          if (part.type === "text") {
+            console.log(`  ${part.text?.slice(0, 80)}...`)
+          }
+        }
+      }
+    }
+
+    // Verify each reply appears ONLY in its intended session
+    assert.ok(result1.found, `Reply 1 not found in Session 1`)
+    assert.ok(result2.found, `Reply 2 not found in Session 2`)
+
+    // Verify replies DON'T appear in the wrong session
+    const wrongRoute1 = await waitForMessage(client, session2.id, reply1Text, 2_000)
+    const wrongRoute2 = await waitForMessage(client, session1.id, reply2Text, 2_000)
+
+    assert.ok(!wrongRoute1.found, "Reply 1 should NOT appear in Session 2")
+    assert.ok(!wrongRoute2.found, "Reply 2 should NOT appear in Session 1")
+
+    console.log("\n✅ VERIFIED: Replies appear ONLY in correct sessions!")
+
+    // Cleanup
+    await supabase.from("telegram_reply_contexts").delete().eq("id", context1Id)
+    await supabase.from("telegram_reply_contexts").delete().eq("id", context2Id)
+    await supabase.from("telegram_replies").delete().eq("telegram_message_id", reply1MessageId)
+    await supabase.from("telegram_replies").delete().eq("telegram_message_id", reply2MessageId)
+
+    console.log("\nParallel sessions test passed!")
+  })
+
+  it("should reject direct messages without reply_to_message", async function () {
+    if (!RUN_E2E) {
+      skip("E2E tests disabled")
+      return
+    }
+
+    console.log("\n=== Test: Reject Direct Messages (No Fallback) ===\n")
+
+    // When user sends a message WITHOUT using Telegram's Reply feature,
+    // we should REJECT it with an error asking user to use Reply.
+    // NO FALLBACK to "most recent" session - that causes wrong routing.
+
+    // Create a session and context (to prove we DON'T use it for fallback)
+    const { data: session } = await client.session.create({})
+    assert.ok(session?.id, "Failed to create session")
+    console.log(`Session: ${session.id}`)
+
+    // Create a reply context
+    const contextId = randomUUID()
+    const notificationMessageId = Math.floor(Math.random() * 1000000)
+
+    const { error: ctxError } = await supabase.from("telegram_reply_contexts").insert({
+      id: contextId,
+      uuid: TEST_UUID,
+      session_id: session.id,
+      message_id: notificationMessageId,
+      chat_id: TEST_CHAT_ID,
+      is_active: true
+    })
+    if (ctxError) throw new Error(`Failed to create context: ${ctxError.message}`)
+    console.log(`Context created: message_id=${notificationMessageId}`)
+
+    // Send a message WITHOUT reply_to_message (user just types in chat)
+    const replyText = `Direct message (no reply) - ${Date.now()}`
+    const replyMessageId = Math.floor(Math.random() * 1000000)
+
+    console.log(`\nSending direct message (no reply_to): "${replyText}"`)
+
+    const webhookResponse = await fetch(
+      "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/telegram-webhook",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          update_id: replyMessageId,
+          message: {
+            message_id: replyMessageId,
+            from: { id: TEST_CHAT_ID, is_bot: false, first_name: "E2E Test" },
+            chat: { id: TEST_CHAT_ID, type: "private" },
+            date: Math.floor(Date.now() / 1000),
+            text: replyText
+            // NOTE: No reply_to_message field!
+          }
+        })
+      }
+    )
+    assert.ok(webhookResponse.ok, `Webhook failed: ${webhookResponse.status}`)
+
+    // Wait for processing
+    await new Promise(r => setTimeout(r, 2000))
+
+    // Verify reply was NOT stored (should be rejected, not routed)
+    const { data: storedReply } = await supabase
+      .from("telegram_replies")
+      .select("session_id, reply_text")
+      .eq("telegram_message_id", replyMessageId)
+      .maybeSingle()
+
+    assert.ok(
+      !storedReply,
+      `Direct message should be REJECTED, not stored. Found: ${JSON.stringify(storedReply)}`
+    )
+
+    console.log("✅ Direct message was rejected (not stored)")
+
+    // Verify it does NOT appear in session
+    const result = await waitForMessage(client, session.id, replyText, 3_000)
+    assert.ok(!result.found, "Direct message should NOT appear in session")
+
+    console.log("✅ Message did NOT appear in session (correct behavior)")
+
+    // Cleanup
+    await supabase.from("telegram_reply_contexts").delete().eq("id", contextId)
+
+    console.log("\nDirect message rejection test passed!")
+  })
 })
