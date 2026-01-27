@@ -243,29 +243,15 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Fallback: most recent active context
-      if (!voiceContext) {
-        const { data: recentContext, error: contextError } = await supabase
-          .rpc('get_active_reply_context', { p_chat_id: chatId })
-
-        if (contextError || !recentContext || recentContext.length === 0) {
-          await sendTelegramReply(chatId, messageId,
-            `ℹ️ *No active session*\n\n` +
-            `There's no active OpenCode session to send voice messages to.\n\n` +
-            `Sessions are available for 48 hours after receiving a notification.\n` +
-            `Start a new task in OpenCode first to receive notifications.`
-          )
-          return new Response('OK')
-        }
-
-        voiceContext = recentContext[0]
-      }
-
-      // Final null check for TypeScript
+      // No reply_to_message - user sent voice without using Telegram's Reply feature
       if (!voiceContext) {
         await sendTelegramReply(chatId, messageId,
-          `❌ *Error processing message*\n\n` +
-          `Could not determine session context. Please try again.`
+          `💬 *Please use Reply*\n\n` +
+          `To send a voice message to a specific OpenCode session, use Telegram's Reply feature:\n\n` +
+          `1. Find the notification message for the session you want\n` +
+          `2. Swipe left on that message (or long-press → Reply)\n` +
+          `3. Record your voice message\n\n` +
+          `This ensures your message goes to the correct session.`
         )
         return new Response('OK')
       }
@@ -616,39 +602,16 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Fallback: most recent active context (for direct messages without reply-to)
-    if (!context) {
-      const { data: recentContext, error: contextError } = await supabase
-        .rpc('get_active_reply_context', { p_chat_id: chatId })
-
-      if (contextError) {
-        console.error('Error looking up reply context:', contextError)
-        await sendTelegramReply(chatId, messageId,
-          `❌ *Error processing message*\n\n` +
-          `Please try again later.`
-        )
-        return new Response('OK')
-      }
-
-      if (!recentContext || recentContext.length === 0) {
-        await sendTelegramReply(chatId, messageId,
-          `ℹ️ *No active session*\n\n` +
-          `There's no active OpenCode session to reply to.\n\n` +
-          `Sessions are available for 48 hours after receiving a notification.\n` +
-          `Start a new task in OpenCode to receive notifications.`
-        )
-        return new Response('OK')
-      }
-
-      context = recentContext[0]
-    }
-
-    // At this point context should never be null (we return early in all null cases above)
-    // But TypeScript doesn't know this, so add a final check
+    // No reply_to_message - user sent a direct message without using Telegram's Reply feature
+    // We CANNOT route this to a specific session, so ask user to use Reply
     if (!context) {
       await sendTelegramReply(chatId, messageId,
-        `❌ *Error processing message*\n\n` +
-        `Could not determine session context. Please try again.`
+        `💬 *Please use Reply*\n\n` +
+        `To send a message to a specific OpenCode session, use Telegram's Reply feature:\n\n` +
+        `1. Find the notification message for the session you want\n` +
+        `2. Swipe left on that message (or long-press → Reply)\n` +
+        `3. Type your message\n\n` +
+        `This ensures your reply goes to the correct session.`
       )
       return new Response('OK')
     }

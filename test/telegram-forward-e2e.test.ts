@@ -735,18 +735,19 @@ describe("E2E: Telegram Reply Forwarding", { timeout: TIMEOUT * 2 }, () => {
     console.log("\nParallel sessions test passed!")
   })
 
-  it("should fallback to most recent context when no reply_to_message", async function () {
+  it("should reject direct messages without reply_to_message", async function () {
     if (!RUN_E2E) {
       skip("E2E tests disabled")
       return
     }
 
-    console.log("\n=== Test: Fallback to Most Recent Context ===\n")
+    console.log("\n=== Test: Reject Direct Messages (No Fallback) ===\n")
 
     // When user sends a message WITHOUT using Telegram's Reply feature,
-    // we should fallback to the most recent active context (backwards compatibility)
+    // we should REJECT it with an error asking user to use Reply.
+    // NO FALLBACK to "most recent" session - that causes wrong routing.
 
-    // Create a session
+    // Create a session and context (to prove we DON'T use it for fallback)
     const { data: session } = await client.session.create({})
     assert.ok(session?.id, "Failed to create session")
     console.log(`Session: ${session.id}`)
@@ -795,32 +796,29 @@ describe("E2E: Telegram Reply Forwarding", { timeout: TIMEOUT * 2 }, () => {
     // Wait for processing
     await new Promise(r => setTimeout(r, 2000))
 
-    // Verify reply was stored with correct session (fallback to most recent)
+    // Verify reply was NOT stored (should be rejected, not routed)
     const { data: storedReply } = await supabase
       .from("telegram_replies")
       .select("session_id, reply_text")
       .eq("telegram_message_id", replyMessageId)
-      .single()
+      .maybeSingle()
 
-    assert.ok(storedReply, "Reply not found in database")
-    assert.strictEqual(
-      storedReply.session_id,
-      session.id,
-      `Reply should fallback to most recent session, but went to ${storedReply.session_id}`
+    assert.ok(
+      !storedReply,
+      `Direct message should be REJECTED, not stored. Found: ${JSON.stringify(storedReply)}`
     )
 
-    console.log(`✅ Fallback worked: reply routed to ${session.id}`)
+    console.log("✅ Direct message was rejected (not stored)")
 
-    // Verify it appears in session
-    const result = await waitForMessage(client, session.id, replyText, 30_000)
-    assert.ok(result.found, "Reply not found in session messages")
+    // Verify it does NOT appear in session
+    const result = await waitForMessage(client, session.id, replyText, 3_000)
+    assert.ok(!result.found, "Direct message should NOT appear in session")
 
-    console.log("✅ Fallback reply appeared in session")
+    console.log("✅ Message did NOT appear in session (correct behavior)")
 
     // Cleanup
     await supabase.from("telegram_reply_contexts").delete().eq("id", contextId)
-    await supabase.from("telegram_replies").delete().eq("telegram_message_id", replyMessageId)
 
-    console.log("\nFallback test passed!")
+    console.log("\nDirect message rejection test passed!")
   })
 })
