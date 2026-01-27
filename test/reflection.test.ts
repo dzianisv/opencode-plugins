@@ -203,4 +203,141 @@ describe("Reflection Plugin - Unit Tests", () => {
       }
     })
   })
+
+  describe("extractTaskAndResult with multiple human messages", () => {
+    // Helper function that mimics extractTaskAndResult logic
+    function extractTaskAndResult(messages: any[]): { task: string; result: string; tools: string; isResearch: boolean; humanMessages: string[] } | null {
+      const humanMessages: string[] = []
+      let result = ""
+      const tools: string[] = []
+
+      for (const msg of messages) {
+        if (msg.info?.role === "user") {
+          for (const part of msg.parts || []) {
+            if (part.type === "text" && part.text) {
+              if (part.text.includes("## Reflection:")) continue
+              humanMessages.push(part.text)
+              break
+            }
+          }
+        }
+
+        for (const part of msg.parts || []) {
+          if (part.type === "tool") {
+            try {
+              tools.push(`${part.tool}: ${JSON.stringify(part.state?.input || {}).slice(0, 200)}`)
+            } catch {}
+          }
+        }
+
+        if (msg.info?.role === "assistant") {
+          for (const part of msg.parts || []) {
+            if (part.type === "text" && part.text) {
+              result = part.text
+            }
+          }
+        }
+      }
+
+      const originalTask = humanMessages[0] || ""
+      const task = humanMessages.length === 1
+        ? originalTask
+        : humanMessages.map((msg, i) => `[${i + 1}] ${msg}`).join("\n\n")
+      
+      const allHumanText = humanMessages.join(" ")
+      const isResearch = /research|explore|investigate|analyze|review|study|compare|evaluate/i.test(allHumanText) &&
+                         /do not|don't|no code|research only|just research|only research/i.test(allHumanText)
+
+      if (!originalTask || !result) return null
+      return { task, result, tools: tools.slice(-10).join("\n"), isResearch, humanMessages }
+    }
+
+    it("should capture all human messages in a multi-pivot session", () => {
+      const messages = [
+        { info: { role: "user" }, parts: [{ type: "text", text: "Create a user authentication system" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "I'll start implementing..." }] },
+        { info: { role: "user" }, parts: [{ type: "text", text: "Actually, let's use OAuth instead of passwords" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "Switching to OAuth..." }] },
+        { info: { role: "user" }, parts: [{ type: "text", text: "Also add rate limiting" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "Done with OAuth and rate limiting!" }] },
+      ]
+
+      const extracted = extractTaskAndResult(messages)
+      assert.ok(extracted, "Should extract task and result")
+      assert.strictEqual(extracted.humanMessages.length, 3, "Should capture all 3 human messages")
+      assert.strictEqual(extracted.humanMessages[0], "Create a user authentication system")
+      assert.strictEqual(extracted.humanMessages[1], "Actually, let's use OAuth instead of passwords")
+      assert.strictEqual(extracted.humanMessages[2], "Also add rate limiting")
+    })
+
+    it("should format multiple messages as numbered conversation history", () => {
+      const messages = [
+        { info: { role: "user" }, parts: [{ type: "text", text: "Task A" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "Working..." }] },
+        { info: { role: "user" }, parts: [{ type: "text", text: "Actually do Task B" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "Done!" }] },
+      ]
+
+      const extracted = extractTaskAndResult(messages)
+      assert.ok(extracted, "Should extract task and result")
+      assert.ok(extracted.task.includes("[1] Task A"), "Should include numbered first message")
+      assert.ok(extracted.task.includes("[2] Actually do Task B"), "Should include numbered second message")
+    })
+
+    it("should use single message directly without numbering", () => {
+      const messages = [
+        { info: { role: "user" }, parts: [{ type: "text", text: "Simple task" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "Done!" }] },
+      ]
+
+      const extracted = extractTaskAndResult(messages)
+      assert.ok(extracted, "Should extract task and result")
+      assert.strictEqual(extracted.task, "Simple task", "Single message should be used directly")
+      assert.ok(!extracted.task.includes("[1]"), "Should not have numbering for single message")
+    })
+
+    it("should filter out reflection feedback messages", () => {
+      const messages = [
+        { info: { role: "user" }, parts: [{ type: "text", text: "Do something" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "Working..." }] },
+        { info: { role: "user" }, parts: [{ type: "text", text: "## Reflection: Task Incomplete\n\nPlease continue." }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "Continuing..." }] },
+        { info: { role: "user" }, parts: [{ type: "text", text: "Now also do this" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "Done!" }] },
+      ]
+
+      const extracted = extractTaskAndResult(messages)
+      assert.ok(extracted, "Should extract task and result")
+      assert.strictEqual(extracted.humanMessages.length, 2, "Should only capture 2 non-reflection messages")
+      assert.ok(!extracted.humanMessages.some(m => m.includes("## Reflection:")), "Should not include reflection messages")
+    })
+
+    it("should detect research tasks from any human message", () => {
+      const messages = [
+        { info: { role: "user" }, parts: [{ type: "text", text: "Look at the codebase" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "Looking..." }] },
+        { info: { role: "user" }, parts: [{ type: "text", text: "This is research only - do not write any code" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "Found the following..." }] },
+      ]
+
+      const extracted = extractTaskAndResult(messages)
+      assert.ok(extracted, "Should extract task and result")
+      assert.strictEqual(extracted.isResearch, true, "Should detect research task from second message")
+    })
+
+    it("should capture latest assistant result", () => {
+      const messages = [
+        { info: { role: "user" }, parts: [{ type: "text", text: "Start" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "First response" }] },
+        { info: { role: "user" }, parts: [{ type: "text", text: "Continue" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "Second response" }] },
+        { info: { role: "user" }, parts: [{ type: "text", text: "Finish" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "Final response" }] },
+      ]
+
+      const extracted = extractTaskAndResult(messages)
+      assert.ok(extracted, "Should extract task and result")
+      assert.strictEqual(extracted.result, "Final response", "Should capture latest assistant response")
+    })
+  })
 })
