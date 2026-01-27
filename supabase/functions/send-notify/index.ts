@@ -57,22 +57,112 @@ function isRateLimited(uuid: string): boolean {
   return false
 }
 
-async function sendTelegramMessage(chatId: number, text: string): Promise<{ success: boolean; messageId?: number }> {
+/**
+ * Escape special characters for HTML
+ */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+/**
+ * Convert common markdown to Telegram HTML format
+ * HTML is more forgiving than MarkdownV2 and handles special characters better
+ */
+function convertToTelegramHtml(text: string): string {
   try {
+    let processed = text
+    
+    // Use UUID-like placeholders that won't appear in normal text
+    const PLACEHOLDER_PREFIX = '___PLACEHOLDER_'
+    const PLACEHOLDER_SUFFIX = '___'
+    const codeBlocks: string[] = []
+    const inlineCode: string[] = []
+    
+    // Step 1: Extract fenced code blocks (```lang\ncode```)
+    const codeBlockRegex = /```(\w*)\n?([\s\S]*?)```/g
+    let match
+    while ((match = codeBlockRegex.exec(processed)) !== null) {
+      const idx = codeBlocks.length
+      const lang = match[1] || ''
+      const code = match[2] || ''
+      const langAttr = lang ? ` class="language-${lang}"` : ''
+      codeBlocks.push(`<pre><code${langAttr}>${escapeHtml(code)}</code></pre>`)
+    }
+    // Replace all matches
+    let cbIdx = 0
+    processed = processed.replace(/```(\w*)\n?([\s\S]*?)```/g, () => {
+      return `${PLACEHOLDER_PREFIX}CB${cbIdx++}${PLACEHOLDER_SUFFIX}`
+    })
+    
+    // Step 2: Extract inline code (`code`)
+    const inlineCodeRegex = /`([^`]+)`/g
+    while ((match = inlineCodeRegex.exec(processed)) !== null) {
+      const code = match[1] || ''
+      inlineCode.push(`<code>${escapeHtml(code)}</code>`)
+    }
+    // Replace all matches
+    let icIdx = 0
+    processed = processed.replace(/`([^`]+)`/g, () => {
+      return `${PLACEHOLDER_PREFIX}IC${icIdx++}${PLACEHOLDER_SUFFIX}`
+    })
+    
+    // Step 3: Escape HTML in remaining text
+    processed = escapeHtml(processed)
+    
+    // Step 4: Convert markdown formatting
+    processed = processed.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    processed = processed.replace(/_([^_]+)_/g, '<i>$1</i>')
+    processed = processed.replace(/^###\s+(.+)$/gm, '<b>$1</b>')
+    processed = processed.replace(/^##\s+(.+)$/gm, '<b>$1</b>')
+    processed = processed.replace(/^#\s+(.+)$/gm, '<b>$1</b>')
+    
+    // Step 5: Restore code blocks and inline code
+    for (let i = 0; i < codeBlocks.length; i++) {
+      processed = processed.replace(`${PLACEHOLDER_PREFIX}CB${i}${PLACEHOLDER_SUFFIX}`, codeBlocks[i])
+    }
+    for (let i = 0; i < inlineCode.length; i++) {
+      processed = processed.replace(`${PLACEHOLDER_PREFIX}IC${i}${PLACEHOLDER_SUFFIX}`, inlineCode[i])
+    }
+    
+    return processed
+  } catch (error) {
+    console.error('Error converting to Telegram HTML:', error)
+    // Fallback: just escape HTML
+    return escapeHtml(text)
+  }
+}
+
+async function sendTelegramMessage(chatId: number, text: string, useHtml: boolean = true): Promise<{ success: boolean; messageId?: number; error?: string }> {
+  try {
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      text: useHtml ? convertToTelegramHtml(text) : text,
+    }
+    
+    if (useHtml) {
+      body.parse_mode = 'HTML'
+    }
+    
     const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: 'Markdown',
-      }),
+      body: JSON.stringify(body),
     })
     
     if (!response.ok) {
-      const error = await response.text()
-      console.error('Telegram sendMessage failed:', error)
-      return { success: false }
+      const errorText = await response.text()
+      console.error('Telegram sendMessage failed:', errorText)
+      
+      // If HTML parsing failed, retry without formatting
+      if (useHtml && (errorText.includes("can't parse") || errorText.includes("Bad Request"))) {
+        console.log('Retrying without HTML formatting...')
+        return sendTelegramMessage(chatId, text, false)
+      }
+      
+      return { success: false, error: errorText }
     }
     
     // Extract message_id from response for reply context tracking
@@ -80,7 +170,7 @@ async function sendTelegramMessage(chatId: number, text: string): Promise<{ succ
     return { success: true, messageId: result.result?.message_id }
   } catch (error) {
     console.error('Failed to send Telegram message:', error)
-    return { success: false }
+    return { success: false, error: String(error) }
   }
 }
 
@@ -231,22 +321,32 @@ Deno.serve(async (req) => {
     let textSent = false
     let voiceSent = false
     let sentMessageId: number | undefined
+    let textError: string | undefined
 
     // Send text message
     if (text) {
-      // Truncate text if too long (Telegram limit is 4096 chars)
-      const truncatedText = text.length > 4000 
-        ? text.slice(0, 4000) + '...\n\n_(Message truncated)_'
+      // Truncate text if too long (Telegram limit is 4096 chars, leave room for header/footer)
+      const maxLen = 3800
+      const truncatedText = text.length > maxLen 
+        ? text.slice(0, maxLen) + '\n\n...(truncated)'
         : text
       
       // Add reply hint if session context is provided
       const replyHint = session_id 
-        ? '\n\n_💬 Reply to this message to continue the conversation_'
+        ? '\n\n💬 Reply to this message to continue the conversation'
         : ''
       
-      const messageResult = await sendTelegramMessage(chatId, `🔔 *OpenCode Task Complete*\n\n${truncatedText}${replyHint}`)
+      // Build the full message - the convertToTelegramMarkdown function will handle escaping
+      // Use plain text header to avoid markdown conflicts
+      const fullMessage = `🔔 OpenCode Task Complete\n\n${truncatedText}${replyHint}`
+      
+      const messageResult = await sendTelegramMessage(chatId, fullMessage)
       textSent = messageResult.success
       sentMessageId = messageResult.messageId
+      if (!messageResult.success) {
+        textError = messageResult.error
+        console.error('Text message failed:', textError)
+      }
     }
 
     // Send voice message
@@ -295,10 +395,11 @@ Deno.serve(async (req) => {
 
     return new Response(
       JSON.stringify({ 
-        success: true, 
+        success: textSent || voiceSent, 
         text_sent: textSent, 
         voice_sent: voiceSent,
         reply_enabled: !!session_id,
+        text_error: textError,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )

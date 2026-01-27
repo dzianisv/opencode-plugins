@@ -821,4 +821,55 @@ describe("E2E: Telegram Reply Forwarding", { timeout: TIMEOUT * 2 }, () => {
 
     console.log("\nDirect message rejection test passed!")
   })
+
+  it("send-notify should successfully send text with markdown characters", { timeout: TIMEOUT }, async () => {
+    if (!RUN_E2E) skip("Skipping: OPENCODE_E2E not set")
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
+    // Test message with problematic markdown characters that broke the old implementation
+    const testMessages = [
+      "Simple message without special chars",
+      "Message with *asterisks* and _underscores_",
+      "Code: `const x = 1` and **bold**",
+      "File path: /path/to/file.ts:123",
+      "List:\n1. First item\n2. Second item",
+      "```typescript\nconst foo = 'bar'\n```",
+      "Mixed: Created `main.ts` with **async** function and _italic_ text",
+    ]
+
+    console.log("\nTesting send-notify with various markdown patterns...")
+
+    for (const text of testMessages) {
+      console.log(`\nSending: "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}"`)
+
+      const response = await fetch(
+        "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/send-notify",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+            "apikey": SUPABASE_ANON_KEY,
+          },
+          body: JSON.stringify({
+            uuid: TEST_UUID,
+            text: text,
+            // No voice - testing text only
+          }),
+        }
+      )
+
+      const result = await response.json()
+      console.log(`Response: ${JSON.stringify(result)}`)
+
+      assert.ok(response.ok, `HTTP request failed: ${response.status}`)
+      assert.ok(result.text_sent === true, `Text should be sent successfully. Got: text_sent=${result.text_sent}, error=${result.text_error}`)
+      
+      // Small delay between messages to avoid rate limiting
+      await new Promise(r => setTimeout(r, 1000))
+    }
+
+    console.log("\n✅ All text messages with markdown sent successfully!")
+  })
 })
