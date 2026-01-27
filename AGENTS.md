@@ -384,6 +384,42 @@ The plugin has 5 defense layers against infinite reflection loops. Do not remove
 5. Cleanup in finally block → remove from judgeSessions set
 ```
 
+### 6. Esc Abort Race Condition (Issue #18)
+
+**Problem:** When user presses Esc to abort, `session.error` and `session.idle` events fire close together. The message data may not be updated with the abort error when `runReflection()` checks it, causing reflection to still inject feedback.
+
+**Root Cause:** The abort check in `wasCurrentTaskAborted()` reads from `client.session.messages()` API, which may return stale data before the error is written.
+
+**Solution:** Track aborts in memory, check BEFORE calling `runReflection()`:
+
+```typescript
+const recentlyAbortedSessions = new Set<string>()
+
+// session.error handler - track abort IMMEDIATELY
+if (event.type === "session.error") {
+  if (error?.name === "MessageAbortedError") {
+    recentlyAbortedSessions.add(sessionId)  // <-- CRITICAL: track in memory
+    cancelNudge(sessionId)
+  }
+}
+
+// session.idle handler - check BEFORE runReflection
+if (event.type === "session.idle") {
+  if (recentlyAbortedSessions.has(sessionId)) {
+    recentlyAbortedSessions.delete(sessionId)  // Clear for future tasks
+    debug("SKIP: session was recently aborted (Esc)")
+    return  // <-- CRITICAL: don't call runReflection
+  }
+  await runReflection(sessionId)
+}
+```
+
+**Rule:** NEVER rely on `client.session.messages()` for abort detection in `session.idle` handler. Always use in-memory tracking from `session.error` event.
+
+**Tests:** `test/reflection.test.ts` has 2 tests for this:
+- `recentlyAbortedSessions prevents race condition`
+- `allows new tasks after abort is cleared`
+
 ## Testing Checklist
 
 **CRITICAL: ALWAYS run ALL tests after ANY code changes before deploying. No exceptions.**
