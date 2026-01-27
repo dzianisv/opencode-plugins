@@ -229,9 +229,8 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     return count
   }
 
-  function extractTaskAndResult(messages: any[]): { task: string; result: string; tools: string; isResearch: boolean } | null {
-    let originalTask = ""  // First human message (the actual request)
-    let latestTask = ""    // Latest human message (may be follow-up)
+  function extractTaskAndResult(messages: any[]): { task: string; result: string; tools: string; isResearch: boolean; humanMessages: string[] } | null {
+    const humanMessages: string[] = []  // ALL human messages in order (excluding reflection feedback)
     let result = ""
     const tools: string[] = []
 
@@ -239,12 +238,9 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
       if (msg.info?.role === "user") {
         for (const part of msg.parts || []) {
           if (part.type === "text" && part.text) {
+            // Skip reflection feedback messages
             if (part.text.includes("## Reflection:")) continue
-            // Track both first and latest human messages
-            if (!originalTask) {
-              originalTask = part.text  // First human message is the original task
-            }
-            latestTask = part.text  // Keep updating for latest
+            humanMessages.push(part.text)
             break
           }
         }
@@ -267,18 +263,21 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
       }
     }
 
-    // Use original task for evaluation, but include latest context if different
-    const task = originalTask === latestTask 
-      ? originalTask 
-      : `Original request: ${originalTask}\n\nLatest user message: ${latestTask}`
+    // Build task representation from ALL human messages
+    // If only one message, use it directly; otherwise format as numbered conversation history
+    const originalTask = humanMessages[0] || ""
+    const task = humanMessages.length === 1
+      ? originalTask
+      : humanMessages.map((msg, i) => `[${i + 1}] ${msg}`).join("\n\n")
     
-    // Detect research-only tasks (no code expected)
-    const isResearch = /research|explore|investigate|analyze|review|study|compare|evaluate/i.test(originalTask) &&
-                       /do not|don't|no code|research only|just research|only research/i.test(originalTask)
+    // Detect research-only tasks (check all human messages, not just first)
+    const allHumanText = humanMessages.join(" ")
+    const isResearch = /research|explore|investigate|analyze|review|study|compare|evaluate/i.test(allHumanText) &&
+                       /do not|don't|no code|research only|just research|only research/i.test(allHumanText)
 
-    debug("extractTaskAndResult - task empty?", !task, "result empty?", !result, "isResearch?", isResearch)
+    debug("extractTaskAndResult - humanMessages:", humanMessages.length, "task empty?", !task, "result empty?", !result, "isResearch?", isResearch)
     if (!originalTask || !result) return null
-    return { task, result, tools: tools.slice(-10).join("\n"), isResearch }
+    return { task, result, tools: tools.slice(-10).join("\n"), isResearch, humanMessages }
   }
 
   async function waitForResponse(sessionId: string): Promise<string | null> {
@@ -555,12 +554,17 @@ Without waiver details → complete: false
           ? `\n\n[NOTE: Response truncated from ${extracted.result.length} chars - agent may have provided more content]`
           : ""
 
+        // Format conversation history note if there were multiple messages
+        const conversationNote = extracted.humanMessages.length > 1
+          ? `\n\n**NOTE: The user sent ${extracted.humanMessages.length} messages during this session. Messages are numbered [1], [2], etc. Later messages may refine, pivot, or add to earlier requests. Evaluate completion based on the FINAL requirements after all pivots.**`
+          : ""
+
         const prompt = `TASK VERIFICATION
 
 Evaluate whether the agent completed what the user asked for.
 
 ${agents ? `## Project Instructions\n${agents.slice(0, 1500)}\n` : ""}
-## User's Request
+## User's Request${conversationNote}
 ${extracted.task}
 
 ## Tools Used
