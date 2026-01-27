@@ -268,16 +268,10 @@ Deno.serve(async (req) => {
     }
 
     // Store reply context if session_id is provided (enables two-way communication)
+    // Keep all contexts active - routing is done by message_id matching when user replies
     if (session_id && (textSent || voiceSent)) {
       try {
-        // First, deactivate any previous contexts for this chat (user can only reply to most recent)
-        await supabase
-          .from('telegram_reply_contexts')
-          .update({ is_active: false })
-          .eq('chat_id', chatId)
-          .eq('is_active', true)
-
-        // Insert new reply context
+        // Insert new reply context (don't deactivate previous - allows replying to any notification)
         const { error: contextError } = await supabase
           .from('telegram_reply_contexts')
           .insert({
@@ -287,7 +281,7 @@ Deno.serve(async (req) => {
             directory,
             message_id: sentMessageId,
             is_active: true,
-            expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 hours
+            expires_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(), // 48 hours
           })
 
         if (contextError) {

@@ -1922,19 +1922,26 @@ async function sendTelegramNotification(
 
     // Add text if enabled
     if (sendText && text) {
-      // Build message with context header
-      const dirName = context?.directory ? context.directory.split("/").pop() || context.directory : undefined
-      const header = [
-        context?.model ? `Model: ${context.model}` : null,
-        dirName ? `Dir: ${dirName}` : null
-      ].filter(Boolean).join(" | ")
-      
+      // Build clean header: {directory} | {session_id} | {model}
+      // Format: "vibe.2 | ses_3fee5a2b1c4d | claude-opus-4.5"
+      const dirName = context?.directory?.split("/").pop() || null
+      const sessionId = context?.sessionId || null
+      const modelName = context?.model || null
+
+      const headerParts = [dirName, sessionId, modelName].filter(Boolean)
+      const header = headerParts.join(" | ")
+
+      // Add reply hint if session context is provided (enables reply routing)
+      const replyHint = sessionId 
+        ? "\n\n💬 Reply to this message to continue"
+        : ""
+
       const formattedText = header 
-        ? `${header}\n${"─".repeat(Math.min(header.length, 30))}\n\n${text}`
-        : text
+        ? `${header}\n${"─".repeat(Math.min(40, header.length))}\n\n${text}${replyHint}`
+        : `${text}${replyHint}`
       
-      // Truncate to Telegram's limit (leave room for header)
-      body.text = formattedText.slice(0, 3900)
+      // Truncate to Telegram's limit (leave room for header and hint)
+      body.text = formattedText.slice(0, 3800)
     }
 
     // Add voice if enabled and path provided

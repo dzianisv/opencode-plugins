@@ -63,6 +63,19 @@ interface TelegramUpdate {
     voice?: TelegramVoice
     video_note?: TelegramVideoNote
     video?: TelegramVideo
+    reply_to_message?: {
+      message_id: number
+      from?: {
+        id: number
+        is_bot: boolean
+      }
+      chat: {
+        id: number
+        type: string
+      }
+      date: number
+      text?: string
+    }
   }
 }
 
@@ -84,6 +97,32 @@ async function sendTelegramMessage(chatId: number, text: string, parseMode: stri
     return response.ok
   } catch (error) {
     console.error('Failed to send Telegram message:', error)
+    return false
+  }
+}
+
+/**
+ * Send a reply to a specific message
+ * @param chatId - Chat ID
+ * @param replyToMessageId - Message ID to reply to
+ * @param text - Message text
+ * @param parseMode - Parse mode (Markdown by default)
+ */
+async function sendTelegramReply(chatId: number, replyToMessageId: number, text: string, parseMode: string = 'Markdown'): Promise<boolean> {
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: parseMode,
+        reply_to_message_id: replyToMessageId,
+      }),
+    })
+    return response.ok
+  } catch (error) {
+    console.error('Failed to send Telegram reply:', error)
     return false
   }
 }
@@ -150,20 +189,72 @@ Deno.serve(async (req) => {
     const video = update.message.video
 
     if (voice || videoNote || video) {
-      // Get active reply context to know which session to send to
-      const { data: context, error: contextError } = await supabase
-        .rpc('get_active_reply_context', { p_chat_id: chatId })
+      // Check if this is a reply to a specific message
+      const replyToMessageId = update.message.reply_to_message?.message_id
 
-      if (contextError || !context || context.length === 0) {
-        await sendTelegramMessage(chatId,
-          `ℹ️ *No active session*\n\n` +
-          `There's no active OpenCode session to send voice messages to.\n\n` +
-          `Start a new task in OpenCode first to receive notifications.`
+      interface VoiceReplyContext {
+        session_id: string
+        directory: string | null
+        uuid: string
+        expires_at?: string
+        is_active?: boolean
+      }
+
+      let voiceContext: VoiceReplyContext | null = null
+
+      // Try to route by reply_to_message.message_id first
+      if (replyToMessageId) {
+        const { data: contextByMessage, error: msgError } = await supabase
+          .from('telegram_reply_contexts')
+          .select('session_id, directory, uuid, expires_at, is_active')
+          .eq('chat_id', chatId)
+          .eq('message_id', replyToMessageId)
+          .single()
+
+        if (!msgError && contextByMessage) {
+          // Check if context has expired
+          if (contextByMessage.expires_at && new Date(contextByMessage.expires_at) < new Date()) {
+            await sendTelegramReply(chatId, messageId,
+              `⏰ *Session expired*\n\n` +
+              `The session \`${contextByMessage.session_id}\` has expired.\n` +
+              `Sessions are available for 48 hours after the last notification.\n\n` +
+              `Start a new task in OpenCode to continue.`
+            )
+            return new Response('OK')
+          }
+          
+          if (!contextByMessage.is_active) {
+            await sendTelegramReply(chatId, messageId,
+              `❌ *Session no longer active*\n\n` +
+              `The session \`${contextByMessage.session_id}\` is no longer available.\n\n` +
+              `Start a new task in OpenCode to continue.`
+            )
+            return new Response('OK')
+          }
+          
+          voiceContext = contextByMessage
+        } else {
+          await sendTelegramReply(chatId, messageId,
+            `❓ *Unknown message*\n\n` +
+            `I couldn't find the session for this message.\n` +
+            `Try replying to a more recent notification, or start a new task in OpenCode.`
+          )
+          return new Response('OK')
+        }
+      }
+
+      // No reply_to_message - user sent voice without using Telegram's Reply feature
+      if (!voiceContext) {
+        await sendTelegramReply(chatId, messageId,
+          `💬 *Please use Reply*\n\n` +
+          `To send a voice message to a specific OpenCode session, use Telegram's Reply feature:\n\n` +
+          `1. Find the notification message for the session you want\n` +
+          `2. Swipe left on that message (or long-press → Reply)\n` +
+          `3. Record your voice message\n\n` +
+          `This ensures your message goes to the correct session.`
         )
         return new Response('OK')
       }
-
-      const activeContext = context[0]
       
       // Determine file info
       let fileId: string
@@ -225,7 +316,7 @@ Deno.serve(async (req) => {
       // Check if audio download failed - we can't proceed without the audio
       if (!audioBase64) {
         console.error('Failed to download audio from Telegram')
-        await sendTelegramMessage(chatId,
+        await sendTelegramReply(chatId, messageId,
           `❌ *Failed to download voice message*\n\n` +
           `Could not retrieve the audio from Telegram. Please try again.`
         )
@@ -237,9 +328,9 @@ Deno.serve(async (req) => {
       const { error: insertError } = await supabase
         .from('telegram_replies')
         .insert({
-          uuid: activeContext.uuid,
-          session_id: activeContext.session_id,
-          directory: activeContext.directory,
+          uuid: voiceContext.uuid,
+          session_id: voiceContext.session_id,
+          directory: voiceContext.directory,
           telegram_chat_id: chatId,
           telegram_message_id: messageId,
           reply_text: null, // Will be filled after transcription by plugin
@@ -252,8 +343,9 @@ Deno.serve(async (req) => {
 
       if (insertError) {
         console.error('Error storing voice message:', insertError)
-        await sendTelegramMessage(chatId,
+        await sendTelegramReply(chatId, messageId,
           `❌ *Failed to process voice message*\n\n` +
+          `Could not forward to session \`${voiceContext.session_id}\`.\n` +
           `Please try again.`
         )
         return new Response('OK')
@@ -447,52 +539,101 @@ Deno.serve(async (req) => {
     }
 
     // ==================== HANDLE REPLY MESSAGES ====================
-    // Non-command messages are treated as replies to the most recent notification
-    // Look up active reply context and forward to OpenCode session
-    
-    // Get the most recent active reply context for this chat
-    const { data: context, error: contextError } = await supabase
-      .rpc('get_active_reply_context', { p_chat_id: chatId })
+    // Non-command text messages are treated as replies
+    // Routing priority:
+    // 1. If user used Telegram's native Reply feature → match by message_id
+    // 2. Fallback → most recent active context (for direct messages)
 
-    if (contextError) {
-      console.error('Error looking up reply context:', contextError)
-      await sendTelegramMessage(chatId,
-        `❌ *Error processing reply*\n\n` +
-        `Please try again later.`
+    const replyToMessageId = update.message.reply_to_message?.message_id
+
+    interface ReplyContext {
+      session_id: string
+      directory: string | null
+      uuid: string
+      expires_at?: string
+      is_active?: boolean
+    }
+
+    let context: ReplyContext | null = null
+
+    // Try to route by reply_to_message.message_id first
+    if (replyToMessageId) {
+      const { data: contextByMessage, error: msgError } = await supabase
+        .from('telegram_reply_contexts')
+        .select('session_id, directory, uuid, expires_at, is_active')
+        .eq('chat_id', chatId)
+        .eq('message_id', replyToMessageId)
+        .single()
+
+      if (!msgError && contextByMessage) {
+        // Check if context has expired
+        if (contextByMessage.expires_at && new Date(contextByMessage.expires_at) < new Date()) {
+          // Context expired - send error reply to user's message
+          await sendTelegramReply(chatId, messageId,
+            `⏰ *Session expired*\n\n` +
+            `The session \`${contextByMessage.session_id}\` has expired.\n` +
+            `Sessions are available for 48 hours after the last notification.\n\n` +
+            `Start a new task in OpenCode to continue.`
+          )
+          return new Response('OK')
+        }
+        
+        // Check if context is still active
+        if (!contextByMessage.is_active) {
+          await sendTelegramReply(chatId, messageId,
+            `❌ *Session no longer active*\n\n` +
+            `The session \`${contextByMessage.session_id}\` is no longer available.\n\n` +
+            `Start a new task in OpenCode to continue.`
+          )
+          return new Response('OK')
+        }
+        
+        context = contextByMessage
+      } else {
+        // User replied to a message we don't have context for
+        // This could be an old message or a message from before we tracked contexts
+        await sendTelegramReply(chatId, messageId,
+          `❓ *Unknown message*\n\n` +
+          `I couldn't find the session for this message.\n` +
+          `This may be an old notification from before session tracking was enabled.\n\n` +
+          `Try replying to a more recent notification, or start a new task in OpenCode.`
+        )
+        return new Response('OK')
+      }
+    }
+
+    // No reply_to_message - user sent a direct message without using Telegram's Reply feature
+    // We CANNOT route this to a specific session, so ask user to use Reply
+    if (!context) {
+      await sendTelegramReply(chatId, messageId,
+        `💬 *Please use Reply*\n\n` +
+        `To send a message to a specific OpenCode session, use Telegram's Reply feature:\n\n` +
+        `1. Find the notification message for the session you want\n` +
+        `2. Swipe left on that message (or long-press → Reply)\n` +
+        `3. Type your message\n\n` +
+        `This ensures your reply goes to the correct session.`
       )
       return new Response('OK')
     }
 
-    // Check if we found an active context
-    if (!context || context.length === 0) {
-      await sendTelegramMessage(chatId,
-        `ℹ️ *No active session*\n\n` +
-        `There's no active OpenCode session to reply to.\n\n` +
-        `Replies are available for 24 hours after receiving a notification.\n` +
-        `Start a new task in OpenCode to receive notifications.`
-      )
-      return new Response('OK')
-    }
-
-    // We have an active context - store the reply for OpenCode to pick up
-    const activeContext = context[0]
-    
+    // Store the reply for OpenCode to pick up
     const { error: insertError } = await supabase
       .from('telegram_replies')
       .insert({
-        uuid: activeContext.uuid,
-        session_id: activeContext.session_id,
-        directory: activeContext.directory,
+        uuid: context.uuid,
+        session_id: context.session_id,
+        directory: context.directory,
         reply_text: text,
-        telegram_message_id: update.message.message_id,
+        telegram_message_id: messageId,
         telegram_chat_id: chatId,
         processed: false,
       })
 
     if (insertError) {
       console.error('Error storing reply:', insertError)
-      await sendTelegramMessage(chatId,
+      await sendTelegramReply(chatId, messageId,
         `❌ *Failed to send reply*\n\n` +
+        `Could not forward your message to session \`${context.session_id}\`.\n` +
         `Please try again.`
       )
       return new Response('OK')
