@@ -57,22 +57,94 @@ function isRateLimited(uuid: string): boolean {
   return false
 }
 
-async function sendTelegramMessage(chatId: number, text: string): Promise<{ success: boolean; messageId?: number }> {
+/**
+ * Escape special characters for Telegram MarkdownV2
+ * Characters that must be escaped: _ * [ ] ( ) ~ ` > # + - = | { } . !
+ */
+function escapeMarkdownV2(text: string): string {
+  return text.replace(/([_*\[\]()~`>#+=|{}.!\\-])/g, '\\$1')
+}
+
+/**
+ * Convert common markdown to Telegram MarkdownV2 format
+ * This preserves code blocks and basic formatting while escaping problematic characters
+ */
+function convertToTelegramMarkdown(text: string): string {
+  // First, extract and protect code blocks (``` and `)
+  const codeBlocks: string[] = []
+  const inlineCode: string[] = []
+  
+  // Protect fenced code blocks (```...```)
+  let processed = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_match, lang, code) => {
+    const idx = codeBlocks.length
+    // Don't escape inside code blocks, just use pre formatting
+    codeBlocks.push(`\`\`\`${lang}\n${code}\`\`\``)
+    return `__CODE_BLOCK_${idx}__`
+  })
+  
+  // Protect inline code (`...`)
+  processed = processed.replace(/`([^`]+)`/g, (_match, code) => {
+    const idx = inlineCode.length
+    inlineCode.push(`\`${code}\``)
+    return `__INLINE_CODE_${idx}__`
+  })
+  
+  // Now escape the rest of the text for MarkdownV2
+  processed = escapeMarkdownV2(processed)
+  
+  // Convert markdown headers to bold (## Header -> *Header*)
+  processed = processed.replace(/^\\#\\#\\#\s+(.+)$/gm, '*$1*')
+  processed = processed.replace(/^\\#\\#\s+(.+)$/gm, '*$1*')
+  processed = processed.replace(/^\\#\s+(.+)$/gm, '*$1*')
+  
+  // Convert **bold** to *bold* (MarkdownV2 uses single asterisk)
+  processed = processed.replace(/\\\*\\\*([^*]+)\\\*\\\*/g, '*$1*')
+  
+  // Convert __underline__ or _italic_ - keep as is since we escaped them
+  // Just unescape single underscores for italic
+  processed = processed.replace(/\\_([^_]+)\\_/g, '_$1_')
+  
+  // Restore code blocks (they're already in correct format)
+  codeBlocks.forEach((block, idx) => {
+    processed = processed.replace(`__CODE_BLOCK_${idx}__`, block)
+  })
+  
+  // Restore inline code
+  inlineCode.forEach((code, idx) => {
+    processed = processed.replace(`__INLINE_CODE_${idx}__`, code)
+  })
+  
+  return processed
+}
+
+async function sendTelegramMessage(chatId: number, text: string, useMarkdown: boolean = true): Promise<{ success: boolean; messageId?: number; error?: string }> {
   try {
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      text: useMarkdown ? convertToTelegramMarkdown(text) : text,
+    }
+    
+    if (useMarkdown) {
+      body.parse_mode = 'MarkdownV2'
+    }
+    
     const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: 'Markdown',
-      }),
+      body: JSON.stringify(body),
     })
     
     if (!response.ok) {
-      const error = await response.text()
-      console.error('Telegram sendMessage failed:', error)
-      return { success: false }
+      const errorText = await response.text()
+      console.error('Telegram sendMessage failed:', errorText)
+      
+      // If markdown parsing failed, retry without markdown
+      if (useMarkdown && errorText.includes("can't parse")) {
+        console.log('Retrying without markdown...')
+        return sendTelegramMessage(chatId, text, false)
+      }
+      
+      return { success: false, error: errorText }
     }
     
     // Extract message_id from response for reply context tracking
@@ -80,7 +152,7 @@ async function sendTelegramMessage(chatId: number, text: string): Promise<{ succ
     return { success: true, messageId: result.result?.message_id }
   } catch (error) {
     console.error('Failed to send Telegram message:', error)
-    return { success: false }
+    return { success: false, error: String(error) }
   }
 }
 
@@ -231,22 +303,32 @@ Deno.serve(async (req) => {
     let textSent = false
     let voiceSent = false
     let sentMessageId: number | undefined
+    let textError: string | undefined
 
     // Send text message
     if (text) {
-      // Truncate text if too long (Telegram limit is 4096 chars)
-      const truncatedText = text.length > 4000 
-        ? text.slice(0, 4000) + '...\n\n_(Message truncated)_'
+      // Truncate text if too long (Telegram limit is 4096 chars, leave room for header/footer)
+      const maxLen = 3800
+      const truncatedText = text.length > maxLen 
+        ? text.slice(0, maxLen) + '\n\n...(truncated)'
         : text
       
       // Add reply hint if session context is provided
       const replyHint = session_id 
-        ? '\n\n_💬 Reply to this message to continue the conversation_'
+        ? '\n\n💬 Reply to this message to continue the conversation'
         : ''
       
-      const messageResult = await sendTelegramMessage(chatId, `🔔 *OpenCode Task Complete*\n\n${truncatedText}${replyHint}`)
+      // Build the full message - the convertToTelegramMarkdown function will handle escaping
+      // Use plain text header to avoid markdown conflicts
+      const fullMessage = `🔔 OpenCode Task Complete\n\n${truncatedText}${replyHint}`
+      
+      const messageResult = await sendTelegramMessage(chatId, fullMessage)
       textSent = messageResult.success
       sentMessageId = messageResult.messageId
+      if (!messageResult.success) {
+        textError = messageResult.error
+        console.error('Text message failed:', textError)
+      }
     }
 
     // Send voice message
@@ -295,10 +377,11 @@ Deno.serve(async (req) => {
 
     return new Response(
       JSON.stringify({ 
-        success: true, 
+        success: textSent || voiceSent, 
         text_sent: textSent, 
         voice_sent: voiceSent,
         reply_enabled: !!session_id,
+        text_error: textError,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
