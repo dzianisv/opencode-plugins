@@ -40,7 +40,9 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   const recentlyCompacted = new Set<string>()
   // Track sessions that were recently aborted (Esc key) - prevents race condition
   // where session.idle fires before abort error is written to message
-  const recentlyAbortedSessions = new Set<string>()
+  // Maps sessionId -> timestamp of abort (for cooldown-based cleanup)
+  const recentlyAbortedSessions = new Map<string, number>()
+  const ABORT_COOLDOWN = 10_000 // 10 second cooldown before allowing reflection again
   
   // Periodic cleanup of old session data to prevent memory leaks
   const cleanupOldSessions = () => {
@@ -397,6 +399,9 @@ Use \`gh pr comment\` or \`gh issue comment\` to add the update.`
   async function runReflection(sessionId: string): Promise<void> {
     debug("runReflection called for session:", sessionId)
     
+    // Capture when this reflection started - used to detect aborts during judge evaluation
+    const reflectionStartTime = Date.now()
+    
     // Prevent concurrent reflections on same session
     if (activeReflections.has(sessionId)) {
       debug("SKIP: activeReflections already has session")
@@ -562,7 +567,12 @@ If the agent's response asks the user to choose or act instead of completing the
 - "Let me know if you want me to..."
 - "I can help you with..." followed by numbered options
 - Presenting options (1. 2. 3.) without taking action
-Then the task is INCOMPLETE (complete: false). The agent should execute the task, not ask permission or delegate back to the user.
+
+HOWEVER, if the original task REQUIRES user decisions (design choices, preferences, clarifications),
+then asking questions is CORRECT behavior. In this case:
+- Set complete: false (task is not done yet)
+- Set severity: NONE (agent is correctly waiting for user input, no issues)
+This signals that the agent should wait for the user, not be pushed to continue.
 
 ---
 
@@ -627,6 +637,26 @@ Reply with JSON only (no other text):
           const toastMsg = severity === "NONE" ? "Task complete ✓" : `Task complete ✓ (${severity})`
           await showToast(toastMsg, "success")
         } else {
+          // INCOMPLETE: Check if session was aborted AFTER this reflection started
+          // This prevents feedback injection when user pressed Esc while judge was running
+          const abortTime = recentlyAbortedSessions.get(sessionId)
+          if (abortTime && abortTime > reflectionStartTime) {
+            debug("SKIP feedback: session was aborted after reflection started", 
+              "abortTime:", abortTime, "reflectionStart:", reflectionStartTime)
+            lastReflectedMsgCount.set(sessionId, humanMsgCount)  // Mark as reflected to prevent retry
+            return
+          }
+          
+          // SPECIAL CASE: severity NONE but incomplete means agent is waiting for user input
+          // (e.g., asking clarifying questions, presenting options for user to choose)
+          // Don't push feedback in this case - let the user respond naturally
+          if (severity === "NONE") {
+            debug("SKIP feedback: severity NONE means waiting for user input")
+            lastReflectedMsgCount.set(sessionId, humanMsgCount)  // Mark as reflected
+            await showToast("Awaiting user input", "info")
+            return
+          }
+          
           // INCOMPLETE: increment attempts and send feedback
           attempts.set(attemptKey, attemptCount + 1)
           const toastVariant = isBlocker ? "error" : "warning"
@@ -689,7 +719,7 @@ Please address the above and continue.`
         if (sessionId && error?.name === "MessageAbortedError") {
           // Track abort in memory to prevent race condition with session.idle
           // (session.idle may fire before the abort error is written to the message)
-          recentlyAbortedSessions.add(sessionId)
+          recentlyAbortedSessions.set(sessionId, Date.now())
           // Cancel nudges for this session
           cancelNudge(sessionId)
           debug("Session aborted, added to recentlyAbortedSessions:", sessionId.slice(0, 8))
@@ -758,10 +788,17 @@ Please address the above and continue.`
           // Fast path: skip recently aborted sessions (prevents race condition)
           // session.error fires with MessageAbortedError, but session.idle may fire
           // before the error is written to the message data
-          if (recentlyAbortedSessions.has(sessionId)) {
-            recentlyAbortedSessions.delete(sessionId)  // Clear for future tasks
-            debug("SKIP: session was recently aborted (Esc)")
-            return
+          // Use cooldown instead of immediate delete to handle rapid Esc presses
+          const abortTime = recentlyAbortedSessions.get(sessionId)
+          if (abortTime) {
+            const elapsed = Date.now() - abortTime
+            if (elapsed < ABORT_COOLDOWN) {
+              debug("SKIP: session was recently aborted (Esc)", elapsed, "ms ago")
+              return  // Don't delete yet - cooldown still active
+            }
+            // Cooldown expired, clean up and allow reflection
+            recentlyAbortedSessions.delete(sessionId)
+            debug("Abort cooldown expired, allowing reflection")
           }
           
           await runReflection(sessionId)
