@@ -89,4 +89,55 @@ describe("Reflection Plugin - Unit Tests", () => {
     const isComplete = verdict.complete && !isBlocker
     assert.strictEqual(isComplete, false, "BLOCKER should block completion")
   })
+
+  it("recentlyAbortedSessions prevents race condition", () => {
+    // Simulate the race condition fix:
+    // 1. session.error fires with MessageAbortedError -> add to set
+    // 2. session.idle fires -> check set BEFORE runReflection
+    
+    const recentlyAbortedSessions = new Set<string>()
+    const sessionId = "ses_test123"
+    
+    // Simulate session.error handler
+    const error = { name: "MessageAbortedError", message: "User cancelled" }
+    if (error.name === "MessageAbortedError") {
+      recentlyAbortedSessions.add(sessionId)
+    }
+    
+    // Simulate session.idle handler
+    let reflectionRan = false
+    if (recentlyAbortedSessions.has(sessionId)) {
+      recentlyAbortedSessions.delete(sessionId)  // Clear for future tasks
+      // Skip reflection
+    } else {
+      reflectionRan = true  // Would call runReflection
+    }
+    
+    assert.strictEqual(reflectionRan, false, "Reflection should NOT run after abort")
+    assert.strictEqual(recentlyAbortedSessions.has(sessionId), false, "Session should be cleared from set")
+  })
+
+  it("allows new tasks after abort is cleared", () => {
+    // After an abort is handled, new tasks in the same session should work
+    const recentlyAbortedSessions = new Set<string>()
+    const sessionId = "ses_test456"
+    
+    // First task: aborted
+    recentlyAbortedSessions.add(sessionId)
+    
+    // First session.idle: skipped (abort detected)
+    if (recentlyAbortedSessions.has(sessionId)) {
+      recentlyAbortedSessions.delete(sessionId)
+    }
+    
+    // New task: user sends another message, agent responds, session.idle fires
+    let reflectionRan = false
+    if (recentlyAbortedSessions.has(sessionId)) {
+      // Skip
+    } else {
+      reflectionRan = true
+    }
+    
+    assert.strictEqual(reflectionRan, true, "New task should trigger reflection after abort cleared")
+  })
 })

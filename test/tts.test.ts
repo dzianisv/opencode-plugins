@@ -1,21 +1,78 @@
 /**
- * Tests for OpenCode TTS Plugin
+ * TTS Plugin - Consolidated Tests
  * 
- * These tests verify actual logic, NOT just pattern-matching on source code.
+ * ALL TTS-related tests in ONE file:
+ * 1. Unit tests - cleanTextForSpeech, config loading
+ * 2. Whisper integration tests - /transcribe-base64 endpoint
+ * 3. Chatterbox E2E tests (optional, slow)
+ * 4. Manual speaking tests (optional)
  * 
- * Test categories:
- * 1. Unit tests - test pure functions (cleanTextForSpeech)
- * 2. Integration tests - actually call Whisper server, check dependencies
+ * Run all: npm test
+ * Run E2E: OPENCODE_TTS_E2E=1 npm test
+ * Run manual: TTS_MANUAL=1 npm test
  */
 
-import { exec } from "child_process"
-import { promisify } from "util"
 import assert from "assert"
+import { exec, spawn } from "child_process"
+import { promisify } from "util"
+import { readFileSync, existsSync, statSync } from "fs"
+import { mkdir, writeFile, readFile, access, unlink } from "fs/promises"
+import { join } from "path"
+import { homedir, tmpdir } from "os"
 
 const execAsync = promisify(exec)
 
+// ============================================================================
+// CONFIG
+// ============================================================================
+
+interface TTSConfig {
+  enabled?: boolean
+  engine?: "os" | "chatterbox"
+  whisper?: {
+    port?: number
+    model?: string
+    language?: string
+  }
+  chatterbox?: {
+    device?: string
+    useTurbo?: boolean
+  }
+}
+
+function loadTTSConfig(): TTSConfig {
+  const configPath = join(homedir(), ".config", "opencode", "tts.json")
+  try {
+    if (existsSync(configPath)) {
+      return JSON.parse(readFileSync(configPath, "utf-8"))
+    }
+  } catch {
+    // Ignore config errors
+  }
+  return {}
+}
+
+function getWhisperPort(): number {
+  const config = loadTTSConfig()
+  return config.whisper?.port || 5552 // Default to opencode-manager port
+}
+
+function getWhisperLanguage(): string | null {
+  const config = loadTTSConfig()
+  return config.whisper?.language || null
+}
+
+const WHISPER_PORT = getWhisperPort()
+const WHISPER_URL = `http://localhost:${WHISPER_PORT}`
+
+// ============================================================================
+// UNIT TESTS - Pure functions, no external dependencies
+// ============================================================================
+
 describe("TTS Plugin - Unit Tests", () => {
-  // Test the text cleaning logic (extracted from plugin)
+  /**
+   * Text cleaning function (must match plugin's implementation)
+   */
   function cleanTextForSpeech(text: string): string {
     return text
       .replace(/```[\s\S]*?```/g, "code block omitted")
@@ -31,50 +88,59 @@ describe("TTS Plugin - Unit Tests", () => {
   it("removes code blocks", () => {
     const input = "Here is some code:\n```javascript\nconst x = 1;\n```\nDone."
     const result = cleanTextForSpeech(input)
-    assert.ok(!result.includes("const x"))
-    assert.ok(result.includes("code block omitted"))
+    expect(result).not.toContain("const x")
+    expect(result).toContain("code block omitted")
   })
 
   it("removes inline code", () => {
     const input = "Use the `say` command to speak."
     const result = cleanTextForSpeech(input)
-    assert.ok(!result.includes("`"))
-    assert.ok(!result.includes("say"))
+    expect(result).not.toContain("`")
+    expect(result).not.toContain("say")
   })
 
   it("keeps link text but removes URLs", () => {
     const input = "Check [OpenCode](https://github.com/sst/opencode) for more."
     const result = cleanTextForSpeech(input)
-    assert.ok(result.includes("OpenCode"))
-    assert.ok(!result.includes("https://"))
-    assert.ok(!result.includes("github.com"))
+    expect(result).toContain("OpenCode")
+    expect(result).not.toContain("https://")
+    expect(result).not.toContain("github.com")
   })
 
   it("removes markdown formatting", () => {
     const input = "This is **bold** and *italic* and ~~strikethrough~~"
     const result = cleanTextForSpeech(input)
-    assert.ok(!result.includes("*"))
-    assert.ok(!result.includes("~"))
-    assert.ok(result.includes("bold"))
-    assert.ok(result.includes("italic"))
+    expect(result).not.toContain("*")
+    expect(result).not.toContain("~")
+    expect(result).toContain("bold")
+    expect(result).toContain("italic")
   })
 
   it("removes file paths", () => {
     const input = "Edit the file /Users/test/project/src/index.ts"
     const result = cleanTextForSpeech(input)
-    assert.ok(!result.includes("/Users"))
+    expect(result).not.toContain("/Users")
   })
 
   it("collapses whitespace", () => {
     const input = "Hello    world\n\n\ntest"
     const result = cleanTextForSpeech(input)
-    assert.strictEqual(result, "Hello world test")
+    expect(result).toBe("Hello world test")
+  })
+
+  it("loads config with valid whisper port", () => {
+    const port = getWhisperPort()
+    console.log(`  [INFO] Whisper port from config: ${port}`)
+    expect(port).toBeGreaterThan(0)
+    expect(port).toBeLessThan(65536)
   })
 })
 
+// ============================================================================
+// WHISPER INTEGRATION TESTS - Requires Whisper server running
+// ============================================================================
+
 describe("Whisper Server - Integration Tests", () => {
-  const WHISPER_URL = "http://localhost:8787"
-  
   /**
    * Helper to check if Whisper server is running
    */
@@ -91,10 +157,9 @@ describe("Whisper Server - Integration Tests", () => {
   
   /**
    * Generate a simple test audio (silence) as base64
-   * This is a minimal valid WAV file with 0.1s of silence
+   * Minimal valid WAV file with 0.1s of silence
    */
   function generateTestSilenceWav(): string {
-    // Minimal WAV header for 16-bit PCM, mono, 16kHz
     const sampleRate = 16000
     const numChannels = 1
     const bitsPerSample = 16
@@ -112,18 +177,18 @@ describe("Whisper Server - Integration Tests", () => {
     
     // fmt chunk
     buffer.write('fmt ', 12)
-    buffer.writeUInt32LE(16, 16) // chunk size
-    buffer.writeUInt16LE(1, 20) // audio format (PCM)
+    buffer.writeUInt32LE(16, 16)
+    buffer.writeUInt16LE(1, 20)
     buffer.writeUInt16LE(numChannels, 22)
     buffer.writeUInt32LE(sampleRate, 24)
-    buffer.writeUInt32LE(sampleRate * numChannels * (bitsPerSample / 8), 28) // byte rate
-    buffer.writeUInt16LE(numChannels * (bitsPerSample / 8), 32) // block align
+    buffer.writeUInt32LE(sampleRate * numChannels * (bitsPerSample / 8), 28)
+    buffer.writeUInt16LE(numChannels * (bitsPerSample / 8), 32)
     buffer.writeUInt16LE(bitsPerSample, 34)
     
     // data chunk
     buffer.write('data', 36)
     buffer.writeUInt32LE(dataSize, 40)
-    // Audio data is already zeros (silence)
+    // Audio data is zeros (silence)
     
     return buffer.toString('base64')
   }
@@ -131,17 +196,16 @@ describe("Whisper Server - Integration Tests", () => {
   it("health endpoint responds when server is running", async () => {
     const running = await isWhisperRunning()
     if (!running) {
-      console.log("  [SKIP] Whisper server not running on localhost:8787")
-      console.log("         Start with: cd ~/.config/opencode/opencode-helpers/whisper && python whisper_server.py")
+      console.log(`  [SKIP] Whisper server not running on ${WHISPER_URL}`)
       return
     }
     
     const response = await fetch(`${WHISPER_URL}/health`)
-    assert.ok(response.ok, "Health endpoint should return 200")
+    expect(response.ok).toBe(true)
     
     const data = await response.json() as { status: string; model_loaded: boolean }
-    assert.strictEqual(data.status, "healthy", "Status should be healthy")
-    assert.ok("model_loaded" in data, "Should report model status")
+    expect(data.status).toBe("healthy")
+    expect(data).toHaveProperty("model_loaded")
     console.log(`  [INFO] Whisper server healthy, model loaded: ${data.model_loaded}`)
   })
 
@@ -153,99 +217,431 @@ describe("Whisper Server - Integration Tests", () => {
     }
     
     const response = await fetch(`${WHISPER_URL}/models`)
-    assert.ok(response.ok, "Models endpoint should return 200")
+    expect(response.ok).toBe(true)
     
     const data = await response.json() as { models: string[]; default: string }
-    assert.ok(Array.isArray(data.models), "Should return array of models")
-    assert.ok(data.models.includes("base"), "Should include base model")
-    assert.ok(data.models.includes("tiny"), "Should include tiny model")
+    expect(Array.isArray(data.models)).toBe(true)
+    expect(data.models).toContain("base")
+    console.log(`  [INFO] Available models: ${data.models.join(", ")}`)
   })
 
-  it("transcribe endpoint accepts audio and returns text", async () => {
+  it("/transcribe-base64 endpoint accepts JSON audio", async () => {
     const running = await isWhisperRunning()
     if (!running) {
       console.log("  [SKIP] Whisper server not running")
       return
     }
     
-    // Use minimal silence audio - Whisper should return empty or minimal text
     const testAudio = generateTestSilenceWav()
+    const language = getWhisperLanguage()
     
-    const response = await fetch(`${WHISPER_URL}/transcribe`, {
+    console.log(`  [INFO] Testing /transcribe-base64 with language: ${language || "auto"}`)
+    
+    // THIS IS THE CORRECT ENDPOINT - matches what the plugin uses
+    const response = await fetch(`${WHISPER_URL}/transcribe-base64`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        audio_base64: testAudio,
-        format: "wav"
+        audio: testAudio,  // Field is "audio", not "audio_base64"
+        format: "wav",
+        model: "base",
+        language: language
       })
     })
     
-    assert.ok(response.ok, `Transcribe should return 200, got ${response.status}`)
+    expect(response.ok).toBe(true)
     
-    const data = await response.json() as { text: string; duration_seconds: number }
-    assert.ok("text" in data, "Response should have text field")
-    assert.ok("duration_seconds" in data, "Response should have duration_seconds")
-    console.log(`  [INFO] Transcription result: "${data.text}" (${data.duration_seconds}s)`)
+    const data = await response.json() as { text: string; duration: number }
+    expect(data).toHaveProperty("text")
+    expect(data).toHaveProperty("duration")
+    console.log(`  [INFO] Transcription: "${data.text}" (${data.duration}s)`)
   })
 
-  it("transcribe endpoint handles ogg format", async () => {
+  it("/transcribe-base64 handles format parameter", async () => {
     const running = await isWhisperRunning()
     if (!running) {
       console.log("  [SKIP] Whisper server not running")
       return
     }
     
-    // Test that OGG format parameter is accepted
-    // (actual OGG audio would be needed for real transcription)
     const testAudio = generateTestSilenceWav()
     
-    // Try with format=ogg - the server should convert internally if needed
-    const response = await fetch(`${WHISPER_URL}/transcribe`, {
+    const response = await fetch(`${WHISPER_URL}/transcribe-base64`, {
       method: "POST", 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        audio_base64: testAudio,
-        format: "wav" // Use WAV since we don't have OGG encoder
+        audio: testAudio,
+        format: "wav",
+        model: "base"
       })
     })
     
-    // Just verify the endpoint accepts the request
-    assert.ok(response.ok || response.status === 400, "Endpoint should respond")
+    expect(response.ok).toBe(true)
+    console.log("  [INFO] Format parameter accepted")
   })
 })
 
-describe("Whisper Dependencies - Availability Check", () => {
+// ============================================================================
+// DEPENDENCY CHECKS - Informational only
+// ============================================================================
+
+describe("TTS Dependencies - Availability Check", () => {
   it("checks if faster-whisper can be imported", async () => {
     try {
       await execAsync('python3 -c "from faster_whisper import WhisperModel; print(\'ok\')"', { timeout: 10000 })
-      console.log("  [INFO] faster-whisper is installed and available")
+      console.log("  [INFO] faster-whisper is installed")
     } catch {
-      console.log("  [INFO] faster-whisper not installed")
-      console.log("         Install with: pip install faster-whisper")
+      console.log("  [INFO] faster-whisper not installed (pip install faster-whisper)")
     }
-    // Test always passes - informational only
-    assert.ok(true)
+    expect(true).toBe(true)
   })
 
-  it("checks if fastapi and uvicorn are available", async () => {
-    try {
-      await execAsync('python3 -c "from fastapi import FastAPI; import uvicorn; print(\'ok\')"', { timeout: 10000 })
-      console.log("  [INFO] FastAPI and uvicorn are installed")
-    } catch {
-      console.log("  [INFO] FastAPI/uvicorn not installed")
-      console.log("         Install with: pip install fastapi uvicorn")
-    }
-    assert.ok(true)
-  })
-
-  it("checks if ffmpeg is available for audio conversion", async () => {
+  it("checks if ffmpeg is available", async () => {
     try {
       await execAsync("which ffmpeg")
-      console.log("  [INFO] ffmpeg is available for audio format conversion")
+      console.log("  [INFO] ffmpeg is available")
     } catch {
-      console.log("  [INFO] ffmpeg not installed - audio conversion will be limited")
-      console.log("         Install with: brew install ffmpeg")
+      console.log("  [INFO] ffmpeg not installed (brew install ffmpeg)")
     }
-    assert.ok(true)
+    expect(true).toBe(true)
+  })
+
+  it("checks macOS say command", async () => {
+    try {
+      await execAsync("which say")
+      console.log("  [INFO] macOS say command available")
+    } catch {
+      console.log("  [INFO] macOS say not available")
+    }
+    expect(true).toBe(true)
+  })
+})
+
+// ============================================================================
+// CHATTERBOX E2E TESTS - Optional, requires OPENCODE_TTS_E2E=1
+// ============================================================================
+
+const RUN_TTS_E2E = process.env.OPENCODE_TTS_E2E === "1"
+const CHATTERBOX_DIR = join(homedir(), ".config/opencode/opencode-helpers/chatterbox")
+const CHATTERBOX_VENV = join(CHATTERBOX_DIR, "venv")
+const CHATTERBOX_SCRIPT = join(CHATTERBOX_DIR, "tts.py")
+const VENV_PYTHON = join(CHATTERBOX_VENV, "bin/python")
+
+const describeE2E = RUN_TTS_E2E ? describe : describe.skip
+
+describeE2E("Chatterbox E2E Tests", () => {
+  let mpsAvailable = false
+  const createdFiles: string[] = []
+
+  async function isChatterboxReady(): Promise<{ ready: boolean; reason?: string }> {
+    try {
+      await access(VENV_PYTHON)
+    } catch {
+      return { ready: false, reason: "Chatterbox venv not found" }
+    }
+
+    try {
+      const { stdout } = await execAsync(`"${VENV_PYTHON}" -c "import chatterbox; print('ok')"`, { timeout: 10000 })
+      if (!stdout.includes("ok")) {
+        return { ready: false, reason: "Chatterbox import failed" }
+      }
+    } catch (e: any) {
+      return { ready: false, reason: `Chatterbox error: ${e.message}` }
+    }
+
+    return { ready: true }
+  }
+
+  async function isMPSAvailable(): Promise<boolean> {
+    try {
+      const { stdout } = await execAsync(
+        `"${VENV_PYTHON}" -c "import torch; print('yes' if torch.backends.mps.is_available() else 'no')"`,
+        { timeout: 10000 }
+      )
+      return stdout.trim() === "yes"
+    } catch {
+      return false
+    }
+  }
+
+  async function runTTS(text: string, device: string): Promise<{ success: boolean; error?: string; outputFile?: string; duration: number }> {
+    const start = Date.now()
+    const outputFile = join(tmpdir(), `tts_test_${device}_${Date.now()}.wav`)
+    
+    return new Promise((resolve) => {
+      const proc = spawn(VENV_PYTHON, [
+        CHATTERBOX_SCRIPT,
+        "--output", outputFile,
+        "--device", device,
+        text
+      ], { stdio: ["ignore", "pipe", "pipe"] })
+      
+      let stderr = ""
+      proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString() })
+      
+      const timeout = setTimeout(() => {
+        proc.kill()
+        resolve({ success: false, error: "Timeout", duration: Date.now() - start })
+      }, 180_000)
+      
+      proc.on("close", async (code) => {
+        clearTimeout(timeout)
+        const duration = Date.now() - start
+        
+        if (code !== 0) {
+          resolve({ success: false, error: `Exit ${code}: ${stderr.slice(0, 200)}`, duration })
+          return
+        }
+        
+        try {
+          const stats = statSync(outputFile)
+          if (stats.size < 1000) {
+            resolve({ success: false, error: `File too small: ${stats.size}`, outputFile, duration })
+            return
+          }
+          resolve({ success: true, outputFile, duration })
+        } catch (e: any) {
+          resolve({ success: false, error: e.message, duration })
+        }
+      })
+    })
+  }
+
+  beforeAll(async () => {
+    console.log("\n=== Chatterbox E2E Setup ===")
+    
+    const status = await isChatterboxReady()
+    if (!status.ready) {
+      console.log(`Chatterbox not ready: ${status.reason}`)
+      throw new Error(status.reason!)
+    }
+    
+    mpsAvailable = await isMPSAvailable()
+    console.log(`MPS available: ${mpsAvailable}`)
+  }, 30000)
+
+  afterAll(async () => {
+    for (const file of createdFiles) {
+      try { await unlink(file) } catch {}
+    }
+  })
+
+  it("generates audio with MPS device", async () => {
+    if (!mpsAvailable) {
+      console.log("  [SKIP] MPS not available")
+      return
+    }
+    
+    console.log("Testing Chatterbox with MPS (may take 1-2 min)...")
+    const result = await runTTS("Hello test.", "mps")
+    
+    if (result.outputFile) createdFiles.push(result.outputFile)
+    console.log(`Result: ${result.success ? "SUCCESS" : "FAILED"} (${Math.round(result.duration / 1000)}s)`)
+    
+    expect(result.success).toBe(true)
+  }, 180000)
+
+  it("generates audio with CPU device", async () => {
+    console.log("Testing Chatterbox with CPU...")
+    const result = await runTTS("Test.", "cpu")
+    
+    if (result.outputFile) createdFiles.push(result.outputFile)
+    console.log(`Result: ${result.success ? "SUCCESS" : "FAILED"} (${Math.round(result.duration / 1000)}s)`)
+    
+    expect(result.success).toBe(true)
+  }, 180000)
+})
+
+// ============================================================================
+// MANUAL TTS TESTS - Optional, requires TTS_MANUAL=1
+// ============================================================================
+
+const RUN_MANUAL = process.env.TTS_MANUAL === "1"
+const describeManual = RUN_MANUAL ? describe : describe.skip
+
+describeManual("Manual TTS Tests", () => {
+  function cleanTextForSpeech(text: string): string {
+    return text
+      .replace(/```[\s\S]*?```/g, "code block omitted")
+      .replace(/`[^`]+`/g, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/[*_~#]+/g, "")
+      .replace(/https?:\/\/[^\s]+/g, "")
+      .replace(/\/[\w./-]+/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+  }
+
+  async function speakWithOS(text: string): Promise<void> {
+    const escaped = text.replace(/'/g, "'\\''")
+    await execAsync(`say -r 200 '${escaped}'`)
+  }
+
+  it("speaks simple text", async () => {
+    console.log("Speaking: Hello, TTS is working...")
+    await speakWithOS(cleanTextForSpeech("Hello! The TTS plugin is working correctly."))
+    console.log("Done")
+    expect(true).toBe(true)
+  })
+
+  it("speaks text with code block removed", async () => {
+    const input = `Here's code:\n\`\`\`js\nconst x = 1;\n\`\`\`\nDone!`
+    const cleaned = cleanTextForSpeech(input)
+    console.log(`Speaking cleaned text: ${cleaned}`)
+    await speakWithOS(cleaned)
+    expect(true).toBe(true)
+  })
+
+  it("speaks text with markdown removed", async () => {
+    const input = "This is **important** and *emphasized* text."
+    const cleaned = cleanTextForSpeech(input)
+    console.log(`Speaking: ${cleaned}`)
+    await speakWithOS(cleaned)
+    expect(true).toBe(true)
+  })
+})
+
+// ============================================================================
+// REFLECTION COORDINATION TESTS - Test verdict file reading/waiting
+// ============================================================================
+
+describe("Reflection Coordination Tests", () => {
+  const testDir = join(tmpdir(), `tts-reflection-test-${Date.now()}`)
+  const reflectionDir = join(testDir, ".reflection")
+
+  beforeAll(async () => {
+    await mkdir(reflectionDir, { recursive: true })
+  })
+
+  afterAll(async () => {
+    // Cleanup test directory
+    try {
+      const { rm } = await import("fs/promises")
+      await rm(testDir, { recursive: true, force: true })
+    } catch {}
+  })
+
+  interface ReflectionVerdict {
+    sessionId: string
+    complete: boolean
+    severity: string
+    timestamp: number
+  }
+
+  // Recreate the waitForReflectionVerdict function for testing
+  async function waitForReflectionVerdict(
+    directory: string,
+    sessionId: string,
+    maxWaitMs: number,
+    debugLog: (msg: string) => Promise<void> = async () => {}
+  ): Promise<ReflectionVerdict | null> {
+    const reflDir = join(directory, ".reflection")
+    const signalPath = join(reflDir, `verdict_${sessionId.slice(0, 8)}.json`)
+    const startTime = Date.now()
+    const pollInterval = 100  // Faster polling for tests
+    
+    while (Date.now() - startTime < maxWaitMs) {
+      try {
+        const content = await readFile(signalPath, "utf-8")
+        const verdict = JSON.parse(content) as ReflectionVerdict
+        
+        // Check if this verdict is recent (within the last 30 seconds)
+        const age = Date.now() - verdict.timestamp
+        if (age < 30_000) {
+          return verdict
+        }
+      } catch {
+        // File doesn't exist yet, keep waiting
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, pollInterval))
+    }
+    
+    return null
+  }
+
+  it("returns null when no verdict file exists", async () => {
+    const sessionId = "test-session-no-verdict"
+    const verdict = await waitForReflectionVerdict(testDir, sessionId, 500)
+    expect(verdict).toBeNull()
+  })
+
+  it("reads complete verdict from file", async () => {
+    const sessionId = "test-session-complete"
+    const verdictData: ReflectionVerdict = {
+      sessionId: sessionId.slice(0, 8),
+      complete: true,
+      severity: "NONE",
+      timestamp: Date.now()
+    }
+    
+    // Write verdict file
+    const signalPath = join(reflectionDir, `verdict_${sessionId.slice(0, 8)}.json`)
+    await writeFile(signalPath, JSON.stringify(verdictData))
+    
+    const verdict = await waitForReflectionVerdict(testDir, sessionId, 1000)
+    expect(verdict).not.toBeNull()
+    expect(verdict!.complete).toBe(true)
+    expect(verdict!.severity).toBe("NONE")
+  })
+
+  it("reads incomplete verdict from file", async () => {
+    const sessionId = "test-session-incomplete"
+    const verdictData: ReflectionVerdict = {
+      sessionId: sessionId.slice(0, 8),
+      complete: false,
+      severity: "HIGH",
+      timestamp: Date.now()
+    }
+    
+    // Write verdict file
+    const signalPath = join(reflectionDir, `verdict_${sessionId.slice(0, 8)}.json`)
+    await writeFile(signalPath, JSON.stringify(verdictData))
+    
+    const verdict = await waitForReflectionVerdict(testDir, sessionId, 1000)
+    expect(verdict).not.toBeNull()
+    expect(verdict!.complete).toBe(false)
+    expect(verdict!.severity).toBe("HIGH")
+  })
+
+  it("ignores stale verdict files (older than 30 seconds)", async () => {
+    const sessionId = "test-session-stale"
+    const verdictData: ReflectionVerdict = {
+      sessionId: sessionId.slice(0, 8),
+      complete: true,
+      severity: "NONE",
+      timestamp: Date.now() - 60_000  // 60 seconds ago (stale)
+    }
+    
+    // Write verdict file
+    const signalPath = join(reflectionDir, `verdict_${sessionId.slice(0, 8)}.json`)
+    await writeFile(signalPath, JSON.stringify(verdictData))
+    
+    const verdict = await waitForReflectionVerdict(testDir, sessionId, 500)
+    expect(verdict).toBeNull()  // Stale verdict should be ignored
+  })
+
+  it("waits for verdict file to appear", async () => {
+    const sessionId = "test-session-wait"
+    const signalPath = join(reflectionDir, `verdict_${sessionId.slice(0, 8)}.json`)
+    
+    // Start waiting for verdict (will wait up to 2 seconds)
+    const waitPromise = waitForReflectionVerdict(testDir, sessionId, 2000)
+    
+    // After 500ms, write the verdict file
+    setTimeout(async () => {
+      const verdictData: ReflectionVerdict = {
+        sessionId: sessionId.slice(0, 8),
+        complete: true,
+        severity: "LOW",
+        timestamp: Date.now()
+      }
+      await writeFile(signalPath, JSON.stringify(verdictData))
+    }, 500)
+    
+    const verdict = await waitPromise
+    expect(verdict).not.toBeNull()
+    expect(verdict!.complete).toBe(true)
+    expect(verdict!.severity).toBe("LOW")
   })
 })

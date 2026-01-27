@@ -16,7 +16,6 @@ const DEBUG = process.env.REFLECTION_DEBUG === "1"
 const SESSION_CLEANUP_INTERVAL = 300_000 // Clean old sessions every 5 minutes
 const SESSION_MAX_AGE = 1800_000 // Sessions older than 30 minutes can be cleaned
 const STUCK_CHECK_DELAY = 30_000 // Check if agent is stuck 30 seconds after prompt
-const STUCK_NUDGE_DELAY = 15_000 // Nudge agent 15 seconds after compression
 
 // Debug logging (only when REFLECTION_DEBUG=1)
 function debug(...args: any[]) {
@@ -39,6 +38,9 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   const pendingNudges = new Map<string, { timer: NodeJS.Timeout; reason: "reflection" | "compression" }>()
   // Track sessions that were recently compacted (to prompt GitHub update)
   const recentlyCompacted = new Set<string>()
+  // Track sessions that were recently aborted (Esc key) - prevents race condition
+  // where session.idle fires before abort error is written to message
+  const recentlyAbortedSessions = new Set<string>()
   
   // Periodic cleanup of old session data to prevent memory leaks
   const cleanupOldSessions = () => {
@@ -60,6 +62,7 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
           pendingNudges.delete(sessionId)
         }
         recentlyCompacted.delete(sessionId)
+        recentlyAbortedSessions.delete(sessionId)
         debug("Cleaned up old session:", sessionId.slice(0, 8))
       }
     }
@@ -99,6 +102,28 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     try {
       await writeFile(filepath, JSON.stringify(data, null, 2))
     } catch {}
+  }
+
+  /**
+   * Write a verdict signal file for TTS/Telegram coordination.
+   * This allows TTS to know whether to speak/notify after reflection completes.
+   * File format: { sessionId, complete, severity, timestamp }
+   */
+  async function writeVerdictSignal(sessionId: string, complete: boolean, severity: string): Promise<void> {
+    await ensureReflectionDir()
+    const signalPath = join(reflectionDir, `verdict_${sessionId.slice(0, 8)}.json`)
+    const signal = {
+      sessionId: sessionId.slice(0, 8),
+      complete,
+      severity,
+      timestamp: Date.now()
+    }
+    try {
+      await writeFile(signalPath, JSON.stringify(signal))
+      debug("Wrote verdict signal:", signalPath, signal)
+    } catch (e) {
+      debug("Failed to write verdict signal:", e)
+    }
   }
 
   async function showToast(message: string, variant: "info" | "success" | "warning" | "error" = "info") {
@@ -591,6 +616,10 @@ Reply with JSON only (no other text):
         const isBlocker = severity === "BLOCKER"
         const isComplete = verdict.complete && !isBlocker
 
+        // Write verdict signal for TTS/Telegram coordination
+        // This must be written BEFORE any prompts/toasts so TTS can read it
+        await writeVerdictSignal(sessionId, isComplete, severity)
+
         if (isComplete) {
           // COMPLETE: mark this task as reflected, show toast only (no prompt!)
           lastReflectedMsgCount.set(sessionId, humanMsgCount)
@@ -658,9 +687,12 @@ Please address the above and continue.`
         const sessionId = props?.sessionID
         const error = props?.error
         if (sessionId && error?.name === "MessageAbortedError") {
-          // Cancel nudges for this session - the abort will be detected per-task in runReflection
+          // Track abort in memory to prevent race condition with session.idle
+          // (session.idle may fire before the abort error is written to the message)
+          recentlyAbortedSessions.add(sessionId)
+          // Cancel nudges for this session
           cancelNudge(sessionId)
-          debug("Session aborted, cancelled nudges:", sessionId.slice(0, 8))
+          debug("Session aborted, added to recentlyAbortedSessions:", sessionId.slice(0, 8))
         }
       }
       
@@ -677,7 +709,9 @@ Please address the above and continue.`
         }
       }
       
-      // Handle compression/compaction - schedule nudge to prompt GitHub update
+      // Handle compression/compaction - immediately nudge to prompt GitHub update
+      // This must happen SYNCHRONOUSLY before session.idle fires, otherwise
+      // reflection may run first and the compression context is lost
       if (event.type === "session.compacted") {
         const sessionId = (event as any).properties?.sessionID
         debug("session.compacted received for:", sessionId)
@@ -687,10 +721,20 @@ Please address the above and continue.`
             debug("SKIP compaction handling: is judge session")
             return
           }
-          // Don't skip for aborted sessions - user may continue after abort
-          // Mark as recently compacted and schedule a nudge
+          // Mark as recently compacted
           recentlyCompacted.add(sessionId)
-          scheduleNudge(sessionId, STUCK_NUDGE_DELAY, "compression")
+          
+          // Wait a short time for session to settle, then nudge
+          // Using setTimeout directly (not scheduleNudge) to avoid being replaced
+          setTimeout(async () => {
+            // Double-check session is still valid and idle
+            if (!(await isSessionIdle(sessionId))) {
+              debug("Session not idle after compression, skipping nudge:", sessionId.slice(0, 8))
+              return
+            }
+            debug("Nudging after compression:", sessionId.slice(0, 8))
+            await nudgeSession(sessionId, "compression")
+          }, 3000) // 3 second delay to let session stabilize
         }
       }
       
@@ -705,11 +749,21 @@ Please address the above and continue.`
           // Keep compression nudges so they can fire and prompt GitHub update
           cancelNudge(sessionId, "reflection")
           
-          // Fast path: skip judge sessions (abort check happens per-task in runReflection)
+          // Fast path: skip judge sessions
           if (judgeSessionIds.has(sessionId)) {
             debug("SKIP: session in judgeSessionIds set")
             return
           }
+          
+          // Fast path: skip recently aborted sessions (prevents race condition)
+          // session.error fires with MessageAbortedError, but session.idle may fire
+          // before the error is written to the message data
+          if (recentlyAbortedSessions.has(sessionId)) {
+            recentlyAbortedSessions.delete(sessionId)  // Clear for future tasks
+            debug("SKIP: session was recently aborted (Esc)")
+            return
+          }
+          
           await runReflection(sessionId)
         }
       }
