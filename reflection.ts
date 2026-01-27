@@ -598,14 +598,27 @@ If the agent's response asks the user to choose or act instead of completing the
 - "What would you like me to do?"
 - "Which option would you prefer?"
 - "Let me know if you want me to..."
+- "Would you like me to continue?"
 - "I can help you with..." followed by numbered options
 - Presenting options (1. 2. 3.) without taking action
 
-HOWEVER, if the original task REQUIRES user decisions (design choices, preferences, clarifications),
-then asking questions is CORRECT behavior. In this case:
-- Set complete: false (task is not done yet)
-- Set severity: NONE (agent is correctly waiting for user input, no issues)
-This signals that the agent should wait for the user, not be pushed to continue.
+IMPORTANT: If the agent lists "Remaining Tasks" or "Next Steps" and then asks for permission to continue,
+this is PREMATURE STOPPING, not waiting for user input. The agent should complete the stated work.
+- Set complete: false
+- Set severity: LOW or MEDIUM (not NONE)
+- Include the remaining items in "missing" array
+- Include concrete next steps in "next_actions" array
+
+ONLY use severity: NONE when the original task GENUINELY requires user decisions that cannot be inferred:
+- Design choices ("what color scheme do you want?")
+- Preference decisions ("which approach do you prefer?")
+- Missing information ("what is your API key?")
+- Clarification requests when the task is truly ambiguous
+
+Do NOT use severity: NONE when:
+- Agent lists remaining work and asks permission to continue
+- Agent asks "should I proceed?" when the answer is obviously yes
+- Agent presents a summary and waits instead of completing the task
 
 ### Temporal Consistency
 Reject if:
@@ -686,14 +699,21 @@ Reply with JSON only (no other text):
             return
           }
           
-          // SPECIAL CASE: severity NONE but incomplete means agent is waiting for user input
+          // SPECIAL CASE: severity NONE but incomplete
+          // If there are NO missing items, agent is legitimately waiting for user input
           // (e.g., asking clarifying questions, presenting options for user to choose)
-          // Don't push feedback in this case - let the user respond naturally
-          if (severity === "NONE") {
-            debug("SKIP feedback: severity NONE means waiting for user input")
+          // If there ARE missing items, agent should continue (not wait for permission)
+          const hasMissingItems = verdict.missing?.length > 0 || verdict.next_actions?.length > 0
+          if (severity === "NONE" && !hasMissingItems) {
+            debug("SKIP feedback: severity NONE and no missing items means waiting for user input")
             lastReflectedMsgCount.set(sessionId, humanMsgCount)  // Mark as reflected
             await showToast("Awaiting user input", "info")
             return
+          }
+          
+          // If severity NONE but HAS missing items, agent should continue without waiting
+          if (severity === "NONE" && hasMissingItems) {
+            debug("Pushing agent: severity NONE but has missing items:", verdict.missing?.length || 0, "missing,", verdict.next_actions?.length || 0, "next_actions")
           }
           
           // INCOMPLETE: increment attempts and send feedback
