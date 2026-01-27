@@ -229,8 +229,9 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     return count
   }
 
-  function extractTaskAndResult(messages: any[]): { task: string; result: string; tools: string } | null {
-    let task = ""
+  function extractTaskAndResult(messages: any[]): { task: string; result: string; tools: string; isResearch: boolean } | null {
+    let originalTask = ""  // First human message (the actual request)
+    let latestTask = ""    // Latest human message (may be follow-up)
     let result = ""
     const tools: string[] = []
 
@@ -239,7 +240,11 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
         for (const part of msg.parts || []) {
           if (part.type === "text" && part.text) {
             if (part.text.includes("## Reflection:")) continue
-            task = part.text // Always update to most recent human message
+            // Track both first and latest human messages
+            if (!originalTask) {
+              originalTask = part.text  // First human message is the original task
+            }
+            latestTask = part.text  // Keep updating for latest
             break
           }
         }
@@ -262,9 +267,18 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
       }
     }
 
-    debug("extractTaskAndResult - task empty?", !task, "result empty?", !result)
-    if (!task || !result) return null
-    return { task, result, tools: tools.slice(-10).join("\n") }
+    // Use original task for evaluation, but include latest context if different
+    const task = originalTask === latestTask 
+      ? originalTask 
+      : `Original request: ${originalTask}\n\nLatest user message: ${latestTask}`
+    
+    // Detect research-only tasks (no code expected)
+    const isResearch = /research|explore|investigate|analyze|review|study|compare|evaluate/i.test(originalTask) &&
+                       /do not|don't|no code|research only|just research|only research/i.test(originalTask)
+
+    debug("extractTaskAndResult - task empty?", !task, "result empty?", !result, "isResearch?", isResearch)
+    if (!originalTask || !result) return null
+    return { task, result, tools: tools.slice(-10).join("\n"), isResearch }
   }
 
   async function waitForResponse(sessionId: string): Promise<string | null> {
@@ -492,32 +506,21 @@ Use \`gh pr comment\` or \`gh issue comment\` to add the update.`
 
       try {
         const agents = await getAgentsFile()
-        const prompt = `TASK VERIFICATION - Release Manager Protocol
+        
+        // Build task-appropriate evaluation rules
+        const researchRules = extracted.isResearch ? `
+### Research Task Rules (APPLIES TO THIS TASK)
+This is a RESEARCH task - the user explicitly requested investigation/analysis without code changes.
+- Do NOT require tests, builds, or code changes
+- Do NOT push the agent to write code when research was requested
+- Complete = research findings delivered with reasonable depth
+- Truncated display is NOT a failure (responses may be cut off in UI but agent completed the work)
+- If agent provided research findings, mark complete: true
+- Only mark incomplete if the agent clearly failed to research the topic
+` : ""
 
-You are a release manager with risk ownership. Evaluate whether the task is complete and ready for release.
-
-${agents ? `## Project Instructions\n${agents.slice(0, 1500)}\n` : ""}
-## Original Task
-${extracted.task}
-
-## Tools Used
-${extracted.tools || "(none)"}
-
-## Agent's Response
-${extracted.result.slice(0, 2000)}
-
----
-
-## Evaluation Rules
-
-### Severity Levels
-- BLOCKER: security, auth, billing/subscription, data loss, E2E broken, prod health broken → complete MUST be false
-- HIGH: major functionality degraded, CI red without approved waiver
-- MEDIUM: partial degradation or uncertain coverage
-- LOW: cosmetic / non-impacting
-- NONE: no issues
-
-### Hard Requirements (must ALL be met for complete:true)
+        const codingRules = !extracted.isResearch ? `
+### Coding Task Rules
 1. All explicitly requested functionality implemented
 2. Tests run and pass (if tests were requested or exist)
 3. Build/compile succeeds (if applicable)
@@ -544,12 +547,42 @@ If a required gate failed but agent claims ready, response MUST include:
 - Mitigation/rollback plan
 - Follow-up tracking (ticket/issue reference)
 Without waiver details → complete: false
+` : ""
 
-### Temporal Consistency
-Reject if:
-- Readiness claimed before verification ran
-- Later output contradicts earlier "done" claim
-- Failures downgraded after-the-fact without new evidence
+        // Increase result size for better judgment (was 2000, now 4000)
+        const resultPreview = extracted.result.slice(0, 4000)
+        const truncationNote = extracted.result.length > 4000 
+          ? `\n\n[NOTE: Response truncated from ${extracted.result.length} chars - agent may have provided more content]`
+          : ""
+
+        const prompt = `TASK VERIFICATION
+
+Evaluate whether the agent completed what the user asked for.
+
+${agents ? `## Project Instructions\n${agents.slice(0, 1500)}\n` : ""}
+## User's Request
+${extracted.task}
+
+## Tools Used
+${extracted.tools || "(none)"}
+
+## Agent's Response
+${resultPreview}${truncationNote}
+
+---
+
+## Evaluation Rules
+
+### Task Type
+${extracted.isResearch ? "This is a RESEARCH task (no code expected)" : "This is a CODING/ACTION task"}
+
+### Severity Levels
+- BLOCKER: security, auth, billing/subscription, data loss, E2E broken, prod health broken → complete MUST be false
+- HIGH: major functionality degraded, CI red without approved waiver
+- MEDIUM: partial degradation or uncertain coverage
+- LOW: cosmetic / non-impacting
+- NONE: no issues
+${researchRules}${codingRules}
 
 ### Progress Status Detection
 If the agent's response contains explicit progress indicators like:
@@ -565,14 +598,33 @@ If the agent's response asks the user to choose or act instead of completing the
 - "What would you like me to do?"
 - "Which option would you prefer?"
 - "Let me know if you want me to..."
+- "Would you like me to continue?"
 - "I can help you with..." followed by numbered options
 - Presenting options (1. 2. 3.) without taking action
 
-HOWEVER, if the original task REQUIRES user decisions (design choices, preferences, clarifications),
-then asking questions is CORRECT behavior. In this case:
-- Set complete: false (task is not done yet)
-- Set severity: NONE (agent is correctly waiting for user input, no issues)
-This signals that the agent should wait for the user, not be pushed to continue.
+IMPORTANT: If the agent lists "Remaining Tasks" or "Next Steps" and then asks for permission to continue,
+this is PREMATURE STOPPING, not waiting for user input. The agent should complete the stated work.
+- Set complete: false
+- Set severity: LOW or MEDIUM (not NONE)
+- Include the remaining items in "missing" array
+- Include concrete next steps in "next_actions" array
+
+ONLY use severity: NONE when the original task GENUINELY requires user decisions that cannot be inferred:
+- Design choices ("what color scheme do you want?")
+- Preference decisions ("which approach do you prefer?")
+- Missing information ("what is your API key?")
+- Clarification requests when the task is truly ambiguous
+
+Do NOT use severity: NONE when:
+- Agent lists remaining work and asks permission to continue
+- Agent asks "should I proceed?" when the answer is obviously yes
+- Agent presents a summary and waits instead of completing the task
+
+### Temporal Consistency
+Reject if:
+- Readiness claimed before verification ran
+- Later output contradicts earlier "done" claim
+- Failures downgraded after-the-fact without new evidence
 
 ---
 
@@ -614,7 +666,7 @@ Reply with JSON only (no other text):
         // Save reflection data to .reflection/ directory
         await saveReflectionData(sessionId, {
           task: extracted.task,
-          result: extracted.result.slice(0, 2000),
+          result: extracted.result.slice(0, 4000),
           tools: extracted.tools || "(none)",
           prompt,
           verdict,
@@ -647,14 +699,21 @@ Reply with JSON only (no other text):
             return
           }
           
-          // SPECIAL CASE: severity NONE but incomplete means agent is waiting for user input
+          // SPECIAL CASE: severity NONE but incomplete
+          // If there are NO missing items, agent is legitimately waiting for user input
           // (e.g., asking clarifying questions, presenting options for user to choose)
-          // Don't push feedback in this case - let the user respond naturally
-          if (severity === "NONE") {
-            debug("SKIP feedback: severity NONE means waiting for user input")
+          // If there ARE missing items, agent should continue (not wait for permission)
+          const hasMissingItems = verdict.missing?.length > 0 || verdict.next_actions?.length > 0
+          if (severity === "NONE" && !hasMissingItems) {
+            debug("SKIP feedback: severity NONE and no missing items means waiting for user input")
             lastReflectedMsgCount.set(sessionId, humanMsgCount)  // Mark as reflected
             await showToast("Awaiting user input", "info")
             return
+          }
+          
+          // If severity NONE but HAS missing items, agent should continue without waiting
+          if (severity === "NONE" && hasMissingItems) {
+            debug("Pushing agent: severity NONE but has missing items:", verdict.missing?.length || 0, "missing,", verdict.next_actions?.length || 0, "next_actions")
           }
           
           // INCOMPLETE: increment attempts and send feedback
