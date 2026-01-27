@@ -58,74 +58,92 @@ function isRateLimited(uuid: string): boolean {
 }
 
 /**
- * Escape special characters for Telegram MarkdownV2
- * Characters that must be escaped: _ * [ ] ( ) ~ ` > # + - = | { } . !
+ * Escape special characters for HTML
  */
-function escapeMarkdownV2(text: string): string {
-  return text.replace(/([_*\[\]()~`>#+=|{}.!\\-])/g, '\\$1')
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
 }
 
 /**
- * Convert common markdown to Telegram MarkdownV2 format
- * This preserves code blocks and basic formatting while escaping problematic characters
+ * Convert common markdown to Telegram HTML format
+ * HTML is more forgiving than MarkdownV2 and handles special characters better
  */
-function convertToTelegramMarkdown(text: string): string {
-  // First, extract and protect code blocks (``` and `)
-  const codeBlocks: string[] = []
-  const inlineCode: string[] = []
-  
-  // Protect fenced code blocks (```...```)
-  let processed = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_match, lang, code) => {
-    const idx = codeBlocks.length
-    // Don't escape inside code blocks, just use pre formatting
-    codeBlocks.push(`\`\`\`${lang}\n${code}\`\`\``)
-    return `__CODE_BLOCK_${idx}__`
-  })
-  
-  // Protect inline code (`...`)
-  processed = processed.replace(/`([^`]+)`/g, (_match, code) => {
-    const idx = inlineCode.length
-    inlineCode.push(`\`${code}\``)
-    return `__INLINE_CODE_${idx}__`
-  })
-  
-  // Now escape the rest of the text for MarkdownV2
-  processed = escapeMarkdownV2(processed)
-  
-  // Convert markdown headers to bold (## Header -> *Header*)
-  processed = processed.replace(/^\\#\\#\\#\s+(.+)$/gm, '*$1*')
-  processed = processed.replace(/^\\#\\#\s+(.+)$/gm, '*$1*')
-  processed = processed.replace(/^\\#\s+(.+)$/gm, '*$1*')
-  
-  // Convert **bold** to *bold* (MarkdownV2 uses single asterisk)
-  processed = processed.replace(/\\\*\\\*([^*]+)\\\*\\\*/g, '*$1*')
-  
-  // Convert __underline__ or _italic_ - keep as is since we escaped them
-  // Just unescape single underscores for italic
-  processed = processed.replace(/\\_([^_]+)\\_/g, '_$1_')
-  
-  // Restore code blocks (they're already in correct format)
-  codeBlocks.forEach((block, idx) => {
-    processed = processed.replace(`__CODE_BLOCK_${idx}__`, block)
-  })
-  
-  // Restore inline code
-  inlineCode.forEach((code, idx) => {
-    processed = processed.replace(`__INLINE_CODE_${idx}__`, code)
-  })
-  
-  return processed
+function convertToTelegramHtml(text: string): string {
+  try {
+    let processed = text
+    
+    // Use UUID-like placeholders that won't appear in normal text
+    const PLACEHOLDER_PREFIX = '___PLACEHOLDER_'
+    const PLACEHOLDER_SUFFIX = '___'
+    const codeBlocks: string[] = []
+    const inlineCode: string[] = []
+    
+    // Step 1: Extract fenced code blocks (```lang\ncode```)
+    const codeBlockRegex = /```(\w*)\n?([\s\S]*?)```/g
+    let match
+    while ((match = codeBlockRegex.exec(processed)) !== null) {
+      const idx = codeBlocks.length
+      const lang = match[1] || ''
+      const code = match[2] || ''
+      const langAttr = lang ? ` class="language-${lang}"` : ''
+      codeBlocks.push(`<pre><code${langAttr}>${escapeHtml(code)}</code></pre>`)
+    }
+    // Replace all matches
+    let cbIdx = 0
+    processed = processed.replace(/```(\w*)\n?([\s\S]*?)```/g, () => {
+      return `${PLACEHOLDER_PREFIX}CB${cbIdx++}${PLACEHOLDER_SUFFIX}`
+    })
+    
+    // Step 2: Extract inline code (`code`)
+    const inlineCodeRegex = /`([^`]+)`/g
+    while ((match = inlineCodeRegex.exec(processed)) !== null) {
+      const code = match[1] || ''
+      inlineCode.push(`<code>${escapeHtml(code)}</code>`)
+    }
+    // Replace all matches
+    let icIdx = 0
+    processed = processed.replace(/`([^`]+)`/g, () => {
+      return `${PLACEHOLDER_PREFIX}IC${icIdx++}${PLACEHOLDER_SUFFIX}`
+    })
+    
+    // Step 3: Escape HTML in remaining text
+    processed = escapeHtml(processed)
+    
+    // Step 4: Convert markdown formatting
+    processed = processed.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    processed = processed.replace(/_([^_]+)_/g, '<i>$1</i>')
+    processed = processed.replace(/^###\s+(.+)$/gm, '<b>$1</b>')
+    processed = processed.replace(/^##\s+(.+)$/gm, '<b>$1</b>')
+    processed = processed.replace(/^#\s+(.+)$/gm, '<b>$1</b>')
+    
+    // Step 5: Restore code blocks and inline code
+    for (let i = 0; i < codeBlocks.length; i++) {
+      processed = processed.replace(`${PLACEHOLDER_PREFIX}CB${i}${PLACEHOLDER_SUFFIX}`, codeBlocks[i])
+    }
+    for (let i = 0; i < inlineCode.length; i++) {
+      processed = processed.replace(`${PLACEHOLDER_PREFIX}IC${i}${PLACEHOLDER_SUFFIX}`, inlineCode[i])
+    }
+    
+    return processed
+  } catch (error) {
+    console.error('Error converting to Telegram HTML:', error)
+    // Fallback: just escape HTML
+    return escapeHtml(text)
+  }
 }
 
-async function sendTelegramMessage(chatId: number, text: string, useMarkdown: boolean = true): Promise<{ success: boolean; messageId?: number; error?: string }> {
+async function sendTelegramMessage(chatId: number, text: string, useHtml: boolean = true): Promise<{ success: boolean; messageId?: number; error?: string }> {
   try {
     const body: Record<string, unknown> = {
       chat_id: chatId,
-      text: useMarkdown ? convertToTelegramMarkdown(text) : text,
+      text: useHtml ? convertToTelegramHtml(text) : text,
     }
     
-    if (useMarkdown) {
-      body.parse_mode = 'MarkdownV2'
+    if (useHtml) {
+      body.parse_mode = 'HTML'
     }
     
     const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -138,9 +156,9 @@ async function sendTelegramMessage(chatId: number, text: string, useMarkdown: bo
       const errorText = await response.text()
       console.error('Telegram sendMessage failed:', errorText)
       
-      // If markdown parsing failed, retry without markdown
-      if (useMarkdown && errorText.includes("can't parse")) {
-        console.log('Retrying without markdown...')
+      // If HTML parsing failed, retry without formatting
+      if (useHtml && (errorText.includes("can't parse") || errorText.includes("Bad Request"))) {
+        console.log('Retrying without HTML formatting...')
         return sendTelegramMessage(chatId, text, false)
       }
       
