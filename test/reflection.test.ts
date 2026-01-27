@@ -140,4 +140,67 @@ describe("Reflection Plugin - Unit Tests", () => {
     
     assert.strictEqual(reflectionRan, true, "New task should trigger reflection after abort cleared")
   })
+
+  describe("severity=NONE with missing items", () => {
+    it("should push feedback when severity=NONE but has missing items", () => {
+      // This simulates the VibeTeam case where agent listed "Remaining Tasks" 
+      // and asked "Would you like me to continue?" - judge returned NONE
+      const verdict = {
+        complete: false,
+        severity: "NONE",
+        feedback: "Agent listed remaining tasks but stopped and asked permission",
+        missing: ["OpenHands team.py orchestration", "Integration tests"],
+        next_actions: ["Create vibeteam/teams/openhands_team.py"]
+      }
+      
+      const severity = verdict.severity || "MEDIUM"
+      const hasMissingItems = verdict.missing?.length > 0 || verdict.next_actions?.length > 0
+      
+      // The new logic: push feedback if severity=NONE but has missing items
+      const shouldPushFeedback = !(severity === "NONE" && !hasMissingItems)
+      
+      assert.strictEqual(hasMissingItems, true, "Should detect missing items")
+      assert.strictEqual(shouldPushFeedback, true, "Should push feedback when NONE + missing items")
+    })
+
+    it("should NOT push feedback when severity=NONE and no missing items", () => {
+      // Agent is genuinely waiting for user input (e.g., asking clarifying question)
+      const verdict = {
+        complete: false,
+        severity: "NONE",
+        feedback: "Agent correctly asked for user preference",
+        missing: [],
+        next_actions: []
+      }
+      
+      const severity = verdict.severity || "MEDIUM"
+      const hasMissingItems = verdict.missing?.length > 0 || verdict.next_actions?.length > 0
+      
+      // Should NOT push feedback - agent is legitimately waiting for user
+      const shouldPushFeedback = !(severity === "NONE" && !hasMissingItems)
+      
+      assert.strictEqual(hasMissingItems, false, "Should detect no missing items")
+      assert.strictEqual(shouldPushFeedback, false, "Should NOT push feedback when NONE + no missing items")
+    })
+
+    it("should push feedback for all non-NONE severities regardless of missing items", () => {
+      const testCases = [
+        { severity: "LOW", missing: [], expected: true },
+        { severity: "MEDIUM", missing: [], expected: true },
+        { severity: "HIGH", missing: [], expected: true },
+        { severity: "BLOCKER", missing: [], expected: true },
+        { severity: "LOW", missing: ["item"], expected: true },
+      ]
+      
+      for (const tc of testCases) {
+        const hasMissingItems = tc.missing.length > 0
+        const shouldPushFeedback = !(tc.severity === "NONE" && !hasMissingItems)
+        assert.strictEqual(
+          shouldPushFeedback, 
+          tc.expected, 
+          `Severity ${tc.severity} with ${tc.missing.length} items should ${tc.expected ? '' : 'NOT '}push feedback`
+        )
+      }
+    })
+  })
 })
