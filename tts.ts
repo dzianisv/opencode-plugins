@@ -48,6 +48,10 @@ const SPEECH_QUEUE_DIR = join(homedir(), ".config", "opencode", "speech-queue")
 // Unique identifier for this process instance
 const PROCESS_ID = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
+// Reflection coordination - wait for reflection verdict before speaking
+const REFLECTION_VERDICT_WAIT_MS = 10_000  // Max wait time for reflection verdict
+const REFLECTION_POLL_INTERVAL_MS = 500    // Poll interval for verdict file
+
 // TTS Engine types
 type TTSEngine = "coqui" | "chatterbox" | "os"
 
@@ -97,6 +101,12 @@ interface TTSConfig {
     model?: string                      // Whisper model: "tiny", "base", "small", "medium", "large-v2", "large-v3"
     device?: "cuda" | "cpu" | "auto"    // Device for inference (default: auto)
     port?: number                       // HTTP server port (default: 8787)
+    language?: string                   // Language code (e.g., "en", "es") - null for auto-detect
+  }
+  // Reflection coordination options
+  reflection?: {
+    waitForVerdict?: boolean             // Wait for reflection verdict before speaking (default: true)
+    maxWaitMs?: number                   // Max wait time for verdict (default: 10000ms)
   }
 }
 
@@ -142,6 +152,61 @@ const COQUI_PID = join(COQUI_DIR, "server.pid")
 
 let coquiInstalled: boolean | null = null
 let coquiSetupAttempted = false
+
+// ==================== REFLECTION COORDINATION ====================
+
+interface ReflectionVerdict {
+  sessionId: string
+  complete: boolean
+  severity: string
+  timestamp: number
+}
+
+/**
+ * Wait for and read the reflection verdict for a session.
+ * Returns the verdict if found within timeout, or null if no verdict.
+ * 
+ * @param directory - Workspace directory (contains .reflection/)
+ * @param sessionId - Session ID to check verdict for
+ * @param maxWaitMs - Maximum time to wait for verdict
+ * @param debugLog - Debug logging function
+ */
+async function waitForReflectionVerdict(
+  directory: string,
+  sessionId: string,
+  maxWaitMs: number,
+  debugLog: (msg: string) => Promise<void>
+): Promise<ReflectionVerdict | null> {
+  const reflectionDir = join(directory, ".reflection")
+  const signalPath = join(reflectionDir, `verdict_${sessionId.slice(0, 8)}.json`)
+  const startTime = Date.now()
+  
+  await debugLog(`Waiting for reflection verdict: ${signalPath}`)
+  
+  while (Date.now() - startTime < maxWaitMs) {
+    try {
+      const content = await readFile(signalPath, "utf-8")
+      const verdict = JSON.parse(content) as ReflectionVerdict
+      
+      // Check if this verdict is recent (within the last 30 seconds)
+      // This prevents using stale verdicts from previous sessions
+      const age = Date.now() - verdict.timestamp
+      if (age < 30_000) {
+        await debugLog(`Found verdict: complete=${verdict.complete}, severity=${verdict.severity}, age=${age}ms`)
+        return verdict
+      } else {
+        await debugLog(`Found stale verdict (age=${age}ms), ignoring`)
+      }
+    } catch {
+      // File doesn't exist yet, keep waiting
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, REFLECTION_POLL_INTERVAL_MS))
+  }
+  
+  await debugLog(`No reflection verdict found within ${maxWaitMs}ms`)
+  return null
+}
 
 /**
  * Load TTS configuration from file
@@ -1725,24 +1790,29 @@ async function transcribeWithWhisper(
   }
   
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/transcribe`, {
+    // Use /transcribe-base64 endpoint for base64-encoded audio
+    const response = await fetch(`http://127.0.0.1:${port}/transcribe-base64`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         audio: audioBase64,
         model: config.whisper?.model || "base",
         format,
+        language: config.whisper?.language || null,  // null = auto-detect
       }),
       signal: AbortSignal.timeout(120000)  // 2 minute timeout
     })
     
     if (!response.ok) {
+      const errorText = await response.text()
+      console.error(`[TTS] Whisper transcription failed: ${response.status} ${errorText}`)
       return null
     }
     
     const result = await response.json() as { text: string; language: string; duration: number }
     return result
-  } catch {
+  } catch (err) {
+    console.error(`[TTS] Whisper transcription error: ${err}`)
     return null
   }
 }
@@ -2529,6 +2599,31 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
           if (!complete) {
             await debugLog(`Session not complete, skipping`)
             return
+          }
+
+          // Wait for reflection verdict before speaking/notifying
+          // This prevents TTS from firing on incomplete tasks that reflection will push feedback for
+          const config = await loadConfig()
+          const waitForVerdict = config.reflection?.waitForVerdict !== false  // Default: true
+          
+          if (waitForVerdict) {
+            const maxWaitMs = config.reflection?.maxWaitMs || REFLECTION_VERDICT_WAIT_MS
+            await debugLog(`Waiting for reflection verdict (max ${maxWaitMs}ms)...`)
+            
+            const verdict = await waitForReflectionVerdict(directory, sessionId, maxWaitMs, debugLog)
+            
+            if (verdict) {
+              if (!verdict.complete) {
+                // Reflection says task is incomplete - don't speak/notify
+                await debugLog(`Reflection verdict: INCOMPLETE (${verdict.severity}), skipping TTS/Telegram`)
+                shouldKeepInSet = true  // Don't retry this session
+                return
+              }
+              await debugLog(`Reflection verdict: COMPLETE (${verdict.severity}), proceeding with TTS/Telegram`)
+            } else {
+              // No verdict found - reflection may not be running, proceed anyway
+              await debugLog(`No reflection verdict found, proceeding with TTS/Telegram`)
+            }
           }
 
           const finalResponse = extractFinalResponse(messages)
