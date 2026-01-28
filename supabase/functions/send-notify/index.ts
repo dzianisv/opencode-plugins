@@ -325,22 +325,14 @@ Deno.serve(async (req) => {
 
     // Send text message
     if (text) {
-      // Truncate text if too long (Telegram limit is 4096 chars, leave room for header/footer)
-      const maxLen = 3800
+      // Truncate text if too long (Telegram limit is 4096 chars)
+      const maxLen = 4000
       const truncatedText = text.length > maxLen 
         ? text.slice(0, maxLen) + '\n\n...(truncated)'
         : text
       
-      // Add reply hint if session context is provided
-      const replyHint = session_id 
-        ? '\n\n💬 Reply to this message to continue the conversation'
-        : ''
-      
-      // Build the full message - the convertToTelegramMarkdown function will handle escaping
-      // Use plain text header to avoid markdown conflicts
-      const fullMessage = `🔔 OpenCode Task Complete\n\n${truncatedText}${replyHint}`
-      
-      const messageResult = await sendTelegramMessage(chatId, fullMessage)
+      // Send just the message content without header or reply hint
+      const messageResult = await sendTelegramMessage(chatId, truncatedText)
       textSent = messageResult.success
       sentMessageId = messageResult.messageId
       if (!messageResult.success) {
