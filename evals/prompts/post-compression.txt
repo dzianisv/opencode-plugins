@@ -1,0 +1,37 @@
+Evaluate what action to take after context compression in an AI coding session. Return only JSON.
+
+## Original Task(s)
+{{task_summary}}
+
+## Agent's Last Response (before compression)
+{{last_assistant_response}}
+
+## Tools Used
+{{tools_used}}
+
+## Detected Indicators
+- Git commands used: {{has_git_commands}}
+- PR/Issue references found: {{has_pr_issue_ref}}
+
+════════════════════════════════════════
+
+Determine the best action after compression:
+
+1. **needs_github_update**: Agent was working on a PR/issue and should update it with progress before continuing
+2. **continue_task**: Agent should simply continue where it left off
+3. **needs_clarification**: Significant context was lost, user input may be needed
+4. **task_complete**: Task appears to be finished, no action needed
+
+Return JSON only:
+{
+  "action": "needs_github_update" | "continue_task" | "needs_clarification" | "task_complete",
+  "hasActiveGitWork": true/false,
+  "confidence": 0.0-1.0,
+  "nudgeMessage": "Context-aware message to send to the agent"
+}
+
+Guidelines for nudgeMessage:
+- If needs_github_update: Tell agent to use `gh pr comment` or `gh issue comment` to summarize progress
+- If continue_task: Brief reminder of what they were working on
+- If needs_clarification: Ask agent to summarize current state and what's needed
+- If task_complete: Empty string or brief acknowledgment

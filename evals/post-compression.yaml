@@ -1,0 +1,301 @@
+# Promptfoo Evaluation: Post-Compression Nudges
+#
+# Evaluates the GenAI post-compression evaluation function (evaluatePostCompression)
+# Tests whether the model correctly identifies the right action after context compression:
+# - needs_github_update: Agent should update PR/issue with progress
+# - continue_task: Agent should continue where it left off
+# - needs_clarification: User input may be needed
+# - task_complete: Task is finished
+#
+# Run with: npm run eval:compression
+
+description: "Post-Compression Nudges - GenAI Accuracy Evaluation"
+
+prompts:
+  - file://prompts/post-compression.txt
+
+providers:
+  # Use Azure OpenAI - requires AZURE_OPENAI_API_KEY env var
+  - id: azureopenai:chat:gpt-4.1-mini
+    label: azure-gpt-4o-mini
+    config:
+      apiHost: eastus.api.cognitive.microsoft.com
+
+defaultTest:
+  options:
+    repeat: 1
+
+tests:
+  # ============================================
+  # NEEDS GITHUB UPDATE - PR/Issue work in progress
+  # ============================================
+
+  - description: "Working on PR, should update before continuing"
+    vars:
+      task_summary: "Fix the authentication bug reported in issue #42 and create a PR"
+      last_assistant_response: |
+        I've made good progress on the authentication fix:
+        
+        1. Fixed the token validation in auth.ts
+        2. Added proper error handling
+        3. Created branch fix/auth-bug-42
+        4. Pushed changes
+        
+        Next I need to:
+        - Add tests for the new validation
+        - Create the PR
+      tools_used: "edit, bash, git commit, git push"
+      has_git_commands: "true"
+      has_pr_issue_ref: "true"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.action === "needs_github_update" && result.hasActiveGitWork === true;
+
+  - description: "PR created, should comment progress"
+    vars:
+      task_summary: "Implement feature #15 - user notifications"
+      last_assistant_response: |
+        I've created PR #87 for the notification feature:
+        
+        ```
+        gh pr create --title "feat: add user notifications" --body "..."
+        ```
+        
+        The PR is ready for review. I'm now working on:
+        - Adding email notification support
+        - Implementing push notifications
+      tools_used: "write, edit, bash, gh pr create"
+      has_git_commands: "true"
+      has_pr_issue_ref: "true"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.action === "needs_github_update" || result.action === "continue_task";
+
+  - description: "Issue work in progress"
+    vars:
+      task_summary: "Investigate and fix the memory leak mentioned in issue #123"
+      last_assistant_response: |
+        I've identified the memory leak source in the event handler.
+        
+        **Root cause:** Event listeners not being cleaned up in useEffect.
+        
+        Working on the fix now - need to add cleanup functions to 3 components.
+      tools_used: "read, grep, task"
+      has_git_commands: "false"
+      has_pr_issue_ref: "true"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.action === "needs_github_update" || result.action === "continue_task";
+
+  # ============================================
+  # CONTINUE TASK - Normal work, just continue
+  # ============================================
+
+  - description: "Simple task, no GitHub work - CONTINUE"
+    vars:
+      task_summary: "Add a dark mode toggle to the settings page"
+      last_assistant_response: |
+        I've added the dark mode toggle component. Here's what I did:
+        
+        1. Created DarkModeToggle.tsx component
+        2. Added to SettingsPage
+        
+        Now I need to wire up the theme context and add CSS variables.
+      tools_used: "write, edit"
+      has_git_commands: "false"
+      has_pr_issue_ref: "false"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.action === "continue_task";
+
+  - description: "Mid-implementation, should continue"
+    vars:
+      task_summary: "Refactor the API client to use axios instead of fetch"
+      last_assistant_response: |
+        Refactoring in progress:
+        
+        - [x] Install axios
+        - [x] Create base client configuration
+        - [ ] Migrate GET requests
+        - [ ] Migrate POST requests
+        - [ ] Update error handling
+        - [ ] Update tests
+        
+        Working on migrating the GET requests now...
+      tools_used: "bash, edit, read"
+      has_git_commands: "false"
+      has_pr_issue_ref: "false"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.action === "continue_task";
+
+  # ============================================
+  # NEEDS CLARIFICATION - Context too degraded
+  # ============================================
+
+  - description: "Vague context, needs clarification"
+    vars:
+      task_summary: "[1] Help with the thing\n[2] Make it work better"
+      last_assistant_response: |
+        I've made some changes to improve performance.
+      tools_used: "edit"
+      has_git_commands: "false"
+      has_pr_issue_ref: "false"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.action === "needs_clarification" || result.confidence < 0.6;
+
+  - description: "Complex multi-step task with unclear state"
+    vars:
+      task_summary: "Set up the entire CI/CD pipeline with testing, linting, and deployment"
+      last_assistant_response: |
+        Working on the pipeline configuration.
+      tools_used: "write"
+      has_git_commands: "false"
+      has_pr_issue_ref: "false"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.action === "needs_clarification" || result.action === "continue_task";
+
+  # ============================================
+  # TASK COMPLETE - No action needed
+  # ============================================
+
+  - description: "Task finished successfully - COMPLETE"
+    vars:
+      task_summary: "Add a favicon to the website"
+      last_assistant_response: |
+        I've added the favicon to your website:
+        
+        1. Created favicon.ico in the public folder
+        2. Added the link tag to index.html
+        3. Verified it loads correctly
+        
+        The favicon is now visible in the browser tab!
+      tools_used: "write, edit"
+      has_git_commands: "false"
+      has_pr_issue_ref: "false"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.action === "task_complete";
+
+  - description: "PR merged, task done"
+    vars:
+      task_summary: "Create a PR for the bug fix"
+      last_assistant_response: |
+        The PR has been created and merged:
+        
+        PR #92: "fix: resolve null pointer in user service"
+        Status: Merged ✓
+        
+        The fix is now in the main branch.
+      tools_used: "bash, gh pr create, gh pr merge"
+      has_git_commands: "true"
+      has_pr_issue_ref: "true"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.action === "task_complete";
+
+  - description: "Research task completed"
+    vars:
+      task_summary: "Research the best authentication libraries for Node.js - do not implement anything"
+      last_assistant_response: |
+        Here's my research on Node.js authentication libraries:
+        
+        **Top Options:**
+        1. Passport.js - Most popular, extensive strategies
+        2. Auth0 - Managed solution, easy setup
+        3. next-auth - Best for Next.js projects
+        
+        **Recommendation:** Passport.js for flexibility, Auth0 for quick setup.
+        
+        Let me know if you'd like more details on any of these!
+      tools_used: "webfetch, read"
+      has_git_commands: "false"
+      has_pr_issue_ref: "false"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.action === "task_complete";
+
+  # ============================================
+  # EDGE CASES
+  # ============================================
+
+  - description: "Empty context - handle gracefully"
+    vars:
+      task_summary: "(no task found)"
+      last_assistant_response: "(no response found)"
+      tools_used: "(none)"
+      has_git_commands: "false"
+      has_pr_issue_ref: "false"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return typeof result.action === "string" && result.confidence < 0.7;
+
+  - description: "Git commands but no PR/issue"
+    vars:
+      task_summary: "Clean up the git history and squash commits"
+      last_assistant_response: |
+        I've cleaned up the git history:
+        
+        - Squashed 15 commits into 3
+        - Rebased onto main
+        - Force pushed to feature branch
+        
+        The history is now clean.
+      tools_used: "bash, git rebase, git push"
+      has_git_commands: "true"
+      has_pr_issue_ref: "false"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.action === "task_complete" || result.action === "continue_task";
+
+outputPath: ./evals/results/post-compression-latest.json

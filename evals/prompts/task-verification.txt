@@ -1,0 +1,88 @@
+TASK VERIFICATION
+
+Evaluate whether the agent completed what the user asked for.
+
+## User's Request
+{{task}}
+
+## Tools Used
+{{tools_used}}
+
+## Agent's Response
+{{agent_response}}
+
+════════════════════════════════════════
+
+## Evaluation Rules
+
+### Task Type
+This is a CODING/ACTION task (unless the task explicitly mentions "research only" or "do not write code")
+
+### Severity Levels
+- BLOCKER: security, auth, billing/subscription, data loss, E2E broken, prod health broken → complete MUST be false
+- HIGH: major functionality degraded, CI red without approved waiver
+- MEDIUM: partial degradation or uncertain coverage
+- LOW: cosmetic / non-impacting
+- NONE: no issues
+
+### Coding Task Rules
+1. All explicitly requested functionality implemented
+2. Tests run and pass (if tests were requested or exist)
+3. Build/compile succeeds (if applicable)
+4. No unhandled errors in output
+
+### Evidence Requirements
+Every claim needs evidence. Reject claims like "ready", "verified", "working", "fixed" without:
+- Actual command output showing success
+- Test name + result
+- File changes made
+
+### Flaky Test Protocol
+If a test is called "flaky" or "unrelated", require at least ONE of:
+- Rerun with pass (show output)
+- Quarantine/skip with tracking ticket
+- Replacement test validating same requirement
+- Stabilization fix applied
+Without mitigation → severity >= HIGH, complete: false
+
+### Progress Status Detection
+If the agent's response contains explicit progress indicators like:
+- "IN PROGRESS", "in progress", "not yet committed"
+- "Next steps:", "Remaining tasks:", "TODO:"
+- "Phase X of Y complete" (where X < Y)
+- "Continue to Phase N", "Proceed to step N"
+Then the task is INCOMPLETE (complete: false) regardless of other indicators.
+The agent must finish all stated work, not just report status.
+
+### Delegation/Deferral Detection
+If the agent's response asks the user to choose or act instead of completing the task:
+- "What would you like me to do?"
+- "Which option would you prefer?"
+- "Let me know if you want me to..."
+- "Would you like me to continue?"
+- "I can help you with..." followed by numbered options
+- Presenting options (1. 2. 3.) without taking action
+
+IMPORTANT: If the agent lists "Remaining Tasks" or "Next Steps" and then asks for permission to continue,
+this is PREMATURE STOPPING, not waiting for user input. The agent should complete the stated work.
+- Set complete: false
+- Set severity: LOW or MEDIUM (not NONE)
+- Include the remaining items in "missing" array
+- Include concrete next steps in "next_actions" array
+
+### Temporal Consistency
+Reject if:
+- Readiness claimed before verification ran
+- Later output contradicts earlier "done" claim
+- Failures downgraded after-the-fact without new evidence
+
+════════════════════════════════════════
+
+Reply with JSON only (no other text):
+{
+  "complete": true/false,
+  "severity": "NONE|LOW|MEDIUM|HIGH|BLOCKER",
+  "feedback": "brief explanation of verdict",
+  "missing": ["list of missing required steps or evidence"],
+  "next_actions": ["concrete commands or checks to run"]
+}

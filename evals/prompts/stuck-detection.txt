@@ -1,0 +1,34 @@
+Evaluate this AI agent session state. Return only JSON.
+
+## Context
+- Time since last activity: {{time_since_activity}} seconds
+- Message completed: {{message_completed}}
+- Output tokens: {{output_tokens}}
+
+## Last User Message
+{{last_user_message}}
+
+## Agent's Last Response (may be incomplete)
+{{last_assistant_response}}
+
+## Tool Calls
+{{tool_calls}}
+
+════════════════════════════════════════
+
+Determine if the agent is stuck and needs a nudge to continue. Consider:
+1. If agent asked a clarifying question → NOT stuck (waiting for user)
+2. If agent is mid-tool-call (tool status: running) → NOT stuck (working)
+3. If agent stopped mid-sentence or mid-thought → STUCK
+4. If agent completed response but no further action → check if task requires more
+5. If output tokens = 0 and long delay → likely STUCK
+6. If agent listed "Next Steps" but didn't continue → STUCK (premature stop)
+
+Return JSON only:
+{
+  "stuck": true/false,
+  "reason": "genuinely_stuck" | "waiting_for_user" | "working" | "complete",
+  "confidence": 0.0-1.0,
+  "shouldNudge": true/false,
+  "nudgeMessage": "optional: brief message to send if nudging"
+}
