@@ -44,6 +44,10 @@ Determine if the agent is stuck and needs a nudge to continue.
 - Tool failed (status: error) and agent stopped without handling it
 → reason: "genuinely_stuck"
 
+## Time Threshold Rule
+**CRITICAL**: If time_since_activity < 30 seconds, set shouldNudge = false regardless of stuck status.
+Short delays are normal - the agent may still be thinking or generating. Only nudge after sufficient wait time.
+
 Return JSON only:
 {
   "stuck": true/false,
