@@ -2108,6 +2108,37 @@ async function markReplyProcessed(replyId: string): Promise<void> {
 }
 
 /**
+ * Set an error on a reply in Supabase
+ * Used when reply processing fails (e.g., session no longer exists)
+ */
+async function setReplyError(replyId: string, error: string): Promise<void> {
+  if (!supabaseClient) return
+  
+  try {
+    await supabaseClient.rpc('set_reply_error', { 
+      p_reply_id: replyId, 
+      p_error: error 
+    })
+  } catch (err) {
+    console.error('[TTS] Failed to set reply error:', err)
+  }
+}
+
+/**
+ * Check if an error indicates the session no longer exists
+ */
+function isSessionNotFoundError(error: any): boolean {
+  const message = error?.message || String(error)
+  return (
+    message.includes('session not found') ||
+    message.includes('Session not found') ||
+    message.includes('not found') ||
+    message.includes('does not exist') ||
+    message.includes('404')
+  )
+}
+
+/**
  * Initialize Supabase client for realtime subscriptions
  * Uses dynamic import to avoid bundling issues
  */
@@ -2301,19 +2332,38 @@ async function subscribeToReplies(
               }
             })
           } catch (err: any) {
-            await debugLog(`Failed to process reply: ${err?.message || err}`)
+            const errorMessage = err?.message || String(err)
+            await debugLog(`Failed to process reply: ${errorMessage}`)
             
-            // Show error toast
-            await client.tui.publish({
-              body: {
-                type: "toast",
-                toast: {
-                  title: "Telegram Reply Error",
-                  description: `Failed to process reply`,
-                  severity: "error"
+            // Record the error in the database for audit/retry purposes
+            const isSessionGone = isSessionNotFoundError(err)
+            const errorType = isSessionGone ? 'session_not_found' : `error: ${errorMessage.slice(0, 100)}`
+            await setReplyError(reply.id, errorType)
+            
+            // Show specific toast for session not found vs generic error
+            if (isSessionGone) {
+              await client.tui.publish({
+                body: {
+                  type: "toast",
+                  toast: {
+                    title: "Telegram Reply - Session Gone",
+                    description: `Session ${reply.session_id.slice(0, 12)}... no longer exists`,
+                    severity: "warning"
+                  }
                 }
-              }
-            })
+              })
+            } else {
+              await client.tui.publish({
+                body: {
+                  type: "toast",
+                  toast: {
+                    title: "Telegram Reply Error",
+                    description: `Failed to process reply`,
+                    severity: "error"
+                  }
+                }
+              })
+            }
           }
         }
       )
@@ -2470,7 +2520,27 @@ async function processUnprocessedReplies(
           }
         })
       } catch (err: any) {
-        await debugLog(`Failed to process missed reply ${reply.id.slice(0, 8)}: ${err?.message || err}`)
+        const errorMessage = err?.message || String(err)
+        await debugLog(`Failed to process missed reply ${reply.id.slice(0, 8)}: ${errorMessage}`)
+        
+        // Record the error in the database for audit/retry purposes
+        const isSessionGone = isSessionNotFoundError(err)
+        const errorType = isSessionGone ? 'session_not_found' : `error: ${errorMessage.slice(0, 100)}`
+        await setReplyError(reply.id, errorType)
+        
+        // Show specific toast for session not found vs generic error
+        if (isSessionGone) {
+          await client.tui.publish({
+            body: {
+              type: "toast",
+              toast: {
+                title: "Recovered Reply - Session Gone",
+                description: `Session ${reply.session_id.slice(0, 12)}... no longer exists`,
+                severity: "warning"
+              }
+            }
+          })
+        }
       }
     }
     
