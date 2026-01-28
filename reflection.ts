@@ -16,6 +16,9 @@ const DEBUG = process.env.REFLECTION_DEBUG === "1"
 const SESSION_CLEANUP_INTERVAL = 300_000 // Clean old sessions every 5 minutes
 const SESSION_MAX_AGE = 1800_000 // Sessions older than 30 minutes can be cleaned
 const STUCK_CHECK_DELAY = 30_000 // Check if agent is stuck 30 seconds after prompt
+const STUCK_MESSAGE_THRESHOLD = 60_000 // 60 seconds: if last message has no completion, agent is stuck
+const COMPRESSION_NUDGE_RETRIES = 5 // Retry compression nudge up to 5 times if agent is busy
+const COMPRESSION_RETRY_INTERVAL = 15_000 // Retry compression nudge every 15 seconds
 
 // Debug logging (only when REFLECTION_DEBUG=1)
 function debug(...args: any[]) {
@@ -311,6 +314,55 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
       return !status || status.type === "idle"
     } catch {
       return true // Assume idle on error
+    }
+  }
+
+  /**
+   * Check if the last assistant message is stuck (created but not completed).
+   * This detects when the agent starts responding but never finishes.
+   * Returns: { stuck: boolean, messageAgeMs: number }
+   */
+  async function isLastMessageStuck(sessionId: string): Promise<{ stuck: boolean; messageAgeMs: number }> {
+    try {
+      const { data: messages } = await client.session.messages({ path: { id: sessionId } })
+      if (!messages || messages.length === 0) {
+        return { stuck: false, messageAgeMs: 0 }
+      }
+
+      // Find the last assistant message
+      const lastMsg = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
+      if (!lastMsg) {
+        return { stuck: false, messageAgeMs: 0 }
+      }
+
+      const created = (lastMsg.info?.time as any)?.created
+      const completed = (lastMsg.info?.time as any)?.completed
+
+      // If message has no created time, we can't determine if it's stuck
+      if (!created) {
+        return { stuck: false, messageAgeMs: 0 }
+      }
+
+      const messageAgeMs = Date.now() - created
+
+      // Message is stuck if:
+      // 1. It has a created time but no completed time
+      // 2. It's been more than STUCK_MESSAGE_THRESHOLD since creation
+      // 3. It has 0 output tokens (never generated content)
+      const hasNoCompletion = !completed
+      const isOldEnough = messageAgeMs > STUCK_MESSAGE_THRESHOLD
+      const hasNoOutput = ((lastMsg.info as any)?.tokens?.output ?? 0) === 0
+
+      const stuck = hasNoCompletion && isOldEnough && hasNoOutput
+
+      if (stuck) {
+        debug("Detected stuck message:", lastMsg.info?.id?.slice(0, 16), "age:", Math.round(messageAgeMs / 1000), "s")
+      }
+
+      return { stuck, messageAgeMs }
+    } catch (e) {
+      debug("Error checking stuck message:", e)
+      return { stuck: false, messageAgeMs: 0 }
     }
   }
 
@@ -762,6 +814,92 @@ Please address the above and continue.`
     }
   }
 
+  /**
+   * Check all sessions for stuck state on startup.
+   * This handles the case where OpenCode is restarted with -c (continue)
+   * and the previous session was stuck mid-turn.
+   */
+  async function checkAllSessionsOnStartup(): Promise<void> {
+    debug("Checking all sessions on startup...")
+    try {
+      const { data: sessions } = await client.session.list({ query: { directory } })
+      if (!sessions || sessions.length === 0) {
+        debug("No sessions found on startup")
+        return
+      }
+
+      debug("Found", sessions.length, "sessions to check")
+
+      for (const session of sessions) {
+        const sessionId = session.id
+        if (!sessionId) continue
+
+        // Skip judge sessions
+        if (judgeSessionIds.has(sessionId)) continue
+
+        try {
+          // Check if this session has a stuck message
+          const { stuck, messageAgeMs } = await isLastMessageStuck(sessionId)
+          
+          if (stuck) {
+            debug("Found stuck session on startup:", sessionId.slice(0, 8), "age:", Math.round(messageAgeMs / 1000), "s")
+            
+            // Check if session is idle (not actively working)
+            if (await isSessionIdle(sessionId)) {
+              debug("Nudging stuck session on startup:", sessionId.slice(0, 8))
+              await showToast("Resuming stuck session...", "info")
+              
+              // Send a nudge to continue
+              await client.session.promptAsync({
+                path: { id: sessionId },
+                body: {
+                  parts: [{
+                    type: "text",
+                    text: `It appears the previous task was interrupted. Please continue where you left off.
+
+If context was compressed, first update any active GitHub PR/issue with your progress using \`gh pr comment\` or \`gh issue comment\`, then continue with the task.`
+                  }]
+                }
+              })
+            } else {
+              debug("Stuck session is busy, skipping nudge:", sessionId.slice(0, 8))
+            }
+          } else {
+            // Not stuck, but check if session is idle and might need reflection
+            if (await isSessionIdle(sessionId)) {
+              // Get messages to check if there's an incomplete task
+              const { data: messages } = await client.session.messages({ path: { id: sessionId } })
+              if (messages && messages.length >= 2) {
+                // Check if last assistant message is complete (has finished property)
+                const lastAssistant = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
+                if (lastAssistant) {
+                  const completed = (lastAssistant.info?.time as any)?.completed
+                  if (completed) {
+                    // Message is complete, run reflection to check if task is done
+                    debug("Running reflection on startup for session:", sessionId.slice(0, 8))
+                    // Don't await - run in background
+                    runReflection(sessionId).catch(e => debug("Startup reflection error:", e))
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) {
+          debug("Error checking session on startup:", sessionId.slice(0, 8), e)
+        }
+      }
+    } catch (e) {
+      debug("Error listing sessions on startup:", e)
+    }
+  }
+
+  // Run startup check after a short delay to let OpenCode initialize
+  // This handles the -c (continue) case where previous session was stuck
+  const STARTUP_CHECK_DELAY = 5_000 // 5 seconds
+  setTimeout(() => {
+    checkAllSessionsOnStartup().catch(e => debug("Startup check failed:", e))
+  }, STARTUP_CHECK_DELAY)
+
   return {
     // Tool definition required by Plugin interface (reflection operates via events, not tools)
     tool: {
@@ -802,9 +940,8 @@ Please address the above and continue.`
         }
       }
       
-      // Handle compression/compaction - immediately nudge to prompt GitHub update
-      // This must happen SYNCHRONOUSLY before session.idle fires, otherwise
-      // reflection may run first and the compression context is lost
+      // Handle compression/compaction - nudge to prompt GitHub update and continue task
+      // Uses retry mechanism because agent may be busy immediately after compression
       if (event.type === "session.compacted") {
         const sessionId = (event as any).properties?.sessionID
         debug("session.compacted received for:", sessionId)
@@ -817,17 +954,47 @@ Please address the above and continue.`
           // Mark as recently compacted
           recentlyCompacted.add(sessionId)
           
-          // Wait a short time for session to settle, then nudge
-          // Using setTimeout directly (not scheduleNudge) to avoid being replaced
-          setTimeout(async () => {
-            // Double-check session is still valid and idle
-            if (!(await isSessionIdle(sessionId))) {
-              debug("Session not idle after compression, skipping nudge:", sessionId.slice(0, 8))
-              return
+          // Retry mechanism: keep checking until session is idle, then nudge
+          // This handles the case where agent is busy processing the compression summary
+          let retryCount = 0
+          const attemptNudge = async () => {
+            retryCount++
+            debug("Compression nudge attempt", retryCount, "for session:", sessionId.slice(0, 8))
+            
+            // First check if message is stuck (created but never completed)
+            const { stuck, messageAgeMs } = await isLastMessageStuck(sessionId)
+            if (stuck) {
+              debug("Detected stuck message after compression, nudging:", sessionId.slice(0, 8))
+              await nudgeSession(sessionId, "compression")
+              return // Success - stop retrying
             }
-            debug("Nudging after compression:", sessionId.slice(0, 8))
-            await nudgeSession(sessionId, "compression")
-          }, 3000) // 3 second delay to let session stabilize
+            
+            // Check if session is idle
+            if (await isSessionIdle(sessionId)) {
+              debug("Session is idle after compression, nudging:", sessionId.slice(0, 8))
+              await nudgeSession(sessionId, "compression")
+              return // Success - stop retrying
+            }
+            
+            // Session is still busy, retry if we haven't exceeded max retries
+            if (retryCount < COMPRESSION_NUDGE_RETRIES) {
+              debug("Session still busy, will retry in", COMPRESSION_RETRY_INTERVAL / 1000, "s")
+              setTimeout(attemptNudge, COMPRESSION_RETRY_INTERVAL)
+            } else {
+              debug("Max compression nudge retries reached for session:", sessionId.slice(0, 8))
+              // Last resort: schedule a final check using the stuck message detection
+              setTimeout(async () => {
+                const { stuck } = await isLastMessageStuck(sessionId)
+                if (stuck) {
+                  debug("Final stuck check triggered nudge for session:", sessionId.slice(0, 8))
+                  await nudgeSession(sessionId, "compression")
+                }
+              }, STUCK_MESSAGE_THRESHOLD)
+            }
+          }
+          
+          // Start retry loop after initial delay
+          setTimeout(attemptNudge, 3000) // 3 second initial delay
         }
       }
       
@@ -862,6 +1029,19 @@ Please address the above and continue.`
             // Cooldown expired, clean up and allow reflection
             recentlyAbortedSessions.delete(sessionId)
             debug("Abort cooldown expired, allowing reflection")
+          }
+          
+          // Check for stuck message BEFORE running reflection
+          // This handles the case where agent started responding but got stuck
+          const { stuck, messageAgeMs } = await isLastMessageStuck(sessionId)
+          if (stuck) {
+            debug("Detected stuck message on session.idle, nudging:", sessionId.slice(0, 8))
+            // Check if recently compacted - use compression nudge message
+            const reason = recentlyCompacted.has(sessionId) ? "compression" : "reflection"
+            await nudgeSession(sessionId, reason)
+            // Clear compacted flag after nudging
+            recentlyCompacted.delete(sessionId)
+            return  // Don't run reflection yet - wait for agent to respond to nudge
           }
           
           await runReflection(sessionId)
