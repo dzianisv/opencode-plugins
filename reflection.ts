@@ -19,6 +19,19 @@ const STUCK_CHECK_DELAY = 30_000 // Check if agent is stuck 30 seconds after pro
 const STUCK_MESSAGE_THRESHOLD = 60_000 // 60 seconds: if last message has no completion, agent is stuck
 const COMPRESSION_NUDGE_RETRIES = 5 // Retry compression nudge up to 5 times if agent is busy
 const COMPRESSION_RETRY_INTERVAL = 15_000 // Retry compression nudge every 15 seconds
+const GENAI_STUCK_CHECK_THRESHOLD = 30_000 // Only use GenAI after 30 seconds of apparent stuck
+const GENAI_STUCK_CACHE_TTL = 60_000 // Cache GenAI stuck evaluations for 1 minute
+const GENAI_STUCK_TIMEOUT = 30_000 // Timeout for GenAI stuck evaluation (30 seconds)
+
+// Types for GenAI stuck detection
+type StuckReason = "genuinely_stuck" | "waiting_for_user" | "working" | "complete" | "error"
+interface StuckEvaluation {
+  stuck: boolean
+  reason: StuckReason
+  confidence: number
+  shouldNudge: boolean
+  nudgeMessage?: string
+}
 
 // Debug logging (only when REFLECTION_DEBUG=1)
 function debug(...args: any[]) {
@@ -46,6 +59,94 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   // Maps sessionId -> timestamp of abort (for cooldown-based cleanup)
   const recentlyAbortedSessions = new Map<string, number>()
   const ABORT_COOLDOWN = 10_000 // 10 second cooldown before allowing reflection again
+  
+  // Cache for GenAI stuck evaluations (to avoid repeated calls)
+  const stuckEvaluationCache = new Map<string, { result: StuckEvaluation; timestamp: number }>()
+  
+  // Cache for fast model selection (provider -> model)
+  let fastModelCache: { providerID: string; modelID: string } | null = null
+  let fastModelCacheTime = 0
+  const FAST_MODEL_CACHE_TTL = 300_000 // Cache fast model for 5 minutes
+  
+  // Known fast models per provider (prioritized for quick evaluations)
+  const FAST_MODELS: Record<string, string[]> = {
+    "anthropic": ["claude-3-5-haiku-20241022", "claude-3-haiku-20240307", "claude-haiku-4", "claude-haiku-4.5"],
+    "openai": ["gpt-4o-mini", "gpt-3.5-turbo"],
+    "google": ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-flash"],
+    "github-copilot": ["claude-haiku-4.5", "claude-3.5-haiku", "gpt-4o-mini"],
+    "azure": ["gpt-4o-mini", "gpt-35-turbo"],
+    "bedrock": ["anthropic.claude-3-haiku-20240307-v1:0"],
+    "groq": ["llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+  }
+  
+  /**
+   * Get a fast model for quick evaluations.
+   * Uses config.providers() to find available providers and selects a fast model.
+   * Falls back to the default model if no fast model is found.
+   */
+  async function getFastModel(): Promise<{ providerID: string; modelID: string } | null> {
+    // Return cached result if valid
+    if (fastModelCache && Date.now() - fastModelCacheTime < FAST_MODEL_CACHE_TTL) {
+      return fastModelCache
+    }
+    
+    try {
+      const { data } = await client.config.providers({})
+      if (!data) return null
+      
+      const { providers, default: defaults } = data
+      
+      // Find a provider with available fast models
+      for (const provider of providers || []) {
+        const providerID = provider.id
+        if (!providerID) continue
+        
+        const fastModelsForProvider = FAST_MODELS[providerID] || []
+        // Models might be an object/map or array - get the keys/ids
+        const modelsData = provider.models
+        const availableModels: string[] = modelsData 
+          ? (Array.isArray(modelsData) 
+              ? modelsData.map((m: any) => m.id || m) 
+              : Object.keys(modelsData))
+          : []
+        
+        // Find the first fast model that's available
+        for (const fastModel of fastModelsForProvider) {
+          if (availableModels.includes(fastModel)) {
+            fastModelCache = { providerID, modelID: fastModel }
+            fastModelCacheTime = Date.now()
+            debug("Selected fast model:", fastModelCache)
+            return fastModelCache
+          }
+        }
+      }
+      
+      // Fallback: use the first provider's first model (likely the default)
+      const firstProvider = providers?.[0]
+      if (firstProvider?.id) {
+        const modelsData = firstProvider.models
+        const firstModelId = modelsData
+          ? (Array.isArray(modelsData) 
+              ? (modelsData[0]?.id || modelsData[0])
+              : Object.keys(modelsData)[0])
+          : null
+        if (firstModelId) {
+          fastModelCache = { 
+            providerID: firstProvider.id, 
+            modelID: firstModelId 
+          }
+          fastModelCacheTime = Date.now()
+          debug("Using fallback model:", fastModelCache)
+          return fastModelCache
+        }
+      }
+      
+      return null
+    } catch (e) {
+      debug("Error getting fast model:", e)
+      return null
+    }
+  }
   
   // Periodic cleanup of old session data to prevent memory leaks
   const cleanupOldSessions = () => {
@@ -363,6 +464,171 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     } catch (e) {
       debug("Error checking stuck message:", e)
       return { stuck: false, messageAgeMs: 0 }
+    }
+  }
+
+  /**
+   * Use GenAI to evaluate if a session is stuck and needs nudging.
+   * This is more accurate than static heuristics because it can understand:
+   * - Whether the agent asked a question (waiting for user)
+   * - Whether a tool call is still processing
+   * - Whether the agent stopped mid-sentence
+   * 
+   * Uses a fast model for quick evaluation (~1-3 seconds).
+   */
+  async function evaluateStuckWithGenAI(
+    sessionId: string,
+    messages: any[],
+    messageAgeMs: number
+  ): Promise<StuckEvaluation> {
+    // Check cache first
+    const cached = stuckEvaluationCache.get(sessionId)
+    if (cached && Date.now() - cached.timestamp < GENAI_STUCK_CACHE_TTL) {
+      debug("Using cached stuck evaluation for:", sessionId.slice(0, 8))
+      return cached.result
+    }
+    
+    // Only run GenAI check if message is old enough
+    if (messageAgeMs < GENAI_STUCK_CHECK_THRESHOLD) {
+      return { stuck: false, reason: "working", confidence: 0.5, shouldNudge: false }
+    }
+    
+    try {
+      // Get fast model for evaluation
+      const fastModel = await getFastModel()
+      if (!fastModel) {
+        debug("No fast model available, falling back to static check")
+        return { stuck: true, reason: "error", confidence: 0.3, shouldNudge: true }
+      }
+      
+      // Extract context for evaluation
+      const lastHuman = [...messages].reverse().find(m => m.info?.role === "user")
+      const lastAssistant = [...messages].reverse().find(m => m.info?.role === "assistant")
+      
+      let lastHumanText = ""
+      for (const part of lastHuman?.parts || []) {
+        if (part.type === "text" && part.text) {
+          lastHumanText = part.text.slice(0, 500)
+          break
+        }
+      }
+      
+      let lastAssistantText = ""
+      const pendingToolCalls: string[] = []
+      for (const part of lastAssistant?.parts || []) {
+        if (part.type === "text" && part.text) {
+          lastAssistantText = part.text.slice(0, 1000)
+        }
+        if (part.type === "tool") {
+          const toolName = part.tool || "unknown"
+          const state = part.state?.status || "unknown"
+          pendingToolCalls.push(`${toolName}: ${state}`)
+        }
+      }
+      
+      const isMessageComplete = !!(lastAssistant?.info?.time as any)?.completed
+      const outputTokens = (lastAssistant?.info as any)?.tokens?.output ?? 0
+      
+      // Build evaluation prompt
+      const prompt = `Evaluate this AI agent session state. Return only JSON.
+
+## Context
+- Time since last activity: ${Math.round(messageAgeMs / 1000)} seconds
+- Message completed: ${isMessageComplete}
+- Output tokens: ${outputTokens}
+
+## Last User Message
+${lastHumanText || "(empty)"}
+
+## Agent's Last Response (may be incomplete)
+${lastAssistantText || "(no text generated)"}
+
+## Tool Calls
+${pendingToolCalls.length > 0 ? pendingToolCalls.join("\n") : "(none)"}
+
+---
+
+Determine if the agent is stuck and needs a nudge to continue. Consider:
+1. If agent asked a clarifying question → NOT stuck (waiting for user)
+2. If agent is mid-tool-call (tool status: running) → NOT stuck (working)
+3. If agent stopped mid-sentence or mid-thought → STUCK
+4. If agent completed response but no further action → check if task requires more
+5. If output tokens = 0 and long delay → likely STUCK
+6. If agent listed "Next Steps" but didn't continue → STUCK (premature stop)
+
+Return JSON only:
+{
+  "stuck": true/false,
+  "reason": "genuinely_stuck" | "waiting_for_user" | "working" | "complete",
+  "confidence": 0.0-1.0,
+  "shouldNudge": true/false,
+  "nudgeMessage": "optional: brief message to send if nudging"
+}`
+      
+      // Create a temporary session for the evaluation
+      const { data: evalSession } = await client.session.create({ query: { directory } })
+      if (!evalSession?.id) {
+        return { stuck: true, reason: "error", confidence: 0.3, shouldNudge: true }
+      }
+      
+      // Track as judge session to skip in event handlers
+      judgeSessionIds.add(evalSession.id)
+      
+      try {
+        // Send prompt with fast model
+        await client.session.promptAsync({
+          path: { id: evalSession.id },
+          body: {
+            model: { providerID: fastModel.providerID, modelID: fastModel.modelID },
+            parts: [{ type: "text", text: prompt }]
+          }
+        })
+        
+        // Wait for response with shorter timeout
+        const start = Date.now()
+        while (Date.now() - start < GENAI_STUCK_TIMEOUT) {
+          await new Promise(r => setTimeout(r, 1000))
+          const { data: evalMessages } = await client.session.messages({ path: { id: evalSession.id } })
+          const assistantMsg = [...(evalMessages || [])].reverse().find((m: any) => m.info?.role === "assistant")
+          if (!(assistantMsg?.info?.time as any)?.completed) continue
+          
+          for (const part of assistantMsg?.parts || []) {
+            if (part.type === "text" && part.text) {
+              const jsonMatch = part.text.match(/\{[\s\S]*\}/)
+              if (jsonMatch) {
+                const result = JSON.parse(jsonMatch[0]) as StuckEvaluation
+                // Ensure all required fields
+                const evaluation: StuckEvaluation = {
+                  stuck: !!result.stuck,
+                  reason: result.reason || "genuinely_stuck",
+                  confidence: result.confidence ?? 0.5,
+                  shouldNudge: result.shouldNudge ?? result.stuck,
+                  nudgeMessage: result.nudgeMessage
+                }
+                
+                // Cache the result
+                stuckEvaluationCache.set(sessionId, { result: evaluation, timestamp: Date.now() })
+                debug("GenAI stuck evaluation:", sessionId.slice(0, 8), evaluation)
+                return evaluation
+              }
+            }
+          }
+        }
+        
+        // Timeout - fall back to stuck=true
+        debug("GenAI stuck evaluation timed out:", sessionId.slice(0, 8))
+        return { stuck: true, reason: "genuinely_stuck", confidence: 0.4, shouldNudge: true }
+      } finally {
+        // Clean up evaluation session
+        try {
+          await client.session.delete({ path: { id: evalSession.id }, query: { directory } })
+        } catch {}
+        judgeSessionIds.delete(evalSession.id)
+      }
+    } catch (e) {
+      debug("Error in GenAI stuck evaluation:", e)
+      // Fall back to assuming stuck
+      return { stuck: true, reason: "error", confidence: 0.3, shouldNudge: true }
     }
   }
 
@@ -839,28 +1105,54 @@ Please address the above and continue.`
 
         try {
           // Check if this session has a stuck message
-          const { stuck, messageAgeMs } = await isLastMessageStuck(sessionId)
+          const { stuck: staticStuck, messageAgeMs } = await isLastMessageStuck(sessionId)
           
-          if (stuck) {
-            debug("Found stuck session on startup:", sessionId.slice(0, 8), "age:", Math.round(messageAgeMs / 1000), "s")
+          if (staticStuck) {
+            debug("Found potentially stuck session on startup:", sessionId.slice(0, 8), "age:", Math.round(messageAgeMs / 1000), "s")
             
             // Check if session is idle (not actively working)
             if (await isSessionIdle(sessionId)) {
-              debug("Nudging stuck session on startup:", sessionId.slice(0, 8))
-              await showToast("Resuming stuck session...", "info")
-              
-              // Send a nudge to continue
-              await client.session.promptAsync({
-                path: { id: sessionId },
-                body: {
-                  parts: [{
-                    type: "text",
-                    text: `It appears the previous task was interrupted. Please continue where you left off.
+              // Use GenAI for accurate evaluation
+              const { data: messages } = await client.session.messages({ path: { id: sessionId } })
+              if (messages && messageAgeMs >= GENAI_STUCK_CHECK_THRESHOLD) {
+                const evaluation = await evaluateStuckWithGenAI(sessionId, messages, messageAgeMs)
+                
+                if (evaluation.shouldNudge) {
+                  debug("GenAI confirms stuck on startup, nudging:", sessionId.slice(0, 8))
+                  await showToast("Resuming stuck session...", "info")
+                  
+                  const nudgeText = evaluation.nudgeMessage || 
+                    `It appears the previous task was interrupted. Please continue where you left off.
 
 If context was compressed, first update any active GitHub PR/issue with your progress using \`gh pr comment\` or \`gh issue comment\`, then continue with the task.`
-                  }]
+                  
+                  await client.session.promptAsync({
+                    path: { id: sessionId },
+                    body: { parts: [{ type: "text", text: nudgeText }] }
+                  })
+                } else if (evaluation.reason === "waiting_for_user") {
+                  debug("Session waiting for user on startup:", sessionId.slice(0, 8))
+                  await showToast("Session awaiting user input", "info")
+                } else {
+                  debug("Session not stuck on startup:", sessionId.slice(0, 8), evaluation.reason)
                 }
-              })
+              } else {
+                // Static stuck, not old enough for GenAI - nudge anyway
+                debug("Nudging stuck session on startup (static):", sessionId.slice(0, 8))
+                await showToast("Resuming stuck session...", "info")
+                
+                await client.session.promptAsync({
+                  path: { id: sessionId },
+                  body: {
+                    parts: [{
+                      type: "text",
+                      text: `It appears the previous task was interrupted. Please continue where you left off.
+
+If context was compressed, first update any active GitHub PR/issue with your progress using \`gh pr comment\` or \`gh issue comment\`, then continue with the task.`
+                    }]
+                  }
+                })
+              }
             } else {
               debug("Stuck session is busy, skipping nudge:", sessionId.slice(0, 8))
             }
@@ -962,11 +1254,32 @@ If context was compressed, first update any active GitHub PR/issue with your pro
             debug("Compression nudge attempt", retryCount, "for session:", sessionId.slice(0, 8))
             
             // First check if message is stuck (created but never completed)
-            const { stuck, messageAgeMs } = await isLastMessageStuck(sessionId)
-            if (stuck) {
-              debug("Detected stuck message after compression, nudging:", sessionId.slice(0, 8))
-              await nudgeSession(sessionId, "compression")
-              return // Success - stop retrying
+            const { stuck: staticStuck, messageAgeMs } = await isLastMessageStuck(sessionId)
+            if (staticStuck) {
+              // Use GenAI for accurate evaluation if message is old enough
+              if (messageAgeMs >= GENAI_STUCK_CHECK_THRESHOLD) {
+                const { data: messages } = await client.session.messages({ path: { id: sessionId } })
+                if (messages) {
+                  const evaluation = await evaluateStuckWithGenAI(sessionId, messages, messageAgeMs)
+                  if (evaluation.shouldNudge) {
+                    debug("GenAI confirms stuck after compression, nudging:", sessionId.slice(0, 8))
+                    await nudgeSession(sessionId, "compression")
+                    return // Success - stop retrying
+                  } else if (evaluation.reason === "working") {
+                    // Still working, continue retry loop
+                    debug("GenAI says still working after compression:", sessionId.slice(0, 8))
+                  } else {
+                    // Not stuck according to GenAI
+                    debug("GenAI says not stuck after compression:", sessionId.slice(0, 8), evaluation.reason)
+                    return // Stop retrying
+                  }
+                }
+              } else {
+                // Static stuck but not old enough for GenAI - nudge anyway
+                debug("Detected stuck message after compression (static), nudging:", sessionId.slice(0, 8))
+                await nudgeSession(sessionId, "compression")
+                return // Success - stop retrying
+              }
             }
             
             // Check if session is idle
@@ -982,12 +1295,21 @@ If context was compressed, first update any active GitHub PR/issue with your pro
               setTimeout(attemptNudge, COMPRESSION_RETRY_INTERVAL)
             } else {
               debug("Max compression nudge retries reached for session:", sessionId.slice(0, 8))
-              // Last resort: schedule a final check using the stuck message detection
+              // Last resort: use GenAI evaluation after threshold
               setTimeout(async () => {
-                const { stuck } = await isLastMessageStuck(sessionId)
+                const { stuck, messageAgeMs } = await isLastMessageStuck(sessionId)
                 if (stuck) {
-                  debug("Final stuck check triggered nudge for session:", sessionId.slice(0, 8))
-                  await nudgeSession(sessionId, "compression")
+                  const { data: messages } = await client.session.messages({ path: { id: sessionId } })
+                  if (messages && messageAgeMs >= GENAI_STUCK_CHECK_THRESHOLD) {
+                    const evaluation = await evaluateStuckWithGenAI(sessionId, messages, messageAgeMs)
+                    if (evaluation.shouldNudge) {
+                      debug("Final GenAI check triggered nudge for session:", sessionId.slice(0, 8))
+                      await nudgeSession(sessionId, "compression")
+                    }
+                  } else if (stuck) {
+                    debug("Final static check triggered nudge for session:", sessionId.slice(0, 8))
+                    await nudgeSession(sessionId, "compression")
+                  }
                 }
               }, STUCK_MESSAGE_THRESHOLD)
             }
@@ -1033,15 +1355,52 @@ If context was compressed, first update any active GitHub PR/issue with your pro
           
           // Check for stuck message BEFORE running reflection
           // This handles the case where agent started responding but got stuck
-          const { stuck, messageAgeMs } = await isLastMessageStuck(sessionId)
-          if (stuck) {
-            debug("Detected stuck message on session.idle, nudging:", sessionId.slice(0, 8))
-            // Check if recently compacted - use compression nudge message
-            const reason = recentlyCompacted.has(sessionId) ? "compression" : "reflection"
-            await nudgeSession(sessionId, reason)
-            // Clear compacted flag after nudging
-            recentlyCompacted.delete(sessionId)
-            return  // Don't run reflection yet - wait for agent to respond to nudge
+          const { stuck: staticStuck, messageAgeMs } = await isLastMessageStuck(sessionId)
+          
+          if (staticStuck) {
+            // Static check says stuck - use GenAI for more accurate evaluation
+            // Get messages for GenAI context
+            const { data: messages } = await client.session.messages({ path: { id: sessionId } })
+            
+            if (messages && messageAgeMs >= GENAI_STUCK_CHECK_THRESHOLD) {
+              // Use GenAI to evaluate if actually stuck
+              const evaluation = await evaluateStuckWithGenAI(sessionId, messages, messageAgeMs)
+              debug("GenAI evaluation result:", sessionId.slice(0, 8), evaluation)
+              
+              if (evaluation.shouldNudge) {
+                // GenAI confirms agent is stuck - nudge with custom message if provided
+                const reason = recentlyCompacted.has(sessionId) ? "compression" : "reflection"
+                if (evaluation.nudgeMessage) {
+                  // Use GenAI-suggested nudge message
+                  await client.session.promptAsync({
+                    path: { id: sessionId },
+                    body: { parts: [{ type: "text", text: evaluation.nudgeMessage }] }
+                  })
+                  await showToast("Nudged agent to continue", "info")
+                } else {
+                  await nudgeSession(sessionId, reason)
+                }
+                recentlyCompacted.delete(sessionId)
+                return  // Wait for agent to respond to nudge
+              } else if (evaluation.reason === "waiting_for_user") {
+                // Agent is waiting for user input - don't nudge or reflect
+                debug("Agent waiting for user input, skipping:", sessionId.slice(0, 8))
+                await showToast("Awaiting user input", "info")
+                return
+              } else if (evaluation.reason === "working") {
+                // Agent is still working - check again later
+                debug("Agent still working, will check again:", sessionId.slice(0, 8))
+                return
+              }
+              // If evaluation.reason === "complete", continue to reflection
+            } else {
+              // Message not old enough for GenAI - use static nudge
+              debug("Detected stuck message on session.idle, nudging:", sessionId.slice(0, 8))
+              const reason = recentlyCompacted.has(sessionId) ? "compression" : "reflection"
+              await nudgeSession(sessionId, reason)
+              recentlyCompacted.delete(sessionId)
+              return
+            }
           }
           
           await runReflection(sessionId)

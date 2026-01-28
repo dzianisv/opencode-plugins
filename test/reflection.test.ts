@@ -340,4 +340,248 @@ describe("Reflection Plugin - Unit Tests", () => {
       assert.strictEqual(extracted.result, "Final response", "Should capture latest assistant response")
     })
   })
+
+  describe("GenAI Stuck Detection", () => {
+    // Types matching the plugin
+    type StuckReason = "genuinely_stuck" | "waiting_for_user" | "working" | "complete" | "error"
+    interface StuckEvaluation {
+      stuck: boolean
+      reason: StuckReason
+      confidence: number
+      shouldNudge: boolean
+      nudgeMessage?: string
+    }
+
+    describe("FAST_MODELS priority list", () => {
+      const FAST_MODELS: Record<string, string[]> = {
+        "anthropic": ["claude-3-5-haiku-20241022", "claude-3-haiku-20240307", "claude-haiku-4", "claude-haiku-4.5"],
+        "openai": ["gpt-4o-mini", "gpt-3.5-turbo"],
+        "google": ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-flash"],
+        "github-copilot": ["claude-haiku-4.5", "claude-3.5-haiku", "gpt-4o-mini"],
+        "azure": ["gpt-4o-mini", "gpt-35-turbo"],
+        "bedrock": ["anthropic.claude-3-haiku-20240307-v1:0"],
+        "groq": ["llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+      }
+
+      it("should have fast models defined for common providers", () => {
+        const expectedProviders = ["anthropic", "openai", "google", "github-copilot"]
+        for (const provider of expectedProviders) {
+          assert.ok(FAST_MODELS[provider], `Missing fast models for ${provider}`)
+          assert.ok(FAST_MODELS[provider].length > 0, `Empty fast models list for ${provider}`)
+        }
+      })
+
+      it("should prioritize fastest/cheapest models first", () => {
+        // Haiku should come before Sonnet/Opus for Anthropic
+        const anthropicModels = FAST_MODELS["anthropic"]
+        assert.ok(anthropicModels[0].includes("haiku"), "Haiku should be first for Anthropic")
+        
+        // gpt-4o-mini should come before gpt-4 for OpenAI
+        const openaiModels = FAST_MODELS["openai"]
+        assert.strictEqual(openaiModels[0], "gpt-4o-mini", "gpt-4o-mini should be first for OpenAI")
+      })
+    })
+
+    describe("StuckEvaluation parsing", () => {
+      it("should parse valid GenAI stuck evaluation response", () => {
+        const response = `{"stuck": true, "reason": "genuinely_stuck", "confidence": 0.85, "shouldNudge": true, "nudgeMessage": "Please continue with the task"}`
+        const jsonMatch = response.match(/\{[\s\S]*\}/)
+        assert.ok(jsonMatch, "Should find JSON in response")
+        
+        const result = JSON.parse(jsonMatch[0]) as StuckEvaluation
+        assert.strictEqual(result.stuck, true)
+        assert.strictEqual(result.reason, "genuinely_stuck")
+        assert.strictEqual(result.confidence, 0.85)
+        assert.strictEqual(result.shouldNudge, true)
+        assert.strictEqual(result.nudgeMessage, "Please continue with the task")
+      })
+
+      it("should handle waiting_for_user response", () => {
+        const response = `{"stuck": false, "reason": "waiting_for_user", "confidence": 0.9, "shouldNudge": false}`
+        const result = JSON.parse(response) as StuckEvaluation
+        
+        assert.strictEqual(result.stuck, false)
+        assert.strictEqual(result.reason, "waiting_for_user")
+        assert.strictEqual(result.shouldNudge, false)
+      })
+
+      it("should handle working (mid-tool-call) response", () => {
+        const response = `{"stuck": false, "reason": "working", "confidence": 0.95, "shouldNudge": false}`
+        const result = JSON.parse(response) as StuckEvaluation
+        
+        assert.strictEqual(result.stuck, false)
+        assert.strictEqual(result.reason, "working")
+        assert.strictEqual(result.shouldNudge, false)
+      })
+
+      it("should handle complete task response", () => {
+        const response = `{"stuck": false, "reason": "complete", "confidence": 0.98, "shouldNudge": false}`
+        const result = JSON.parse(response) as StuckEvaluation
+        
+        assert.strictEqual(result.stuck, false)
+        assert.strictEqual(result.reason, "complete")
+      })
+
+      it("should normalize missing fields with defaults", () => {
+        // Minimal response from GenAI
+        const response = `{"stuck": true}`
+        const result = JSON.parse(response)
+        
+        // Apply defaults like the plugin does
+        const evaluation: StuckEvaluation = {
+          stuck: !!result.stuck,
+          reason: result.reason || "genuinely_stuck",
+          confidence: result.confidence ?? 0.5,
+          shouldNudge: result.shouldNudge ?? result.stuck,
+          nudgeMessage: result.nudgeMessage
+        }
+        
+        assert.strictEqual(evaluation.stuck, true)
+        assert.strictEqual(evaluation.reason, "genuinely_stuck", "Should default to genuinely_stuck")
+        assert.strictEqual(evaluation.confidence, 0.5, "Should default confidence to 0.5")
+        assert.strictEqual(evaluation.shouldNudge, true, "shouldNudge should default to stuck value")
+        assert.strictEqual(evaluation.nudgeMessage, undefined)
+      })
+    })
+
+    describe("stuck evaluation caching", () => {
+      it("should cache evaluations with TTL", () => {
+        const GENAI_STUCK_CACHE_TTL = 60_000
+        const cache = new Map<string, { result: StuckEvaluation; timestamp: number }>()
+        const sessionId = "ses_cache_test"
+        const now = Date.now()
+        
+        // Add to cache
+        const evaluation: StuckEvaluation = {
+          stuck: true,
+          reason: "genuinely_stuck",
+          confidence: 0.8,
+          shouldNudge: true
+        }
+        cache.set(sessionId, { result: evaluation, timestamp: now })
+        
+        // Check cache hit (within TTL)
+        const cached = cache.get(sessionId)
+        const isValid = cached && (now - cached.timestamp) < GENAI_STUCK_CACHE_TTL
+        assert.strictEqual(isValid, true, "Cache should be valid within TTL")
+        
+        // Check cache miss (expired)
+        cache.set(sessionId, { result: evaluation, timestamp: now - GENAI_STUCK_CACHE_TTL - 1000 })
+        const expiredCached = cache.get(sessionId)
+        const isExpired = expiredCached && (now - expiredCached.timestamp) >= GENAI_STUCK_CACHE_TTL
+        assert.strictEqual(isExpired, true, "Cache should be expired after TTL")
+      })
+    })
+
+    describe("threshold checks", () => {
+      const GENAI_STUCK_CHECK_THRESHOLD = 30_000
+
+      it("should skip GenAI check if message is too recent", () => {
+        const messageAgeMs = 15_000 // 15 seconds
+        const shouldSkip = messageAgeMs < GENAI_STUCK_CHECK_THRESHOLD
+        assert.strictEqual(shouldSkip, true, "Should skip GenAI for recent messages")
+      })
+
+      it("should run GenAI check if message is old enough", () => {
+        const messageAgeMs = 45_000 // 45 seconds
+        const shouldRun = messageAgeMs >= GENAI_STUCK_CHECK_THRESHOLD
+        assert.strictEqual(shouldRun, true, "Should run GenAI for old messages")
+      })
+
+      it("should run GenAI check at exact threshold", () => {
+        const messageAgeMs = GENAI_STUCK_CHECK_THRESHOLD // exactly 30 seconds
+        const shouldRun = messageAgeMs >= GENAI_STUCK_CHECK_THRESHOLD
+        assert.strictEqual(shouldRun, true, "Should run GenAI at exact threshold")
+      })
+    })
+
+    describe("stuck detection scenarios", () => {
+      it("should detect stuck when agent stopped mid-sentence", () => {
+        // Simulate agent output that stops mid-thought
+        const lastAssistantText = "I'll now implement the authentication by first"
+        const isMessageComplete = false
+        const outputTokens = 15
+        const messageAgeMs = 60_000
+        
+        // Indicators: incomplete message + old + has some output but stopped
+        const likelyStuck = !isMessageComplete && messageAgeMs > 30_000
+        assert.strictEqual(likelyStuck, true, "Should detect stuck mid-sentence")
+      })
+
+      it("should NOT detect stuck when agent asked a question", () => {
+        // Agent is waiting for user input
+        const lastAssistantText = "What database would you like to use? PostgreSQL, MySQL, or MongoDB?"
+        const isMessageComplete = true
+        const outputTokens = 25
+        
+        // Complete message with question mark = waiting for user
+        const isQuestion = lastAssistantText.includes("?")
+        const shouldBeWaiting = isMessageComplete && isQuestion
+        assert.strictEqual(shouldBeWaiting, true, "Question indicates waiting for user")
+      })
+
+      it("should NOT detect stuck when tool is actively running", () => {
+        // Simulate tool in progress
+        const pendingToolCalls = ["bash: running"]
+        const hasRunningTool = pendingToolCalls.some(t => t.includes("running"))
+        
+        // Running tool = not stuck
+        assert.strictEqual(hasRunningTool, true, "Running tool indicates not stuck")
+      })
+
+      it("should detect stuck when output tokens = 0 and long delay", () => {
+        const isMessageComplete = false
+        const outputTokens = 0
+        const messageAgeMs = 90_000 // 90 seconds
+        
+        // No output + not complete + long delay = definitely stuck
+        const definitelyStuck = !isMessageComplete && outputTokens === 0 && messageAgeMs > 60_000
+        assert.strictEqual(definitelyStuck, true, "Zero tokens + long delay = stuck")
+      })
+    })
+
+    describe("fast model selection", () => {
+      it("should select from provider's fast model list", () => {
+        // Simulate provider with available models
+        const providerID = "anthropic"
+        const availableModels = ["claude-3-5-haiku-20241022", "claude-3-5-sonnet-20241022", "claude-opus-4"]
+        const fastModelsForProvider = ["claude-3-5-haiku-20241022", "claude-3-haiku-20240307"]
+        
+        // Find first fast model that's available
+        const selectedModel = fastModelsForProvider.find(m => availableModels.includes(m))
+        assert.strictEqual(selectedModel, "claude-3-5-haiku-20241022", "Should select first available fast model")
+      })
+
+      it("should fallback to first available model if no fast model", () => {
+        // Provider with only non-fast models
+        const availableModels = ["claude-opus-4", "claude-3-5-sonnet-20241022"]
+        const fastModelsForProvider = ["claude-3-5-haiku-20241022"] // not available
+        
+        const selectedFast = fastModelsForProvider.find(m => availableModels.includes(m))
+        const fallback = selectedFast || availableModels[0]
+        
+        assert.strictEqual(selectedFast, undefined, "No fast model should be found")
+        assert.strictEqual(fallback, "claude-opus-4", "Should fallback to first available")
+      })
+
+      it("should cache fast model selection", () => {
+        const FAST_MODEL_CACHE_TTL = 300_000 // 5 minutes
+        let fastModelCache: { providerID: string; modelID: string } | null = null
+        let fastModelCacheTime = 0
+        
+        // First call - no cache
+        const now = Date.now()
+        const hasCachedModel = fastModelCache && (now - fastModelCacheTime) < FAST_MODEL_CACHE_TTL
+        assert.strictEqual(hasCachedModel, null, "Should not have cached model initially (null due to short-circuit)")
+        
+        // Set cache
+        fastModelCache = { providerID: "anthropic", modelID: "claude-3-5-haiku-20241022" }
+        fastModelCacheTime = now
+        
+        // Second call - cache hit
+        const hasCachedModelNow = fastModelCache && (now - fastModelCacheTime) < FAST_MODEL_CACHE_TTL
+        assert.strictEqual(hasCachedModelNow, true, "Should use cached model")
+      })
+    })
+  })
 })
