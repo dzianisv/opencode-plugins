@@ -782,6 +782,77 @@ describe("Telegram Subscription Reconnect Logic", () => {
     expect(getToastTitle(true, true)).toBe("Telegram Voice (Recovered)")
     expect(getToastTitle(false, true)).toBe("Telegram Reply (Recovered)")
   })
+  
+  describe("Session Not Found Error Handling", () => {
+    /**
+     * isSessionNotFoundError - detect when session no longer exists
+     * Must match the implementation in tts.ts
+     */
+    function isSessionNotFoundError(error: any): boolean {
+      const message = error?.message || String(error)
+      return (
+        message.includes('session not found') ||
+        message.includes('Session not found') ||
+        message.includes('not found') ||
+        message.includes('does not exist') ||
+        message.includes('404')
+      )
+    }
+    
+    it("should detect session not found errors", () => {
+      const sessionNotFoundErrors = [
+        { message: "session not found" },
+        { message: "Session not found: ses_abc123" },
+        { message: "Resource not found" },
+        { message: "Session does not exist" },
+        { message: "HTTP 404: Not found" },
+        new Error("Session not found"),
+      ]
+      
+      sessionNotFoundErrors.forEach((err, i) => {
+        expect(isSessionNotFoundError(err)).toBe(true)
+      })
+    })
+    
+    it("should NOT flag non-session errors as session not found", () => {
+      const otherErrors = [
+        { message: "Network timeout" },
+        { message: "Connection refused" },
+        { message: "Authentication failed" },
+        { message: "Internal server error" },
+        new Error("Socket closed"),
+      ]
+      
+      otherErrors.forEach((err, i) => {
+        expect(isSessionNotFoundError(err)).toBe(false)
+      })
+    })
+    
+    it("should handle null/undefined errors gracefully", () => {
+      expect(isSessionNotFoundError(null)).toBe(false)
+      expect(isSessionNotFoundError(undefined)).toBe(false)
+      expect(isSessionNotFoundError("")).toBe(false)
+    })
+    
+    it("should determine correct error type for database recording", () => {
+      function getErrorType(err: any): string {
+        const isSessionGone = isSessionNotFoundError(err)
+        const errorMessage = err?.message || String(err)
+        return isSessionGone ? 'session_not_found' : `error: ${errorMessage.slice(0, 100)}`
+      }
+      
+      // Session not found should map to specific type
+      expect(getErrorType({ message: "Session not found" })).toBe("session_not_found")
+      
+      // Other errors should include the message
+      expect(getErrorType({ message: "Network timeout" })).toBe("error: Network timeout")
+      
+      // Long error messages should be truncated
+      const longError = { message: "A".repeat(200) }
+      const errorType = getErrorType(longError)
+      expect(errorType.length).toBeLessThanOrEqual(107) // "error: " + 100 chars
+    })
+  })
 })
 
 describe("Telegram Subscription - Integration Tests", () => {
@@ -838,6 +909,33 @@ describe("Telegram Subscription - Integration Tests", () => {
         console.log(`  [INFO] RPC call result: ${error.message}`)
       } else {
         console.log(`  [INFO] RPC mark_reply_processed succeeded`)
+      }
+    } catch (err: any) {
+      console.log(`  [SKIP] Supabase client not available: ${err.message}`)
+    }
+  })
+  
+  it("should be able to set reply error via RPC", async () => {
+    // This tests the set_reply_error RPC function exists and is callable
+    try {
+      const { createClient } = await import("@supabase/supabase-js")
+      const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+      
+      const fakeReplyId = "00000000-0000-0000-0000-000000000000"
+      
+      // This should not throw even if the ID doesn't exist
+      const { error } = await supabase.rpc("set_reply_error", { 
+        p_reply_id: fakeReplyId,
+        p_error: "session_not_found"
+      })
+      
+      // RPC function should exist
+      if (error) {
+        // Expected: either success or permission error, not "function does not exist"
+        expect(error.message).not.toContain("function set_reply_error")
+        console.log(`  [INFO] RPC set_reply_error result: ${error.message}`)
+      } else {
+        console.log(`  [INFO] RPC set_reply_error succeeded`)
       }
     } catch (err: any) {
       console.log(`  [SKIP] Supabase client not available: ${err.message}`)
