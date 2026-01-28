@@ -16,3 +16,7 @@ __pycache__/
 # Test artifacts
 fixtures/
 test/mocks/
+
+# Promptfoo eval results
+evals/results/
+evals/evals/

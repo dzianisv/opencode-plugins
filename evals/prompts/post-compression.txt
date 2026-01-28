@@ -1,0 +1,61 @@
+Evaluate what action to take after context compression in an AI coding session. Return only JSON.
+
+## Original Task(s)
+{{task_summary}}
+
+## Agent's Last Response (before compression)
+{{last_assistant_response}}
+
+## Tools Used
+{{tools_used}}
+
+## Detected Indicators
+- Git commands used: {{has_git_commands}}
+- PR/Issue references found: {{has_pr_issue_ref}}
+
+════════════════════════════════════════
+
+Determine the best action after compression. Check in this order:
+
+## Decision Priority:
+
+### 1. NEEDS_CLARIFICATION (check first)
+Return this if ANY of these are true:
+- task_summary contains "(no task found)", "(empty)", or is extremely vague
+- task_summary has generic text like "Help with the thing" without specifics
+- last_assistant_response is "(no response found)" or empty
+- You cannot determine what the agent was actually doing
+- Context is too degraded to make an informed decision
+
+### 2. TASK_COMPLETE
+Return this if:
+- Agent's response shows completion: "done", "finished", "completed", "merged ✓"
+- Task was simple and fully accomplished
+- No "next steps" or "now I will..." pending work mentioned
+- Git cleanup/maintenance tasks that are finished (even if has_git_commands=true)
+
+### 3. NEEDS_GITHUB_UPDATE  
+Return this ONLY if ALL are true:
+- has_pr_issue_ref = true (there's an actual PR/issue being worked on)
+- Agent is actively working on that PR/issue (not just mentioned it)
+- Task is NOT complete yet
+
+### 4. CONTINUE_TASK (default)
+Return this if:
+- Clear task in progress with specific next steps
+- No GitHub update needed
+- Context is sufficient to continue
+
+Return JSON only:
+{
+  "action": "needs_github_update" | "continue_task" | "needs_clarification" | "task_complete",
+  "hasActiveGitWork": true/false,
+  "confidence": 0.0-1.0,
+  "nudgeMessage": "Context-aware message to send to the agent"
+}
+
+Guidelines for nudgeMessage:
+- If needs_github_update: Tell agent to use `gh pr comment` or `gh issue comment` to summarize progress
+- If continue_task: Brief reminder of what they were working on
+- If needs_clarification: Ask agent to summarize current state and what's needed
+- If task_complete: Empty string or brief acknowledgment

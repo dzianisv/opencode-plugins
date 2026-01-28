@@ -1,0 +1,155 @@
+name: Prompt Evaluations
+
+on:
+  # Run on PRs to validate prompt quality
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - 'reflection.ts'
+      - 'evals/**'
+  # Manual trigger for full evaluation
+  workflow_dispatch:
+    inputs:
+      eval_type:
+        description: 'Which evaluation to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - judge
+          - stuck
+          - compression
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  evaluate:
+    name: Run Prompt Evaluations
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create results directory
+        run: mkdir -p evals/results
+
+      - name: Run Judge Evaluation
+        if: ${{ github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'judge' || github.event_name == 'pull_request' }}
+        env:
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+        run: npm run eval:judge -- --no-progress-bar -o evals/results/judge-results.json
+        continue-on-error: true
+
+      - name: Run Stuck Detection Evaluation
+        if: ${{ github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'stuck' }}
+        env:
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+        run: npm run eval:stuck -- --no-progress-bar -o evals/results/stuck-results.json
+        continue-on-error: true
+
+      - name: Run Post-Compression Evaluation
+        if: ${{ github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'compression' }}
+        env:
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+        run: npm run eval:compression -- --no-progress-bar -o evals/results/compression-results.json
+        continue-on-error: true
+
+      - name: Upload Evaluation Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: evals/results/*.json
+          retention-days: 30
+
+      - name: Generate Summary
+        run: |
+          echo "## Prompt Evaluation Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          for file in evals/results/*.json; do
+            if [ -f "$file" ]; then
+              name=$(basename "$file" .json)
+              echo "### $name" >> $GITHUB_STEP_SUMMARY
+              
+              # Extract pass/fail counts using node
+              node -e "
+                const fs = require('fs');
+                const data = JSON.parse(fs.readFileSync('$file', 'utf-8'));
+                const results = data.results || [];
+                const passed = results.filter(r => r.success).length;
+                const failed = results.filter(r => !r.success).length;
+                const total = results.length;
+                const passRate = total > 0 ? ((passed / total) * 100).toFixed(1) : 0;
+                console.log('- Total tests: ' + total);
+                console.log('- Passed: ' + passed);
+                console.log('- Failed: ' + failed);
+                console.log('- Pass rate: ' + passRate + '%');
+              " >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "- Could not parse results" >> $GITHUB_STEP_SUMMARY
+              
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            const resultsDir = 'evals/results';
+            if (!fs.existsSync(resultsDir)) {
+              console.log('No results directory found, skipping comment');
+              return;
+            }
+            
+            const files = fs.readdirSync(resultsDir).filter(f => f.endsWith('.json'));
+            if (files.length === 0) {
+              console.log('No result files found, skipping comment');
+              return;
+            }
+            
+            let summary = '## Prompt Evaluation Results\n\n';
+            
+            for (const file of files) {
+              try {
+                const data = JSON.parse(fs.readFileSync(path.join(resultsDir, file), 'utf-8'));
+                const results = data.results || [];
+                const passed = results.filter(r => r.success).length;
+                const total = results.length;
+                const passRate = total > 0 ? ((passed / total) * 100).toFixed(1) : 0;
+                const icon = passRate >= 80 ? '✅' : passRate >= 50 ? '⚠️' : '❌';
+                
+                summary += `### ${icon} ${file.replace('.json', '')}\n`;
+                summary += `- Pass rate: **${passRate}%** (${passed}/${total})\n\n`;
+              } catch (e) {
+                summary += `### ❓ ${file}\n- Could not parse results\n\n`;
+              }
+            }
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });

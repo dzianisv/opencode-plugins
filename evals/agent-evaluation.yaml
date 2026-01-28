@@ -1,0 +1,212 @@
+description: Agent task completion evaluation benchmark
+
+prompts:
+  - file://prompts/agent-evaluation.txt
+
+providers:
+  - id: azureopenai:chat:gpt-4.1-mini
+    label: azure-gpt-4o-mini
+    config:
+      apiHost: eastus.api.cognitive.microsoft.com
+
+defaultTest:
+  options:
+    transformVars: '{ ...vars }'
+  assert:
+    - type: is-json
+    - type: javascript
+      value: |
+        const result = JSON.parse(output);
+        return result.score >= 0 && result.score <= 5;
+    - type: javascript
+      value: |
+        const result = JSON.parse(output);
+        const validVerdicts = ['COMPLETE', 'MOSTLY_COMPLETE', 'PARTIAL', 'ATTEMPTED', 'FAILED', 'NO_ATTEMPT'];
+        return validVerdicts.includes(result.verdict);
+    - type: javascript
+      value: |
+        const result = JSON.parse(output);
+        return Array.isArray(result.recommendations);
+
+tests:
+  # ════════════════════════════════════════
+  # BENCHMARK 1: Simple File Creation (Expected: 5)
+  # ════════════════════════════════════════
+  - description: "Perfect execution - create simple file"
+    vars:
+      task: "Create a hello.js file that prints 'Hello World'"
+      trace: |
+        1. [Write] Created file hello.js with content: console.log("Hello World")
+        2. [Response] File created successfully
+      output: "I've created hello.js with console.log('Hello World'). The file will print 'Hello World' when run with node hello.js."
+    assert:
+      - type: javascript
+        value: JSON.parse(output).score >= 4
+
+  # ════════════════════════════════════════
+  # BENCHMARK 2: Multi-step Task (Expected: 4-5)
+  # ════════════════════════════════════════
+  - description: "Good execution - multi-file edit"
+    vars:
+      task: "Rename the function 'getData' to 'fetchData' across the codebase"
+      trace: |
+        1. [Grep] Searched for 'getData' - found 5 occurrences in 3 files
+        2. [Read] Read src/api.ts
+        3. [Edit] Renamed getData to fetchData in src/api.ts
+        4. [Read] Read src/utils.ts
+        5. [Edit] Renamed getData to fetchData in src/utils.ts
+        6. [Read] Read test/api.test.ts
+        7. [Edit] Renamed getData to fetchData in test/api.test.ts
+        8. [Bash] Ran npm test - all tests pass
+      output: "Renamed 'getData' to 'fetchData' in all 3 files (5 occurrences). Tests pass."
+    assert:
+      - type: javascript
+        value: JSON.parse(output).score >= 4
+
+  # ════════════════════════════════════════
+  # BENCHMARK 3: Inefficient but Correct (Expected: 3-5)
+  # Model may still give high score if task completed successfully
+  # ════════════════════════════════════════
+  - description: "Partial - extra unnecessary steps"
+    vars:
+      task: "Add a README.md file with project description"
+      trace: |
+        1. [Glob] Listed all files in directory
+        2. [Read] Read package.json
+        3. [Read] Read src/index.ts
+        4. [Read] Read src/utils.ts
+        5. [Read] Read tsconfig.json
+        6. [Bash] Ran npm run build
+        7. [Write] Created README.md with project description
+        8. [Read] Read README.md to verify
+        9. [Response] README created
+      output: "Created README.md with a comprehensive project description based on the codebase analysis."
+    assert:
+      - type: javascript
+        value: |
+          const result = JSON.parse(output);
+          return result.score >= 3;
+
+  # ════════════════════════════════════════
+  # BENCHMARK 4: Failed Task (Expected: 1-2)
+  # ════════════════════════════════════════
+  - description: "Failed - wrong file modified"
+    vars:
+      task: "Fix the typo in src/config.ts on line 15"
+      trace: |
+        1. [Read] Read src/config.ts
+        2. [Edit] Modified src/constants.ts (wrong file!)
+        3. [Response] Fixed the typo
+      output: "I've fixed the typo in the configuration file."
+    assert:
+      - type: javascript
+        value: JSON.parse(output).score <= 2
+
+  # ════════════════════════════════════════
+  # BENCHMARK 5: No Progress (Expected: 0-1)
+  # ════════════════════════════════════════
+  - description: "No attempt - agent gave up"
+    vars:
+      task: "Implement a caching layer for the API responses"
+      trace: |
+        1. [Response] I'm not sure how to implement caching in this codebase.
+      output: "I cannot implement this feature without more context about your architecture."
+    assert:
+      - type: javascript
+        value: JSON.parse(output).score <= 1
+
+  # ════════════════════════════════════════
+  # BENCHMARK 6: Research Task (Expected: 4-5)
+  # ════════════════════════════════════════
+  - description: "Complete - research and answer"
+    vars:
+      task: "Explain how error handling works in this codebase"
+      trace: |
+        1. [Grep] Searched for 'catch' - found 12 occurrences
+        2. [Grep] Searched for 'Error' - found 8 occurrences
+        3. [Read] Read src/api.ts (contains error handling)
+        4. [Read] Read src/utils/errors.ts (custom error classes)
+        5. [Response] Provided explanation
+      output: |
+        Error handling in this codebase follows a structured approach:
+        1. Custom error classes in src/utils/errors.ts (ApiError, ValidationError)
+        2. Try-catch blocks in API handlers
+        3. Error logging via console.error
+        4. HTTP status codes mapped to error types
+    assert:
+      - type: javascript
+        value: JSON.parse(output).score >= 4
+
+  # ════════════════════════════════════════
+  # BENCHMARK 7: Debugging Task (Expected: 3-5)
+  # ════════════════════════════════════════
+  - description: "Partial to Complete - iterative debugging"
+    vars:
+      task: "Fix the failing test in test/api.test.ts"
+      trace: |
+        1. [Bash] Ran npm test - 1 failing test
+        2. [Read] Read test/api.test.ts
+        3. [Read] Read src/api.ts
+        4. [Edit] Fixed assertion in test/api.test.ts
+        5. [Bash] Ran npm test - still failing
+        6. [Read] Read error output carefully
+        7. [Edit] Fixed actual bug in src/api.ts
+        8. [Bash] Ran npm test - all pass
+      output: "Fixed the failing test. The issue was in src/api.ts where the response format didn't match the expected shape. Updated both the source and test."
+    assert:
+      - type: javascript
+        value: JSON.parse(output).score >= 3
+
+  # ════════════════════════════════════════
+  # BENCHMARK 8: Complex Refactor (Expected: 4-5)
+  # ════════════════════════════════════════
+  - description: "Complete - complex multi-step refactor"
+    vars:
+      task: "Convert the callback-based API to async/await"
+      trace: |
+        1. [Read] Read src/api.ts
+        2. [Read] Read src/database.ts
+        3. [Edit] Converted database.ts to async/await
+        4. [Edit] Converted api.ts to async/await
+        5. [Read] Read test/api.test.ts
+        6. [Edit] Updated tests for async/await
+        7. [Bash] Ran npm run typecheck - pass
+        8. [Bash] Ran npm test - all pass
+      output: "Converted callback-based API to async/await. Updated 3 files: src/api.ts, src/database.ts, and test/api.test.ts. All type checks and tests pass."
+    assert:
+      - type: javascript
+        value: JSON.parse(output).score >= 4
+
+  # ════════════════════════════════════════
+  # BENCHMARK 9: Wrong Approach (Expected: 1-3)
+  # Agent tried but left task incomplete with error
+  # ════════════════════════════════════════
+  - description: "Failed - fundamentally wrong approach"
+    vars:
+      task: "Add input validation to the createUser function"
+      trace: |
+        1. [Read] Read src/users.ts
+        2. [Write] Created new file src/validation.ts with Joi schema
+        3. [Edit] Imported Joi in src/users.ts
+        4. [Bash] Ran npm install joi - ERROR: package not in package.json
+        5. [Response] Validation added
+      output: "Added Joi validation to createUser. Note: You may need to install the joi package."
+    assert:
+      - type: javascript
+        value: JSON.parse(output).score <= 3
+
+  # ════════════════════════════════════════
+  # BENCHMARK 10: Edge Case - Empty Task (Expected: 0-2)
+  # Asking for clarification is reasonable for vague tasks
+  # ════════════════════════════════════════
+  - description: "No attempt - empty or unclear task"
+    vars:
+      task: "Do the thing"
+      trace: |
+        1. [Response] I need more details about what you'd like me to do.
+      output: "Could you please clarify what specific task you'd like me to perform?"
+    assert:
+      - type: javascript
+        value: |
+          const result = JSON.parse(output);
+          return result.score <= 2;

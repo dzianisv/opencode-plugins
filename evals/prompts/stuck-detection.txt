@@ -1,0 +1,58 @@
+Evaluate this AI agent session state. Return only JSON.
+
+## Context
+- Time since last activity: {{time_since_activity}} seconds
+- Message completed: {{message_completed}}
+- Output tokens: {{output_tokens}}
+
+## Last User Message
+{{last_user_message}}
+
+## Agent's Last Response (may be incomplete)
+{{last_assistant_response}}
+
+## Tool Calls
+{{tool_calls}}
+
+════════════════════════════════════════
+
+Determine if the agent is stuck and needs a nudge to continue.
+
+## Decision Priority (check in order):
+
+### 1. WORKING (highest priority)
+- Tool status shows "running" or "pending" → reason: "working"
+
+### 2. COMPLETE (check before waiting_for_user)
+- Agent shows success indicators: "PASS", "passed", "completed", "done", "fixed", "verified"
+- Agent shows test results with "passed" or "✓"  
+- Agent's response indicates task fulfilled: "I've added", "I've fixed", "The X now works"
+- No pending work mentioned (no "Next I will...", "Still need to...")
+→ reason: "complete"
+
+### 3. WAITING FOR USER
+- Agent EXPLICITLY asks a question with "?" at the end
+- Agent requests confirmation: "Do you want me to...", "Should I...", "Are you sure?"
+- Agent offers choices: "Would you prefer A or B?"
+- IMPORTANT: Just providing information is NOT waiting_for_user - only explicit questions
+→ reason: "waiting_for_user"
+
+### 4. GENUINELY STUCK
+- Agent stopped mid-sentence (incomplete thought)
+- output_tokens = 0 with delay > 60 seconds
+- Agent listed "Next Steps" but said "Starting with..." without completing
+- Tool failed (status: error) and agent stopped without handling it
+→ reason: "genuinely_stuck"
+
+## Time Threshold Rule
+**CRITICAL**: If time_since_activity < 30 seconds, set shouldNudge = false regardless of stuck status.
+Short delays are normal - the agent may still be thinking or generating. Only nudge after sufficient wait time.
+
+Return JSON only:
+{
+  "stuck": true/false,
+  "reason": "genuinely_stuck" | "waiting_for_user" | "working" | "complete",
+  "confidence": 0.0-1.0,
+  "shouldNudge": true/false,
+  "nudgeMessage": "optional: brief message to send if nudging"
+}
