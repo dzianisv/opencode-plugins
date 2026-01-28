@@ -584,4 +584,243 @@ describe("Reflection Plugin - Unit Tests", () => {
       })
     })
   })
+
+  describe("GenAI Post-Compression Evaluation", () => {
+    // Types matching the plugin
+    type CompressionAction = "needs_github_update" | "continue_task" | "needs_clarification" | "task_complete" | "error"
+    interface CompressionEvaluation {
+      action: CompressionAction
+      hasActiveGitWork: boolean
+      confidence: number
+      nudgeMessage: string
+    }
+
+    describe("CompressionEvaluation parsing", () => {
+      it("should parse needs_github_update response", () => {
+        const response = `{
+          "action": "needs_github_update",
+          "hasActiveGitWork": true,
+          "confidence": 0.9,
+          "nudgeMessage": "Please update PR #34 with your progress using gh pr comment"
+        }`
+        const result = JSON.parse(response) as CompressionEvaluation
+        
+        assert.strictEqual(result.action, "needs_github_update")
+        assert.strictEqual(result.hasActiveGitWork, true)
+        assert.strictEqual(result.confidence, 0.9)
+        assert.ok(result.nudgeMessage.includes("PR #34"))
+      })
+
+      it("should parse continue_task response", () => {
+        const response = `{
+          "action": "continue_task",
+          "hasActiveGitWork": false,
+          "confidence": 0.85,
+          "nudgeMessage": "Context was compressed. Please continue implementing the authentication system."
+        }`
+        const result = JSON.parse(response) as CompressionEvaluation
+        
+        assert.strictEqual(result.action, "continue_task")
+        assert.strictEqual(result.hasActiveGitWork, false)
+        assert.ok(result.nudgeMessage.includes("authentication"))
+      })
+
+      it("should parse task_complete response", () => {
+        const response = `{
+          "action": "task_complete",
+          "hasActiveGitWork": false,
+          "confidence": 0.95,
+          "nudgeMessage": ""
+        }`
+        const result = JSON.parse(response) as CompressionEvaluation
+        
+        assert.strictEqual(result.action, "task_complete")
+        assert.strictEqual(result.nudgeMessage, "")
+      })
+
+      it("should parse needs_clarification response", () => {
+        const response = `{
+          "action": "needs_clarification",
+          "hasActiveGitWork": false,
+          "confidence": 0.7,
+          "nudgeMessage": "Context was compressed and some details may have been lost. Can you summarize the current state and what's needed next?"
+        }`
+        const result = JSON.parse(response) as CompressionEvaluation
+        
+        assert.strictEqual(result.action, "needs_clarification")
+        assert.ok(result.nudgeMessage.includes("summarize"))
+      })
+
+      it("should normalize missing fields with defaults", () => {
+        const response = `{"action": "continue_task"}`
+        const result = JSON.parse(response)
+        
+        // Apply defaults like the plugin does
+        const defaultNudge = "Context was just compressed. Please continue with the task where you left off."
+        const evaluation: CompressionEvaluation = {
+          action: result.action || "continue_task",
+          hasActiveGitWork: !!result.hasActiveGitWork,
+          confidence: result.confidence ?? 0.5,
+          nudgeMessage: result.nudgeMessage || defaultNudge
+        }
+        
+        assert.strictEqual(evaluation.action, "continue_task")
+        assert.strictEqual(evaluation.hasActiveGitWork, false)
+        assert.strictEqual(evaluation.confidence, 0.5)
+        assert.strictEqual(evaluation.nudgeMessage, defaultNudge)
+      })
+    })
+
+    describe("GitHub work detection", () => {
+      it("should detect gh pr commands in tool usage", () => {
+        const toolInput = JSON.stringify({ command: "gh pr create --title 'feat: add auth'" })
+        const hasGHCommand = /\bgh\s+(pr|issue)\b/i.test(toolInput)
+        assert.strictEqual(hasGHCommand, true, "Should detect gh pr command")
+      })
+
+      it("should detect gh issue commands in tool usage", () => {
+        const toolInput = JSON.stringify({ command: "gh issue comment 42 --body 'Progress update'" })
+        const hasGHCommand = /\bgh\s+(pr|issue)\b/i.test(toolInput)
+        assert.strictEqual(hasGHCommand, true, "Should detect gh issue command")
+      })
+
+      it("should detect git commit/push commands", () => {
+        const toolInput = JSON.stringify({ command: "git commit -m 'feat: add feature'" })
+        const hasGitCommand = /\bgit\s+(commit|push|branch|checkout)\b/i.test(toolInput)
+        assert.strictEqual(hasGitCommand, true, "Should detect git commit")
+      })
+
+      it("should detect PR references in text", () => {
+        const text = "Working on PR #34 to implement the feature"
+        const hasPRRef = /#\d+|PR\s*#?\d+|issue\s*#?\d+|pull request/i.test(text)
+        assert.strictEqual(hasPRRef, true, "Should detect PR #34 reference")
+      })
+
+      it("should detect issue references in text", () => {
+        const text = "This fixes issue #123"
+        const hasIssueRef = /#\d+|PR\s*#?\d+|issue\s*#?\d+|pull request/i.test(text)
+        assert.strictEqual(hasIssueRef, true, "Should detect issue #123 reference")
+      })
+
+      it("should not false positive on unrelated numbers", () => {
+        const text = "The function returns 42"
+        // This will match #42 if written as #42, but "42" alone shouldn't match
+        const hasRef = /PR\s*#?\d+|issue\s*#?\d+|pull request/i.test(text)
+        assert.strictEqual(hasRef, false, "Should not match plain numbers")
+      })
+    })
+
+    describe("action-based behavior", () => {
+      it("should skip nudge for task_complete action", () => {
+        const evaluation: CompressionEvaluation = {
+          action: "task_complete",
+          hasActiveGitWork: false,
+          confidence: 0.95,
+          nudgeMessage: ""
+        }
+        
+        const shouldSkipNudge = evaluation.action === "task_complete"
+        assert.strictEqual(shouldSkipNudge, true, "Should skip nudge for complete tasks")
+      })
+
+      it("should use appropriate toast for needs_github_update", () => {
+        const evaluation: CompressionEvaluation = {
+          action: "needs_github_update",
+          hasActiveGitWork: true,
+          confidence: 0.9,
+          nudgeMessage: "Update the PR"
+        }
+        
+        const toastMsg = evaluation.action === "needs_github_update" 
+          ? "Prompted GitHub update" 
+          : evaluation.action === "needs_clarification"
+            ? "Requested clarification"
+            : "Nudged to continue"
+        
+        assert.strictEqual(toastMsg, "Prompted GitHub update")
+      })
+
+      it("should use appropriate toast for needs_clarification", () => {
+        const evaluation: CompressionEvaluation = {
+          action: "needs_clarification",
+          hasActiveGitWork: false,
+          confidence: 0.7,
+          nudgeMessage: "Please clarify"
+        }
+        
+        const toastMsg = evaluation.action === "needs_github_update" 
+          ? "Prompted GitHub update" 
+          : evaluation.action === "needs_clarification"
+            ? "Requested clarification"
+            : "Nudged to continue"
+        
+        assert.strictEqual(toastMsg, "Requested clarification")
+      })
+
+      it("should use appropriate toast for continue_task", () => {
+        const evaluation: CompressionEvaluation = {
+          action: "continue_task",
+          hasActiveGitWork: false,
+          confidence: 0.85,
+          nudgeMessage: "Continue working"
+        }
+        
+        const toastMsg = evaluation.action === "needs_github_update" 
+          ? "Prompted GitHub update" 
+          : evaluation.action === "needs_clarification"
+            ? "Requested clarification"
+            : "Nudged to continue"
+        
+        assert.strictEqual(toastMsg, "Nudged to continue")
+      })
+    })
+
+    describe("message context extraction", () => {
+      it("should extract human messages excluding reflection feedback", () => {
+        const messages = [
+          { info: { role: "user" }, parts: [{ type: "text", text: "Implement auth" }] },
+          { info: { role: "assistant" }, parts: [{ type: "text", text: "Working..." }] },
+          { info: { role: "user" }, parts: [{ type: "text", text: "## Reflection: Task Incomplete\n\nContinue" }] },
+          { info: { role: "assistant" }, parts: [{ type: "text", text: "Continuing..." }] },
+        ]
+        
+        const humanMessages: string[] = []
+        for (const msg of messages) {
+          if (msg.info?.role === "user") {
+            for (const part of msg.parts || []) {
+              if (part.type === "text" && part.text && !part.text.includes("## Reflection:")) {
+                humanMessages.push(part.text.slice(0, 300))
+                break
+              }
+            }
+          }
+        }
+        
+        assert.strictEqual(humanMessages.length, 1, "Should only include non-reflection message")
+        assert.strictEqual(humanMessages[0], "Implement auth")
+      })
+
+      it("should extract last assistant text", () => {
+        const messages = [
+          { info: { role: "user" }, parts: [{ type: "text", text: "Do task" }] },
+          { info: { role: "assistant" }, parts: [{ type: "text", text: "First response" }] },
+          { info: { role: "user" }, parts: [{ type: "text", text: "Continue" }] },
+          { info: { role: "assistant" }, parts: [{ type: "text", text: "Final response with progress" }] },
+        ]
+        
+        let lastAssistantText = ""
+        for (const msg of messages) {
+          if (msg.info?.role === "assistant") {
+            for (const part of msg.parts || []) {
+              if (part.type === "text" && part.text) {
+                lastAssistantText = part.text.slice(0, 1000)
+              }
+            }
+          }
+        }
+        
+        assert.strictEqual(lastAssistantText, "Final response with progress")
+      })
+    })
+  })
 })

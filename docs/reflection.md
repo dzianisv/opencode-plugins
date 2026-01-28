@@ -144,6 +144,83 @@ When the agent appears stuck (no completion after timeout), GenAI evaluates the 
                     +----------------+  +----------------+  +----------------+
 ```
 
+## GenAI Post-Compression Evaluation Flow
+
+After context compression, GenAI evaluates the best action:
+
+```
+                              +------------------+
+                              | session.compacted|
+                              | event received   |
+                              +--------+---------+
+                                       |
+                                       v
+                        +-----------------------------+
+                        |  Get session messages       |
+                        |  Extract context            |
+                        +-------------+---------------+
+                                      |
+                                      v
+                        +-----------------------------+
+                        |   GENAI EVALUATION          |
+                        |   Analyze:                  |
+                        |   - Original task(s)        |
+                        |   - Last agent response     |
+                        |   - Tools used (gh pr, git) |
+                        |   - PR/Issue references     |
+                        +-----------+-----------------+
+                                    |
+                                    v
+               +--------------------+--------------------+
+               |                    |                    |
+               v                    v                    v
+    +-------------------+  +------------------+  +------------------+
+    | needs_github_     |  | continue_task    |  | needs_           |
+    | update            |  |                  |  | clarification    |
+    +--------+----------+  +--------+---------+  +--------+---------+
+             |                      |                     |
+             v                      v                     v
+    +-------------------+  +------------------+  +------------------+
+    | Nudge: "Update    |  | Nudge: Context-  |  | Nudge: "Please   |
+    | PR #X with gh pr  |  | aware continue   |  | summarize state  |
+    | comment"          |  | message          |  | and what's next" |
+    +-------------------+  +------------------+  +------------------+
+    
+                              +------------------+
+                              | task_complete    |
+                              +--------+---------+
+                                       |
+                                       v
+                              +------------------+
+                              | Skip nudge       |
+                              | Show toast only  |
+                              +------------------+
+```
+
+## Post-Compression Actions
+
+| Action | When Used | Nudge Content |
+|--------|-----------|---------------|
+| `needs_github_update` | Agent was working on PR/issue | Prompt to update with `gh pr comment` |
+| `continue_task` | Normal task in progress | Context-aware reminder of current work |
+| `needs_clarification` | Significant context loss | Ask agent to summarize state |
+| `task_complete` | Task was finished | No nudge, show success toast |
+
+## GitHub Work Detection
+
+The plugin detects active GitHub work by looking for:
+
+1. **Tool Usage Patterns:**
+   - `gh pr create`, `gh pr comment`
+   - `gh issue create`, `gh issue comment`
+   - `git commit`, `git push`, `git branch`
+
+2. **Text References:**
+   - `#123` (issue/PR numbers)
+   - `PR #34`, `PR34`
+   - `issue #42`
+   - `pull request`
+
 ## Stuck Detection Scenarios
 
 | Scenario | Static Heuristics | GenAI Evaluation |
