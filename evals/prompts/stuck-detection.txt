@@ -16,13 +16,33 @@ Evaluate this AI agent session state. Return only JSON.
 
 ════════════════════════════════════════
 
-Determine if the agent is stuck and needs a nudge to continue. Consider:
-1. If agent asked a clarifying question → NOT stuck (waiting for user)
-2. If agent is mid-tool-call (tool status: running) → NOT stuck (working)
-3. If agent stopped mid-sentence or mid-thought → STUCK
-4. If agent completed response but no further action → check if task requires more
-5. If output tokens = 0 and long delay → likely STUCK
-6. If agent listed "Next Steps" but didn't continue → STUCK (premature stop)
+Determine if the agent is stuck and needs a nudge to continue.
+
+## Decision Priority (check in order):
+
+### 1. WORKING (highest priority)
+- Tool status shows "running" or "pending" → reason: "working"
+
+### 2. COMPLETE (check before waiting_for_user)
+- Agent shows success indicators: "PASS", "passed", "completed", "done", "fixed", "verified"
+- Agent shows test results with "passed" or "✓"  
+- Agent's response indicates task fulfilled: "I've added", "I've fixed", "The X now works"
+- No pending work mentioned (no "Next I will...", "Still need to...")
+→ reason: "complete"
+
+### 3. WAITING FOR USER
+- Agent EXPLICITLY asks a question with "?" at the end
+- Agent requests confirmation: "Do you want me to...", "Should I...", "Are you sure?"
+- Agent offers choices: "Would you prefer A or B?"
+- IMPORTANT: Just providing information is NOT waiting_for_user - only explicit questions
+→ reason: "waiting_for_user"
+
+### 4. GENUINELY STUCK
+- Agent stopped mid-sentence (incomplete thought)
+- output_tokens = 0 with delay > 60 seconds
+- Agent listed "Next Steps" but said "Starting with..." without completing
+- Tool failed (status: error) and agent stopped without handling it
+→ reason: "genuinely_stuck"
 
 Return JSON only:
 {

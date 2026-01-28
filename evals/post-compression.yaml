@@ -275,7 +275,8 @@ tests:
           const json = output.match(/\{[\s\S]*\}/);
           if (!json) return false;
           const result = JSON.parse(json[0]);
-          return typeof result.action === "string" && result.confidence < 0.7;
+          // Empty context should trigger needs_clarification - confidence can be high since we're certain it needs clarification
+          return result.action === "needs_clarification";
 
   - description: "Git commands but no PR/issue"
     vars:
