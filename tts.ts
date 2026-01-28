@@ -2317,13 +2317,166 @@ async function subscribeToReplies(
           }
         }
       )
-      .subscribe((status: string) => {
-        debugLog(`Reply subscription status: ${status}`)
+      .subscribe(async (status: string) => {
+        await debugLog(`Reply subscription status: ${status}`)
+        
+        // Handle subscription failures with auto-reconnect
+        if (status === 'TIMED_OUT' || status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+          await debugLog(`Subscription failed with status: ${status}, will attempt reconnect in 5s`)
+          
+          // Clear the subscription reference so we can create a new one
+          if (replySubscription && supabaseClient) {
+            try {
+              await supabaseClient.removeChannel(replySubscription)
+            } catch {}
+          }
+          replySubscription = null
+          
+          // Attempt to reconnect after a delay
+          setTimeout(async () => {
+            try {
+              await debugLog('Attempting to reconnect subscription...')
+              // Reload config in case it changed
+              const freshConfig = await loadConfig()
+              if (freshConfig.telegram?.enabled) {
+                await subscribeToReplies(freshConfig, client, debugLog)
+              }
+            } catch (err: any) {
+              await debugLog(`Reconnection failed: ${err?.message || err}`)
+            }
+          }, 5000) // 5 second delay before reconnect
+        }
       })
     
     await debugLog('Successfully subscribed to Telegram replies')
   } catch (err: any) {
     await debugLog(`Failed to subscribe to replies: ${err?.message || err}`)
+  }
+}
+
+/**
+ * Fetch and process any unprocessed replies for this user.
+ * This handles replies that were missed while the subscription was down
+ * (e.g., during TIMED_OUT or CLOSED states).
+ */
+async function processUnprocessedReplies(
+  config: TTSConfig,
+  client: any,
+  debugLog: (msg: string) => Promise<void>
+): Promise<void> {
+  const telegramConfig = config.telegram
+  if (!telegramConfig?.enabled) return
+  if (telegramConfig.receiveReplies === false) return
+  
+  const uuid = telegramConfig.uuid || process.env.TELEGRAM_NOTIFICATION_UUID
+  if (!uuid) return
+  
+  const supabase = await initSupabaseClient(config)
+  if (!supabase) return
+  
+  try {
+    await debugLog('Checking for unprocessed replies...')
+    
+    // Fetch unprocessed replies for this user (limit to last 10 to avoid overload)
+    const { data: unprocessedReplies, error } = await supabase
+      .from('telegram_replies')
+      .select('*')
+      .eq('uuid', uuid)
+      .eq('processed', false)
+      .order('created_at', { ascending: true })
+      .limit(10)
+    
+    if (error) {
+      await debugLog(`Failed to fetch unprocessed replies: ${error.message}`)
+      return
+    }
+    
+    if (!unprocessedReplies || unprocessedReplies.length === 0) {
+      await debugLog('No unprocessed replies found')
+      return
+    }
+    
+    await debugLog(`Found ${unprocessedReplies.length} unprocessed replies, processing...`)
+    
+    for (const reply of unprocessedReplies as TelegramReply[]) {
+      // Skip if already processed locally (deduplication)
+      if (processedReplyIds.has(reply.id)) {
+        await debugLog(`Reply ${reply.id.slice(0, 8)}... already processed locally, skipping`)
+        continue
+      }
+      processedReplyIds.add(reply.id)
+      
+      // Mark as processed immediately
+      await markReplyProcessed(reply.id)
+      await debugLog(`Processing missed reply ${reply.id.slice(0, 8)}...`)
+      
+      try {
+        let messageText: string
+        
+        // Check if this is a voice message that needs transcription
+        if (reply.is_voice && reply.audio_base64) {
+          await debugLog(`Processing missed voice message (${reply.voice_duration_seconds}s)`)
+          
+          const format = reply.voice_file_type === 'voice' ? 'ogg' : 'mp4'
+          const transcription = await transcribeWithWhisper(reply.audio_base64, config, format)
+          
+          if (!transcription || !transcription.text) {
+            await debugLog(`Transcription failed for missed voice message ${reply.id.slice(0, 8)}`)
+            continue
+          }
+          
+          messageText = transcription.text
+          await debugLog(`Transcribed missed voice: "${messageText.slice(0, 50)}..."`)
+        } else if (reply.reply_text) {
+          messageText = reply.reply_text
+          await debugLog(`Processing missed text reply: ${messageText.slice(0, 50)}...`)
+        } else {
+          await debugLog(`Skipping reply ${reply.id.slice(0, 8)}... - no text or voice`)
+          continue
+        }
+        
+        // Forward to session
+        const prefix = reply.is_voice ? '[User via Telegram Voice]' : '[User via Telegram]'
+        await client.session.promptAsync({
+          path: { id: reply.session_id },
+          body: {
+            parts: [{
+              type: "text",
+              text: `${prefix}: ${messageText}`
+            }]
+          }
+        })
+        
+        await debugLog(`Forwarded missed reply to session ${reply.session_id}`)
+        
+        // Update reaction
+        await updateMessageReaction(
+          reply.telegram_chat_id,
+          reply.telegram_message_id,
+          '👍',
+          config
+        )
+        
+        // Show toast
+        const toastTitle = reply.is_voice ? "Telegram Voice (Recovered)" : "Telegram Reply (Recovered)"
+        await client.tui.publish({
+          body: {
+            type: "toast",
+            toast: {
+              title: toastTitle,
+              description: `"${messageText.slice(0, 40)}${messageText.length > 40 ? '...' : ''}"`,
+              severity: "info"
+            }
+          }
+        })
+      } catch (err: any) {
+        await debugLog(`Failed to process missed reply ${reply.id.slice(0, 8)}: ${err?.message || err}`)
+      }
+    }
+    
+    await debugLog('Finished processing unprocessed replies')
+  } catch (err: any) {
+    await debugLog(`Error in processUnprocessedReplies: ${err?.message || err}`)
   }
 }
 
@@ -2528,7 +2681,12 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
     try {
       const config = await loadConfig()
       if (config.telegram?.enabled) {
+        // First, subscribe to new replies
         await subscribeToReplies(config, client, debugLog)
+        
+        // Then, process any replies that were missed while we were offline
+        // (e.g., voice messages received while subscription was TIMED_OUT)
+        await processUnprocessedReplies(config, client, debugLog)
       }
     } catch (err: any) {
       await debugLog(`Failed to initialize reply subscription: ${err?.message || err}`)
