@@ -15,12 +15,12 @@ prompts:
   - file://prompts/task-verification.txt
 
 providers:
-  # Use Azure OpenAI - requires AZURE_OPENAI_API_KEY env var
-  # Deployment: gpt-4.1-mini (gpt-4o-mini model)
-  - id: azureopenai:chat:gpt-4.1-mini
-    label: azure-gpt-4o-mini
+  # Use GitHub Models API (requires GITHUB_TOKEN env var)
+  - id: openai:gpt-4o-mini
+    label: github-gpt-4o-mini
     config:
-      apiHost: eastus.api.cognitive.microsoft.com
+      apiBaseUrl: https://models.inference.ai.azure.com
+      apiKeyEnvar: GITHUB_TOKEN
 
 defaultTest:
   options:
