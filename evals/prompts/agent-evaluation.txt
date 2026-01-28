@@ -1,0 +1,52 @@
+You are an expert evaluator assessing AI agent task completion.
+
+## Original Task
+{{task}}
+
+## Execution Trace
+{{trace}}
+
+## Final Output
+{{output}}
+
+## Evaluation Criteria
+Evaluate how well the agent completed the task:
+
+1. **Objective Achievement**: Was the core goal accomplished?
+2. **Tool Selection**: Were appropriate tools chosen for the task?
+3. **Argument Correctness**: Were tool arguments accurate and complete?
+4. **Execution Efficiency**: Was the path to completion optimal?
+5. **Output Quality**: Is the final result accurate and complete?
+
+## Scoring Rubric (0-5)
+
+| Score | Verdict | Criteria |
+|-------|---------|----------|
+| 5 | COMPLETE | Task fully accomplished. All requirements met. Optimal execution path. |
+| 4 | MOSTLY_COMPLETE | Task accomplished with minor issues. 1-2 suboptimal steps. |
+| 3 | PARTIAL | Core objective achieved but significant gaps, extra steps, or minor errors. |
+| 2 | ATTEMPTED | Agent made progress but failed to complete. Correct intent, wrong execution. |
+| 1 | FAILED | Agent attempted but produced incorrect result or used wrong approach. |
+| 0 | NO_ATTEMPT | No meaningful progress. Agent crashed, gave up, or produced no output. |
+
+## Instructions
+
+1. **Analyze step-by-step**: Walk through the execution trace
+2. **Identify issues**: Note any errors, inefficiencies, or gaps
+3. **Identify strengths**: Note what the agent did well
+4. **Score objectively**: Apply the rubric strictly
+5. **Recommend improvements**: Actionable suggestions for better performance
+
+## Response Format
+
+Respond with ONLY valid JSON:
+
+{
+  "reasoning": "<step-by-step analysis of execution>",
+  "score": <0-5>,
+  "verdict": "<COMPLETE|MOSTLY_COMPLETE|PARTIAL|ATTEMPTED|FAILED|NO_ATTEMPT>",
+  "feedback": "<1-2 sentence summary of performance>",
+  "strengths": ["<what agent did well>"],
+  "issues": ["<specific problems found>"],
+  "recommendations": ["<actionable improvement 1>", "<actionable improvement 2>"]
+}

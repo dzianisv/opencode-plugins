@@ -1,0 +1,269 @@
+# Promptfoo Evaluation Configuration for Reflection Plugin
+# 
+# This evaluates the judge's ability to correctly assess task completion.
+# Run with: npx promptfoo eval
+#
+# Metrics tracked:
+# - Judge Accuracy: Does the judge correctly identify complete vs incomplete tasks?
+# - False Positive Rate: How often does judge mark incomplete tasks as complete?
+# - False Negative Rate: How often does judge mark complete tasks as incomplete?
+# - Severity Accuracy: Does judge assign appropriate severity levels?
+
+description: "Reflection Plugin - Judge Accuracy Evaluation"
+
+prompts:
+  - file://prompts/task-verification.txt
+
+providers:
+  # Use GitHub Models API (requires GITHUB_TOKEN env var)
+  - id: openai:gpt-4o-mini
+    label: github-gpt-4o-mini
+    config:
+      apiBaseUrl: https://models.inference.ai.azure.com
+      apiKeyEnvar: GITHUB_TOKEN
+
+defaultTest:
+  options:
+    # Run each test 3 times to handle non-determinism (reduce to 1 for quick tests)
+    repeat: 1
+
+tests:
+  # ============================================
+  # COMPLETE TASKS - Should return complete: true
+  # ============================================
+  
+  - description: "Simple file creation - COMPLETE"
+    vars:
+      task: "Create a hello.js file that prints 'Hello World'"
+      tools_used: "write: {filePath: 'hello.js', content: 'console.log(\"Hello World\")'}"
+      agent_response: |
+        I've created the hello.js file with the following content:
+        ```javascript
+        console.log("Hello World")
+        ```
+        The file has been saved successfully.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === true;
+
+  - description: "Test execution with passing results - COMPLETE"
+    vars:
+      task: "Run the unit tests and make sure they pass"
+      tools_used: "bash: {command: 'npm test'}"
+      agent_response: |
+        I ran the tests with `npm test`. Here are the results:
+        
+        Test Suites: 3 passed, 3 total
+        Tests:       94 passed, 94 total
+        
+        All tests pass successfully!
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === true;
+
+  - description: "Bug fix with verification - COMPLETE"
+    vars:
+      task: "Fix the TypeError in utils.ts where path.replace is called on undefined"
+      tools_used: |
+        read: {filePath: 'utils.ts'}
+        edit: {filePath: 'utils.ts', oldString: 'path.replace', newString: 'path?.replace'}
+        bash: {command: 'npm run typecheck'}
+      agent_response: |
+        I've fixed the TypeError in utils.ts:
+        
+        1. Found the issue: `path.replace()` was called without checking if path is defined
+        2. Added optional chaining: `path?.replace()`
+        3. Ran typecheck - no errors
+        
+        The fix is complete.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === true;
+
+  # ============================================
+  # INCOMPLETE TASKS - Should return complete: false
+  # ============================================
+
+  - description: "Tests failing - INCOMPLETE"
+    vars:
+      task: "Run the tests and fix any failures"
+      tools_used: "bash: {command: 'npm test'}"
+      agent_response: |
+        I ran the tests. Here are the results:
+        
+        Test Suites: 2 failed, 1 passed, 3 total
+        Tests:       5 failed, 89 passed, 94 total
+        
+        There are some test failures. Would you like me to investigate?
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === false;
+
+  - description: "Agent stopped mid-task and asked permission - INCOMPLETE"
+    vars:
+      task: "Implement user authentication with OAuth"
+      tools_used: |
+        write: {filePath: 'auth/oauth.ts'}
+      agent_response: |
+        I've started implementing OAuth authentication:
+        
+        1. Created auth/oauth.ts with basic structure
+        
+        **Remaining Tasks:**
+        - Add token refresh logic
+        - Implement logout flow
+        - Add error handling
+        
+        Would you like me to continue with these remaining items?
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === false && (verdict.missing?.length > 0 || verdict.next_actions?.length > 0);
+
+  - description: "Build fails - INCOMPLETE with HIGH severity"
+    vars:
+      task: "Add the new feature and make sure the build passes"
+      tools_used: |
+        edit: {filePath: 'feature.ts'}
+        bash: {command: 'npm run build'}
+      agent_response: |
+        I've added the feature. Let me run the build:
+        
+        ```
+        npm run build
+        
+        ERROR in feature.ts:42
+        Type 'string' is not assignable to type 'number'.
+        ```
+        
+        The build failed due to a type error. I'll fix this...
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === false && ["HIGH", "BLOCKER", "MEDIUM"].includes(verdict.severity);
+
+  - description: "Security issue - INCOMPLETE with BLOCKER severity"
+    vars:
+      task: "Review the login code for security issues"
+      tools_used: "read: {filePath: 'auth/login.ts'}"
+      agent_response: |
+        I've reviewed the login code and found a critical issue:
+        
+        **SECURITY VULNERABILITY**: The password is stored in plain text!
+        
+        ```typescript
+        // DANGEROUS: Plain text password storage
+        user.password = inputPassword;
+        ```
+        
+        This needs to be fixed immediately with proper hashing.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === false && verdict.severity === "BLOCKER";
+
+  # ============================================
+  # RESEARCH TASKS - Different evaluation criteria
+  # ============================================
+
+  - description: "Research task completed - COMPLETE (no code required)"
+    vars:
+      task: "Research the best testing frameworks for React - do not write any code, just research"
+      tools_used: "webfetch: {url: 'https://example.com/react-testing'}"
+      agent_response: |
+        I've researched React testing frameworks. Here's my analysis:
+        
+        **Top Options:**
+        1. **Jest + React Testing Library** - Most popular, great DX
+        2. **Vitest** - Faster, Vite-native
+        3. **Cypress** - Best for E2E
+        
+        **Recommendation:** Jest + RTL for unit tests, Cypress for E2E.
+        
+        This is research only as requested - no code changes made.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === true;
+
+  # ============================================
+  # EDGE CASES
+  # ============================================
+
+  - description: "Empty agent response - INCOMPLETE"
+    vars:
+      task: "Create a new component"
+      tools_used: ""
+      agent_response: ""
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === false;
+
+  - description: "Agent claims done without evidence - INCOMPLETE"
+    vars:
+      task: "Run all tests and verify they pass"
+      tools_used: ""
+      agent_response: |
+        Done! All tests pass and everything is working perfectly.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === false;
+
+  - description: "Flaky test dismissed without mitigation - INCOMPLETE"
+    vars:
+      task: "Fix the failing test in auth.test.ts"
+      tools_used: "bash: {command: 'npm test'}"
+      agent_response: |
+        I ran the tests. The auth.test.ts failure is just a flaky test - 
+        it passes sometimes and fails other times. This is an unrelated 
+        infrastructure issue, not a real bug. The code is ready to ship.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === false && ["HIGH", "MEDIUM"].includes(verdict.severity);
+
+# Output configuration
+outputPath: ./evals/results/latest.json
+
+# Sharing (optional - for team dashboards)
+# sharing:
+#   appUrl: https://app.promptfoo.dev

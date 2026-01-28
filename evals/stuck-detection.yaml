@@ -1,0 +1,302 @@
+# Promptfoo Evaluation: Stuck Detection
+#
+# Evaluates the GenAI stuck detection function (evaluateStuckWithGenAI)
+# Tests whether the model correctly identifies:
+# - genuinely_stuck: Agent stopped mid-task
+# - waiting_for_user: Agent asked a question, waiting for answer
+# - working: Agent is currently processing (tool running)
+# - complete: Task finished successfully
+#
+# Run with: npm run eval:stuck
+
+description: "Stuck Detection - GenAI Accuracy Evaluation"
+
+prompts:
+  - file://prompts/stuck-detection.txt
+
+providers:
+  # Use GitHub Models API (requires GITHUB_TOKEN env var)
+  - id: openai:gpt-4o-mini
+    label: github-gpt-4o-mini
+    config:
+      apiBaseUrl: https://models.inference.ai.azure.com
+      apiKeyEnvar: GITHUB_TOKEN
+
+defaultTest:
+  options:
+    repeat: 1
+
+tests:
+  # ============================================
+  # WAITING FOR USER - Should return reason: "waiting_for_user"
+  # ============================================
+
+  - description: "Agent asked clarifying question - WAITING_FOR_USER"
+    vars:
+      time_since_activity: "45"
+      message_completed: "true"
+      output_tokens: "150"
+      last_user_message: "Help me set up a database"
+      last_assistant_response: |
+        I'd be happy to help you set up a database! Before I proceed, I have a few questions:
+        
+        1. What type of database do you need? (PostgreSQL, MySQL, MongoDB, SQLite, etc.)
+        2. Is this for development or production?
+        3. Do you have any specific hosting preferences?
+        
+        Please let me know your preferences so I can provide the most relevant setup.
+      tool_calls: "(none)"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.reason === "waiting_for_user" && result.stuck === false;
+
+  - description: "Agent asking for confirmation - WAITING_FOR_USER"
+    vars:
+      time_since_activity: "60"
+      message_completed: "true"
+      output_tokens: "200"
+      last_user_message: "Delete all test files"
+      last_assistant_response: |
+        I found 15 test files that would be deleted:
+        
+        - test/unit/*.spec.ts (8 files)
+        - test/integration/*.test.ts (4 files)
+        - test/e2e/*.test.ts (3 files)
+        
+        This action cannot be undone. Are you sure you want me to delete all of these files?
+      tool_calls: "glob: completed"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.reason === "waiting_for_user" && result.stuck === false;
+
+  # ============================================
+  # WORKING - Should return reason: "working"
+  # ============================================
+
+  - description: "Tool is running - WORKING"
+    vars:
+      time_since_activity: "30"
+      message_completed: "false"
+      output_tokens: "50"
+      last_user_message: "Run the full test suite"
+      last_assistant_response: "I'll run the full test suite now."
+      tool_calls: "bash: running"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.reason === "working" && result.stuck === false;
+
+  - description: "Multiple tools running - WORKING"
+    vars:
+      time_since_activity: "45"
+      message_completed: "false"
+      output_tokens: "100"
+      last_user_message: "Search the codebase for authentication bugs"
+      last_assistant_response: "Let me search for authentication-related code and potential issues..."
+      tool_calls: |
+        grep: running
+        glob: running
+        read: pending
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.reason === "working" && result.stuck === false;
+
+  # ============================================
+  # GENUINELY STUCK - Should return reason: "genuinely_stuck"
+  # ============================================
+
+  - description: "No output, long delay - GENUINELY_STUCK"
+    vars:
+      time_since_activity: "120"
+      message_completed: "false"
+      output_tokens: "0"
+      last_user_message: "Create a React component for user profile"
+      last_assistant_response: "(no text generated)"
+      tool_calls: "(none)"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.stuck === true && result.shouldNudge === true;
+
+  - description: "Stopped mid-sentence - GENUINELY_STUCK"
+    vars:
+      time_since_activity: "90"
+      message_completed: "false"
+      output_tokens: "45"
+      last_user_message: "Explain how the authentication system works"
+      last_assistant_response: |
+        The authentication system in this project uses JWT tokens. Here's how it works:
+        
+        1. When a user logs in, the server
+      tool_calls: "(none)"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.stuck === true && result.reason === "genuinely_stuck";
+
+  - description: "Listed next steps but stopped - GENUINELY_STUCK"
+    vars:
+      time_since_activity: "75"
+      message_completed: "true"
+      output_tokens: "300"
+      last_user_message: "Implement a complete user registration flow"
+      last_assistant_response: |
+        I've analyzed the codebase. Here's my plan for the registration flow:
+        
+        **Next Steps:**
+        1. Create the registration form component
+        2. Add email validation
+        3. Implement password strength checker
+        4. Add server-side validation
+        5. Set up email verification
+        
+        Starting with step 1...
+      tool_calls: "read: completed"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.stuck === true && result.shouldNudge === true;
+
+  - description: "Tool failed, agent stopped - GENUINELY_STUCK"
+    vars:
+      time_since_activity: "60"
+      message_completed: "true"
+      output_tokens: "80"
+      last_user_message: "Deploy the application to production"
+      last_assistant_response: "I'll deploy the application now."
+      tool_calls: "bash: error - Exit code 1: Permission denied"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.stuck === true;
+
+  # ============================================
+  # COMPLETE - Should return reason: "complete"
+  # ============================================
+
+  - description: "Task finished successfully - COMPLETE"
+    vars:
+      time_since_activity: "30"
+      message_completed: "true"
+      output_tokens: "250"
+      last_user_message: "Add a hello world function to utils.ts"
+      last_assistant_response: |
+        I've added the hello world function to utils.ts:
+        
+        ```typescript
+        export function helloWorld(): string {
+          return "Hello, World!";
+        }
+        ```
+        
+        The function has been added and the file saved. You can now import and use it in your code.
+      tool_calls: "edit: completed"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.stuck === false && (result.reason === "complete" || result.shouldNudge === false);
+
+  - description: "Task done with verification - COMPLETE"
+    vars:
+      time_since_activity: "45"
+      message_completed: "true"
+      output_tokens: "400"
+      last_user_message: "Fix the failing test and verify it passes"
+      last_assistant_response: |
+        I've fixed the failing test. The issue was an incorrect assertion.
+        
+        **Changes made:**
+        - Fixed the expected value in `auth.test.ts` line 42
+        
+        **Verification:**
+        ```
+        npm test -- --testPathPattern=auth
+        
+        PASS  test/auth.test.ts
+          Authentication
+            ✓ should validate JWT tokens (15 ms)
+            ✓ should reject expired tokens (8 ms)
+        
+        Test Suites: 1 passed, 1 total
+        Tests:       2 passed, 2 total
+        ```
+        
+        The test now passes.
+      tool_calls: |
+        edit: completed
+        bash: completed
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.stuck === false && result.reason === "complete";
+
+  # ============================================
+  # EDGE CASES
+  # ============================================
+
+  - description: "Empty context - should handle gracefully"
+    vars:
+      time_since_activity: "10"
+      message_completed: "true"
+      output_tokens: "0"
+      last_user_message: "(empty)"
+      last_assistant_response: "(no text generated)"
+      tool_calls: "(none)"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return typeof result.stuck === "boolean" && typeof result.reason === "string";
+
+  - description: "Very short delay - should not be stuck yet"
+    vars:
+      time_since_activity: "5"
+      message_completed: "false"
+      output_tokens: "20"
+      last_user_message: "Generate a complex algorithm"
+      last_assistant_response: "I'll implement the algorithm..."
+      tool_calls: "(none)"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.stuck === false || result.shouldNudge === false;
+
+outputPath: ./evals/results/stuck-detection-latest.json
