@@ -268,9 +268,9 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
 
     // Build task representation from ALL human messages
     // If only one message, use it directly; otherwise format as numbered conversation history
-    const originalTask = humanMessages[0] || ""
+    // NOTE: This ensures the judge evaluates against the EVOLVING task, not just the first message
     const task = humanMessages.length === 1
-      ? originalTask
+      ? humanMessages[0]
       : humanMessages.map((msg, i) => `[${i + 1}] ${msg}`).join("\n\n")
     
     // Detect research-only tasks (check all human messages, not just first)
@@ -279,7 +279,7 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
                        /do not|don't|no code|research only|just research|only research/i.test(allHumanText)
 
     debug("extractTaskAndResult - humanMessages:", humanMessages.length, "task empty?", !task, "result empty?", !result, "isResearch?", isResearch)
-    if (!originalTask || !result) return null
+    if (!task || !result) return null
     return { task, result, tools: tools.slice(-10).join("\n"), isResearch, humanMessages }
   }
 
