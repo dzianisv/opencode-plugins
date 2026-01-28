@@ -33,6 +33,15 @@ interface StuckEvaluation {
   nudgeMessage?: string
 }
 
+// Types for GenAI post-compression evaluation
+type CompressionAction = "needs_github_update" | "continue_task" | "needs_clarification" | "task_complete" | "error"
+interface CompressionEvaluation {
+  action: CompressionAction
+  hasActiveGitWork: boolean
+  confidence: number
+  nudgeMessage: string
+}
+
 // Debug logging (only when REFLECTION_DEBUG=1)
 function debug(...args: any[]) {
   if (DEBUG) console.error("[Reflection]", ...args)
@@ -632,6 +641,186 @@ Return JSON only:
     }
   }
 
+  /**
+   * Use GenAI to evaluate what to do after context compression.
+   * This provides intelligent, context-aware nudge messages instead of generic ones.
+   * 
+   * Evaluates:
+   * - Whether there's active GitHub work (PR/issue) that needs updating
+   * - Whether the task was in progress and should continue
+   * - Whether clarification is needed due to context loss
+   * - Whether the task was actually complete
+   */
+  async function evaluatePostCompression(
+    sessionId: string,
+    messages: any[]
+  ): Promise<CompressionEvaluation> {
+    const defaultNudge: CompressionEvaluation = {
+      action: "continue_task",
+      hasActiveGitWork: false,
+      confidence: 0.5,
+      nudgeMessage: `Context was just compressed. Please continue with the task where you left off.`
+    }
+    
+    try {
+      // Get fast model for evaluation
+      const fastModel = await getFastModel()
+      if (!fastModel) {
+        debug("No fast model available for compression evaluation, using default")
+        return defaultNudge
+      }
+      
+      // Extract context from messages
+      const humanMessages: string[] = []
+      let lastAssistantText = ""
+      const toolsUsed: string[] = []
+      let hasGitCommands = false
+      let hasPROrIssueRef = false
+      
+      for (const msg of messages) {
+        if (msg.info?.role === "user") {
+          for (const part of msg.parts || []) {
+            if (part.type === "text" && part.text && !part.text.includes("## Reflection:")) {
+              humanMessages.push(part.text.slice(0, 300))
+              break
+            }
+          }
+        }
+        
+        if (msg.info?.role === "assistant") {
+          for (const part of msg.parts || []) {
+            if (part.type === "text" && part.text) {
+              lastAssistantText = part.text.slice(0, 1000)
+            }
+            if (part.type === "tool") {
+              const toolName = part.tool || "unknown"
+              toolsUsed.push(toolName)
+              // Detect git/GitHub related work
+              if (toolName === "bash") {
+                const input = JSON.stringify(part.state?.input || {})
+                if (/\bgh\s+(pr|issue)\b/i.test(input)) {
+                  hasGitCommands = true
+                  hasPROrIssueRef = true
+                }
+                if (/\bgit\s+(commit|push|branch|checkout)\b/i.test(input)) {
+                  hasGitCommands = true
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // Also check text content for PR/issue references
+      const allText = humanMessages.join(" ") + " " + lastAssistantText
+      if (/#\d+|PR\s*#?\d+|issue\s*#?\d+|pull request/i.test(allText)) {
+        hasPROrIssueRef = true
+      }
+      
+      // Build task summary
+      const taskSummary = humanMessages.length === 1
+        ? humanMessages[0]
+        : humanMessages.slice(0, 3).map((m, i) => `[${i + 1}] ${m}`).join("\n")
+      
+      // Build evaluation prompt
+      const prompt = `Evaluate what action to take after context compression in an AI coding session. Return only JSON.
+
+## Original Task(s)
+${taskSummary || "(no task found)"}
+
+## Agent's Last Response (before compression)
+${lastAssistantText || "(no response found)"}
+
+## Tools Used
+${toolsUsed.slice(-10).join(", ") || "(none)"}
+
+## Detected Indicators
+- Git commands used: ${hasGitCommands}
+- PR/Issue references found: ${hasPROrIssueRef}
+
+---
+
+Determine the best action after compression:
+
+1. **needs_github_update**: Agent was working on a PR/issue and should update it with progress before continuing
+2. **continue_task**: Agent should simply continue where it left off
+3. **needs_clarification**: Significant context was lost, user input may be needed
+4. **task_complete**: Task appears to be finished, no action needed
+
+Return JSON only:
+{
+  "action": "needs_github_update" | "continue_task" | "needs_clarification" | "task_complete",
+  "hasActiveGitWork": true/false,
+  "confidence": 0.0-1.0,
+  "nudgeMessage": "Context-aware message to send to the agent"
+}
+
+Guidelines for nudgeMessage:
+- If needs_github_update: Tell agent to use \`gh pr comment\` or \`gh issue comment\` to summarize progress
+- If continue_task: Brief reminder of what they were working on
+- If needs_clarification: Ask agent to summarize current state and what's needed
+- If task_complete: Empty string or brief acknowledgment`
+      
+      // Create evaluation session
+      const { data: evalSession } = await client.session.create({ query: { directory } })
+      if (!evalSession?.id) {
+        return defaultNudge
+      }
+      
+      judgeSessionIds.add(evalSession.id)
+      
+      try {
+        await client.session.promptAsync({
+          path: { id: evalSession.id },
+          body: {
+            model: { providerID: fastModel.providerID, modelID: fastModel.modelID },
+            parts: [{ type: "text", text: prompt }]
+          }
+        })
+        
+        // Wait for response with short timeout
+        const start = Date.now()
+        while (Date.now() - start < GENAI_STUCK_TIMEOUT) {
+          await new Promise(r => setTimeout(r, 1000))
+          const { data: evalMessages } = await client.session.messages({ path: { id: evalSession.id } })
+          const assistantMsg = [...(evalMessages || [])].reverse().find((m: any) => m.info?.role === "assistant")
+          if (!(assistantMsg?.info?.time as any)?.completed) continue
+          
+          for (const part of assistantMsg?.parts || []) {
+            if (part.type === "text" && part.text) {
+              const jsonMatch = part.text.match(/\{[\s\S]*\}/)
+              if (jsonMatch) {
+                const result = JSON.parse(jsonMatch[0])
+                const evaluation: CompressionEvaluation = {
+                  action: result.action || "continue_task",
+                  hasActiveGitWork: !!result.hasActiveGitWork,
+                  confidence: result.confidence ?? 0.5,
+                  nudgeMessage: result.nudgeMessage || defaultNudge.nudgeMessage
+                }
+                
+                debug("GenAI compression evaluation:", sessionId.slice(0, 8), evaluation)
+                return evaluation
+              }
+            }
+          }
+        }
+        
+        // Timeout - use default
+        debug("GenAI compression evaluation timed out:", sessionId.slice(0, 8))
+        return defaultNudge
+      } finally {
+        // Clean up evaluation session
+        try {
+          await client.session.delete({ path: { id: evalSession.id }, query: { directory } })
+        } catch {}
+        judgeSessionIds.delete(evalSession.id)
+      }
+    } catch (e) {
+      debug("Error in GenAI compression evaluation:", e)
+      return defaultNudge
+    }
+  }
+
   // Nudge a stuck session to continue working
   async function nudgeSession(sessionId: string, reason: "reflection" | "compression"): Promise<void> {
     // Clear any pending nudge timer
@@ -657,17 +846,42 @@ Return JSON only:
 
     let nudgeMessage: string
     if (reason === "compression") {
-      // After compression, prompt to update GitHub PR/issue
-      nudgeMessage = `Context was just compressed. Before continuing with the task:
-
-1. **If you have an active GitHub PR or issue for this work**, please add a comment summarizing:
-   - What has been completed so far
-   - Current status and any blockers
-   - Next steps planned
-
-2. Then continue with the original task.
-
-Use \`gh pr comment\` or \`gh issue comment\` to add the update.`
+      // Use GenAI to generate context-aware compression nudge
+      const { data: messages } = await client.session.messages({ path: { id: sessionId } })
+      if (messages && messages.length > 0) {
+        const evaluation = await evaluatePostCompression(sessionId, messages)
+        debug("Post-compression evaluation:", evaluation.action, "confidence:", evaluation.confidence)
+        
+        // Handle different actions
+        if (evaluation.action === "task_complete") {
+          debug("Task appears complete after compression, skipping nudge")
+          await showToast("Task complete (post-compression)", "success")
+          return
+        }
+        
+        nudgeMessage = evaluation.nudgeMessage
+        
+        // Show appropriate toast based on action
+        const toastMsg = evaluation.action === "needs_github_update" 
+          ? "Prompted GitHub update" 
+          : evaluation.action === "needs_clarification"
+            ? "Requested clarification"
+            : "Nudged to continue"
+        
+        try {
+          await client.session.promptAsync({
+            path: { id: sessionId },
+            body: { parts: [{ type: "text", text: nudgeMessage }] }
+          })
+          await showToast(toastMsg, "info")
+        } catch (e) {
+          debug("Failed to nudge session:", e)
+        }
+        return
+      }
+      
+      // Fallback if no messages available
+      nudgeMessage = `Context was just compressed. Please continue with the task where you left off.`
     } else {
       // After reflection feedback, nudge to continue
       nudgeMessage = `Please continue working on the task. The reflection feedback above indicates there are outstanding items to address.`
