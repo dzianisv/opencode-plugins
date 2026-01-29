@@ -102,9 +102,11 @@ Agent completely ignores user's urgent issue.
 
 ### Phase 2: Improve Reflection Plugin Feedback
 
-- [ ] Task 5: Make feedback more actionable
-  - Currently shows missing items but could be more prescriptive
-  - Add: "Run these exact commands:" section
+- [x] Task 5: Make reflection read-only (remove auto-prompts)
+  - Changed strategy: Instead of improving prompts, we removed them entirely
+  - Plugin now only shows toasts (success/warning)
+  - User must manually intervene if task is incomplete
+  - Removed complex stuck detection and nudge logic
 
 - [ ] Task 6: Add deployment detection
   - Check if agent ran `cp ... ~/.config/opencode/plugin/`
