@@ -156,6 +156,79 @@ Found 1542 reflection JSON files across:
 
 - [x] Task 1-8: Research and evaluation phase complete
 
+---
+
+# Feature: Telegram Message Reaction for Agent Activity
+
+Issue: N/A
+Branch: main
+Started: 2026-01-29
+
+## Goal
+
+Add emoji reaction to the most recent Telegram notification message when the agent continues working on a new task/prompt. This provides visual feedback in Telegram that the agent is busy and still working, especially when the user responds via CLI or API.
+
+## Use Case
+
+1. Agent sends notification to Telegram: "Task complete. What's next?"
+2. User replies via CLI: "proceed" or "continue"
+3. Agent receives the prompt and starts working
+4. **NEW**: Agent adds a reaction emoji (e.g., 🔄 or ⏳) to the Telegram message to show it's processing
+5. When task completes, optionally update reaction to ✅ or send new notification
+
+## Tasks
+
+- [ ] Task 1: Research Telegram Bot API for message reactions
+  - Check if `setMessageReaction` API is available
+  - Identify required parameters (chat_id, message_id, reaction)
+
+- [ ] Task 2: Track sent message IDs in telegram.ts
+  - Store message_id when sending notifications
+  - Associate with session_id for later reference
+
+- [ ] Task 3: Add reaction on session.prompt event
+  - Listen for new prompts in existing sessions
+  - Find the most recent Telegram message for that session
+  - Add "working" reaction (🔄 or ⏳)
+
+- [ ] Task 4: Update reaction on session.idle
+  - Change reaction to ✅ when task completes
+  - Or remove reaction and send new notification
+
+- [ ] Task 5: Add tests for reaction functionality
+
+## Implementation Notes
+
+### Telegram API Reference
+```
+POST https://api.telegram.org/bot<token>/setMessageReaction
+{
+  "chat_id": 123456789,
+  "message_id": 42,
+  "reaction": [{"type": "emoji", "emoji": "🔄"}]
+}
+```
+
+### Available Emoji Reactions
+- 🔄 - Processing/Working
+- ⏳ - Waiting/In Progress  
+- ✅ - Complete
+- ❌ - Failed/Error
+- 👀 - Seen/Acknowledged
+
+### State to Track
+```typescript
+interface TelegramMessageState {
+  sessionId: string
+  messageId: number
+  chatId: number
+  timestamp: number
+}
+
+// Store last N messages per session
+const recentMessages = new Map<string, TelegramMessageState>()
+```
+
 ## Current Evaluation Scores
 
 ### Promptfoo Eval (Judge Accuracy) - 2026-01-29
