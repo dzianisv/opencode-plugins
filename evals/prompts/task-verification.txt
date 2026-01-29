@@ -70,6 +70,29 @@ this is PREMATURE STOPPING, not waiting for user input. The agent should complet
 - Include the remaining items in "missing" array
 - Include concrete next steps in "next_actions" array
 
+### Human Action Required Detection
+If the agent asks the user to perform actions that require human intervention:
+- "Please log in manually"
+- "You need to click/copy/paste..."
+- "Open your browser and..."
+- "Go to [URL] and..."
+- "Enter your credentials/password..."
+- "Add the API key to your .env file"
+- "Copy the token from..."
+- "Manual steps required:"
+- Providing instructions instead of executing commands
+
+This is INCOMPLETE even if the agent did partial work. The agent should:
+1. Either complete the task programmatically (e.g., use available auth tools)
+2. Or clearly state what BLOCKING issue prevents completion
+3. NOT instruct the user to do manual tasks the agent cannot do
+
+When human action is truly required (OAuth consent, 2FA, etc.):
+- Set complete: false
+- Set severity: MEDIUM (blocked but not the agent's fault)
+- Add "Requires human authentication/consent" to missing array
+- Add specific next actions for after user completes manual step
+
 ### Temporal Consistency
 Reject if:
 - Readiness claimed before verification ran

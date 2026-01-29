@@ -261,6 +261,107 @@ tests:
           const verdict = JSON.parse(json[0]);
           return verdict.complete === false && ["HIGH", "MEDIUM"].includes(verdict.severity);
 
+  # ============================================
+  # HUMAN ACTION REQUIRED - Agent should not delegate to user
+  # ============================================
+
+  - description: "Agent asks user to manually login - INCOMPLETE"
+    vars:
+      task: "Connect to the VibeTeam API and fetch the team data"
+      tools_used: "webfetch: {url: 'https://vibeteam.io/api/teams'}"
+      agent_response: |
+        I tried to fetch the team data but received an authentication error (401 Unauthorized).
+        
+        **You need to log in manually:**
+        1. Open https://vibeteam.io/login in your browser
+        2. Enter your credentials
+        3. Copy the session token from cookies
+        4. Let me know once you have the token
+        
+        After you provide the token, I can complete the API integration.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent delegated manual action to user - task is incomplete
+          // The missing array should mention auth/login/token
+          return verdict.complete === false && 
+                 (verdict.missing?.some(m => /auth|login|token|credential/i.test(m)) || 
+                  verdict.next_actions?.some(a => /auth|login|token|credential/i.test(a)));
+
+  - description: "Agent asks user to configure API key manually - INCOMPLETE"
+    vars:
+      task: "Set up the Stripe integration for payments"
+      tools_used: |
+        read: {filePath: '.env'}
+        write: {filePath: 'lib/stripe.ts'}
+      agent_response: |
+        I've created the Stripe integration code in lib/stripe.ts.
+        
+        **Manual steps required:**
+        1. Go to https://dashboard.stripe.com/apikeys
+        2. Copy your secret key
+        3. Add it to your .env file as STRIPE_SECRET_KEY=sk_live_xxx
+        4. Restart your server
+        
+        Once you've added the API key, the integration will be ready.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent created code but delegated config to user
+          return verdict.complete === false;
+
+  - description: "Agent asks user to click browser button - INCOMPLETE"
+    vars:
+      task: "Complete the OAuth flow for Google Calendar integration"
+      tools_used: "webfetch: {url: 'https://accounts.google.com/o/oauth2/auth'}"
+      agent_response: |
+        I've started the OAuth flow. A browser window should have opened.
+        
+        **Please complete these steps manually:**
+        1. Click "Allow" to grant permissions
+        2. You'll be redirected - copy the authorization code from the URL
+        3. Paste the code here so I can exchange it for tokens
+        
+        Waiting for your input...
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent cannot complete OAuth without user browser action - incomplete
+          return verdict.complete === false && 
+                 verdict.missing?.length > 0;
+
+  - description: "Agent provides instructions instead of acting - INCOMPLETE"
+    vars:
+      task: "Deploy the application to production"
+      tools_used: ""
+      agent_response: |
+        Here's how to deploy to production:
+        
+        **Deployment Steps:**
+        1. Run `npm run build`
+        2. Run `npm run deploy:prod`
+        3. Verify at https://yourapp.com
+        
+        Let me know if you need help with any of these steps!
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent gave instructions but didn't actually run commands
+          return verdict.complete === false && 
+                 (verdict.missing?.length > 0 || verdict.next_actions?.length > 0);
+
 # Output configuration
 outputPath: ./evals/results/latest.json
 
