@@ -1235,6 +1235,20 @@ Reply with JSON only (no other text):
             return
           }
           
+          // HUMAN ACTION REQUIRED: Show toast to USER, don't send feedback to agent
+          // This handles cases like OAuth consent, 2FA, API key retrieval from dashboard
+          // The agent cannot complete these tasks - it's up to the user
+          if (verdict.requires_human_action) {
+            debug("REQUIRES_HUMAN_ACTION: notifying user, not agent")
+            lastReflectedMsgCount.set(sessionId, humanMsgCount)  // Mark as reflected to prevent retry
+            attempts.delete(attemptKey)  // Reset attempts since this isn't agent's fault
+            
+            // Show helpful toast with what user needs to do
+            const actionHint = verdict.missing?.[0] || "User action required"
+            await showToast(`Action needed: ${actionHint}`, "warning")
+            return
+          }
+          
           // SPECIAL CASE: severity NONE but incomplete
           // If there are NO missing items, agent is legitimately waiting for user input
           // (e.g., asking clarifying questions, presenting options for user to choose)
