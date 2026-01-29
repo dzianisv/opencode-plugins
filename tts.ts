@@ -234,6 +234,41 @@ async function loadConfig(): Promise<TTSConfig> {
 }
 
 /**
+ * Save TTS configuration to file
+ */
+async function saveConfig(config: TTSConfig): Promise<void> {
+  try {
+    // Ensure config directory exists
+    const configDir = join(homedir(), ".config", "opencode")
+    await mkdir(configDir, { recursive: true })
+    await writeFile(TTS_CONFIG_PATH, JSON.stringify(config, null, 2))
+  } catch (e) {
+    console.error("[TTS] Failed to save config:", e)
+  }
+}
+
+/**
+ * Toggle TTS enabled state
+ * @returns new enabled state
+ */
+async function toggleTTS(): Promise<boolean> {
+  const config = await loadConfig()
+  config.enabled = !config.enabled
+  await saveConfig(config)
+  return config.enabled
+}
+
+/**
+ * Set TTS enabled state
+ * @param enabled - whether to enable TTS
+ */
+async function setTTSEnabled(enabled: boolean): Promise<void> {
+  const config = await loadConfig()
+  config.enabled = enabled
+  await saveConfig(config)
+}
+
+/**
  * Check if TTS is enabled
  */
 async function isEnabled(): Promise<boolean> {
@@ -2565,16 +2600,78 @@ async function unsubscribeFromReplies(): Promise<void> {
 // ==================== PLUGIN ====================
 
 export const TTSPlugin: Plugin = async ({ client, directory }) => {
-  // Tool definition required by Plugin interface
-  const tool = {
-    tts: {
-      name: 'tts',
-      description: 'Text-to-speech functionality for OpenCode sessions',
-      execute: async ({ client, params }: { client: any; params: any }) => {
-        // TTS is triggered via session.idle events, not direct tool invocation
-        return 'TTS plugin active - speech triggered on session completion'
-      },
+  // Import zod dynamically since we can't import tool helper directly
+  const { z } = await import("zod")
+  
+  // Tool definition for TTS control - allows the LLM to toggle/control TTS
+  const ttsControlTool = {
+    description: 'Control text-to-speech settings. Use this tool to enable, disable, or check TTS status.',
+    args: {
+      action: z.enum(["on", "off", "toggle", "status"]).describe("Action to perform: 'on' to enable, 'off' to disable, 'toggle' to flip state, 'status' to check current state")
     },
+    async execute(args: { action: "on" | "off" | "toggle" | "status" }): Promise<string> {
+      const { action } = args
+      
+      if (action === "on") {
+        await setTTSEnabled(true)
+        await client.tui.publish({
+          body: {
+            type: "toast",
+            toast: {
+              title: "TTS Enabled",
+              description: "Text-to-speech is now ON",
+              severity: "success"
+            }
+          } as any
+        })
+        return "TTS has been enabled. Text-to-speech will now read responses aloud."
+      } else if (action === "off") {
+        await setTTSEnabled(false)
+        await client.tui.publish({
+          body: {
+            type: "toast",
+            toast: {
+              title: "TTS Muted",
+              description: "Text-to-speech is now OFF",
+              severity: "info"
+            }
+          } as any
+        })
+        return "TTS has been disabled. Text-to-speech is now muted."
+      } else if (action === "toggle") {
+        const newState = await toggleTTS()
+        await client.tui.publish({
+          body: {
+            type: "toast",
+            toast: {
+              title: newState ? "TTS Enabled" : "TTS Muted",
+              description: newState ? "Text-to-speech is now ON" : "Text-to-speech is now OFF",
+              severity: newState ? "success" : "info"
+            }
+          } as any
+        })
+        return newState ? "TTS has been enabled." : "TTS has been disabled."
+      } else {
+        // status
+        const enabled = await isEnabled()
+        await client.tui.publish({
+          body: {
+            type: "toast",
+            toast: {
+              title: "TTS Status",
+              description: enabled ? "TTS is ON" : "TTS is OFF (muted)",
+              severity: "info"
+            }
+          } as any
+        })
+        return enabled ? "TTS is currently enabled." : "TTS is currently disabled (muted)."
+      }
+    }
+  }
+  
+  // Placeholder tool for backward compatibility
+  const tool = {
+    tts: ttsControlTool,
   }
 
   // Directory for storing TTS output data
