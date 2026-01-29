@@ -2862,6 +2862,69 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
 
   return {
     tool,
+    // Intercept /tts command before it goes to the LLM - handles it directly and clears prompt
+    "command.execute.before": async (
+      input: { command: string; sessionID: string; arguments: string },
+      output: { parts: any[] }
+    ) => {
+      if (input.command === "tts") {
+        const arg = (input.arguments || "").trim().toLowerCase()
+        
+        if (arg === "on" || arg === "enable") {
+          await setTTSEnabled(true)
+          await client.tui.publish({
+            body: {
+              type: "toast",
+              toast: {
+                title: "TTS Enabled",
+                description: "Text-to-speech is now ON",
+                severity: "success"
+              }
+            } as any
+          })
+        } else if (arg === "off" || arg === "disable" || arg === "mute") {
+          await setTTSEnabled(false)
+          await client.tui.publish({
+            body: {
+              type: "toast",
+              toast: {
+                title: "TTS Muted",
+                description: "Text-to-speech is now OFF",
+                severity: "info"
+              }
+            } as any
+          })
+        } else if (arg === "status") {
+          const enabled = await isEnabled()
+          await client.tui.publish({
+            body: {
+              type: "toast",
+              toast: {
+                title: "TTS Status",
+                description: enabled ? "TTS is ON" : "TTS is OFF (muted)",
+                severity: "info"
+              }
+            } as any
+          })
+        } else {
+          // Toggle mode (default - no arg or unknown arg)
+          const newState = await toggleTTS()
+          await client.tui.publish({
+            body: {
+              type: "toast",
+              toast: {
+                title: newState ? "TTS Enabled" : "TTS Muted",
+                description: newState ? "Text-to-speech is now ON" : "Text-to-speech is now OFF",
+                severity: newState ? "success" : "info"
+              }
+            } as any
+          })
+        }
+        
+        // Clear parts to prevent sending to LLM
+        output.parts.length = 0
+      }
+    },
     event: async ({ event }: { event: any }) => {
       if (event.type === "session.idle") {
         const sessionId = (event as any).properties?.sessionID
