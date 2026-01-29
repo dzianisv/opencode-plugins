@@ -46,6 +46,31 @@ const TEST_CASES: TestCase[] = [
     task: "What are the top 3 Node.js testing frameworks? Just list them, don't install anything.",
     expectedComplete: true,
     description: "Research task (no code)"
+  },
+  // Real-world scenarios from production sessions
+  {
+    id: "multi-step-test",
+    task: "Create a utils.ts file with an add function, write a test for it, and run the test to verify it works",
+    expectedComplete: true,
+    description: "Multi-step task with test verification"
+  },
+  {
+    id: "commit-without-test",
+    task: "I see some uncommitted files. Commit them, but make sure to run the build first to verify nothing is broken.",
+    expectedComplete: true,
+    description: "Commit with mandatory verification (from real session)"
+  },
+  {
+    id: "fix-and-verify",
+    task: "There's a TypeError in app.js - fix it and run npm test to verify the fix works.",
+    expectedComplete: true,
+    description: "Bug fix with test verification"
+  },
+  {
+    id: "deploy-steps",
+    task: "Deploy the frontend changes: run build, then deploy. Verify deployment succeeded.",
+    expectedComplete: true,
+    description: "Multi-step deployment with verification"
   }
 ]
 

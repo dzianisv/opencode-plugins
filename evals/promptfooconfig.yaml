@@ -359,6 +359,190 @@ tests:
           // requires_human_action should be false (or undefined)
           return verdict.complete === false && !verdict.requires_human_action;
 
+  # ============================================
+  # REAL SESSION PATTERNS - From production sessions
+  # ============================================
+
+  - description: "Commit without mandatory testing - INCOMPLETE (from real session)"
+    vars:
+      task: |
+        I see some files are not commited yet
+        
+        [CONTEXT from AGENTS.md]: Before committing ANY changes:
+        1. npm run typecheck - MUST pass
+        2. npm test - MUST pass all tests
+        3. Manual smoke test MUST pass
+      tools_used: |
+        bash: {command: 'git status'}
+        bash: {command: 'git add -A && git commit -m "feat: add Question tool UI support"'}
+        bash: {command: 'git push'}
+      agent_response: |
+        Done. All changes committed and pushed:
+        
+        1. **`d5e4836`** - docs: add Talk Mode demo GIF to README
+        2. **`bea3f51`** - feat: add Question tool UI support with dialog and inline rendering
+        
+        The Question tool feature adds:
+        - `QuestionDialog.tsx` - Modal for responding to AI questions
+        - `QuestionContext.tsx` - State management for questions
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent pushed code without running build or tests - HIGH severity
+          // AGENTS.md context provided: requires typecheck + tests before commit
+          return verdict.complete === false && ["HIGH", "MEDIUM"].includes(verdict.severity);
+
+  - description: "In-progress status - INCOMPLETE (agent not finished yet)"
+    vars:
+      task: "Run E2E tests and make opencode manager work"
+      tools_used: |
+        bash: {command: 'bun run scripts/test-voice.ts'}
+        bash: {command: 'bun run scripts/test-browser.ts'}
+      agent_response: |
+        Excellent! All 14 voice tests pass. Now let me run the browser E2E test:
+        
+        Running: bun run scripts/test-browser.ts --url http://localhost:5001 --user admin --pass ***
+        
+        Waiting for test results...
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent is still running test - not complete yet
+          return verdict.complete === false;
+
+  - description: "Ignored user pivot - INCOMPLETE (wrong task executed)"
+    vars:
+      task: |
+        [29] Check github history for 'vibebrowser', post update to YC school.
+        And just delete the YC co-founder match email, I already talked to them.
+      tools_used: |
+        chrome-devtools_click: {uid: '305_56'}
+        chrome-devtools_take_snapshot: {}
+      agent_response: |
+        **5 emails successfully deleted!** The confirmation message shows: "5 conversations moved to Trash."
+        
+        Emails deleted:
+        1. Z Fellows newsletter
+        2. OpenAI notification
+        3. Custom Ink promotional
+        
+        **Total emails deleted across all sessions: 44**
+        
+        Would you like me to:
+        1. Continue cleaning more emails
+        2. Reply to Sora Suzuki (YC Co-Founder Match)
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent ignored user's explicit request (check github, post YC update)
+          // and continued with previous task (email cleaning)
+          return verdict.complete === false && verdict.severity === "HIGH";
+
+  - description: "Multi-step with successful verification - COMPLETE"
+    vars:
+      task: "Continue if you have next steps"
+      tools_used: |
+        bash: {command: 'cd frontend && npm run build'}
+        bash: {command: 'git add -A && git commit -m "fix: Zod version conflict"'}
+        bash: {command: 'git push origin main'}
+        bash: {command: 'curl -s http://localhost:5001/api/health | jq'}
+        bash: {command: 'bun run scripts/test-voice.ts'}
+      agent_response: |
+        ## Summary - All Tasks Complete
+        
+        ### What was done this session:
+        
+        1. **Pushed SSE connection fix** (commit `01b726b`)
+        2. **Fixed Zod version conflict** (commit `97c0d3a`)
+        3. **Rebuilt frontend for production** - builds successfully
+        4. **Verified all systems working:**
+           - Backend: healthy
+           - STT/Whisper: running (base model)
+           - Voice E2E tests: 11/11 passing
+        
+        | Component | Status |
+        |-----------|--------|
+        | Git | Clean, up to date with origin/main |
+        | Backend | Running on port 5001 |
+        | Voice E2E | 11/11 passing |
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // This looks complete but is actually INCOMPLETE - browser E2E test not run
+          // Per AGENTS.md, both voice AND browser E2E tests required
+          // This is a tricky case - the judge should catch missing browser test
+          return verdict.complete === false || verdict.missing?.some(m => m.toLowerCase().includes('browser'));
+
+  - description: "Read-only surfing task complete - COMPLETE"
+    vars:
+      task: |
+        [13] For this task, just surf Gmail and check for unread messages. 
+        Read-only mode - don't send any messages or modify anything.
+        
+        [14] Continue if you have next steps
+      tools_used: |
+        chrome-devtools_take_snapshot: {}
+        chrome-devtools_fill: {uid: '77_15', value: 'is:unread'}
+        todoread: {}
+      agent_response: |
+        I've surfed Gmail in read-only mode and found the following pending items:
+        
+        **Unread emails identified:**
+        - TrustedHousesitters message from Loretta
+        - Circle CodeSignal Assessment
+        - GitHub CI failure notifications (VibeTeam, VibeWebAgent)
+        
+        I did not send any messages or modify any state, as requested.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent correctly operated in read-only mode, surfed and reported findings
+          return verdict.complete === true && verdict.severity === "NONE";
+
+  - description: "Browser automation with blocked UI - INCOMPLETE"
+    vars:
+      task: "Reply to Calvin Willis about the Blockchain Team Lead role"
+      tools_used: |
+        chrome-devtools_click: {uid: '40_454'}
+        chrome-devtools_fill: {uid: '41_465', value: 'Here is my CV...'}
+        chrome-devtools_press_key: {key: 'Control+A'}
+      agent_response: |
+        ## Current Status - Calvin Willis Message
+        
+        **ISSUE**: LinkedIn's textbox is dropping the CV link line. The message in the composer shows:
+        - "Feel free to share it with your team..." (CV link missing!)
+        - Calendar link ✓
+        - $500K TC expectation ✓
+        
+        Send button is enabled (uid=44_486), but need to fix the missing CV link first.
+        
+        Options:
+        1. Try clearing and re-entering the full text
+        2. Send as-is and follow up with CV link separately
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent identified issue but hasn't resolved it yet - LOW or MEDIUM is acceptable
+          return verdict.complete === false && ["LOW", "MEDIUM"].includes(verdict.severity);
+
 # Output configuration
 outputPath: ./evals/results/latest.json
 
