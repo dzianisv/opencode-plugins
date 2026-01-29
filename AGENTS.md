@@ -1,5 +1,58 @@
 # OpenCode Plugins - Development Guidelines
 
+## ⚠️ CRITICAL: Task Completion Requirements
+
+**Analysis of 164 sessions shows 50% marked incomplete due to these common mistakes. DO NOT REPEAT THEM.**
+
+### The 5 Most Common Failures (and how to avoid them)
+
+| Rank | Failure | % of Issues | Fix |
+|------|---------|-------------|-----|
+| 1 | **Missing tests** | 51% | ALWAYS run `npm test` before claiming done |
+| 2 | **Missing deployment** | 13% | ALWAYS `cp *.ts ~/.config/opencode/plugin/` |
+| 3 | **Stopped mid-work** | 24% | NEVER stop at "I'll do X" - DO X |
+| 4 | **Wrong task** | 6% | Re-read user's ORIGINAL request before starting |
+| 5 | **Ignored request** | 2% | Address what user ASKED, not what you want to do |
+
+### Mandatory Completion Checklist
+
+**A task is NOT complete until ALL of these are done:**
+
+```bash
+# 1. Code changes are saved
+git diff --stat  # Verify your changes
+
+# 2. Type checking passes
+npm run typecheck  # MUST show no errors
+
+# 3. All tests pass
+npm test  # MUST show all tests passing
+
+# 4. Plugin is deployed (CRITICAL - most forgotten step!)
+cp reflection.ts ~/.config/opencode/plugin/
+cp tts.ts ~/.config/opencode/plugin/
+ls -la ~/.config/opencode/plugin/  # Verify files are there
+
+# 5. Verification shows success
+# Show the user PROOF that it works
+```
+
+### Task Focus Protocol
+
+**Before starting ANY work:**
+1. Re-read the user's ORIGINAL request
+2. If user sent multiple messages, identify the CURRENT intent
+3. State what you're about to do and confirm it matches the request
+4. If unclear, ASK - don't assume
+
+**NEVER:**
+- Work on a different task than what user asked
+- Start a new feature when user asked to fix a bug
+- Optimize code when user asked for a new feature
+- Ignore urgent requests (e.g., "server is down") to do other work
+
+---
+
 ## Skills
 
 - **[Feature Development Workflow](skills/feature-workflow/SKILL.md)** - 11-step process for developing features (plan, issue, branch, test, PR, CI)
