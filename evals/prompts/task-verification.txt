@@ -71,27 +71,42 @@ this is PREMATURE STOPPING, not waiting for user input. The agent should complet
 - Include concrete next steps in "next_actions" array
 
 ### Human Action Required Detection
-If the agent asks the user to perform actions that require human intervention:
-- "Please log in manually"
-- "You need to click/copy/paste..."
-- "Open your browser and..."
-- "Go to [URL] and..."
-- "Enter your credentials/password..."
-- "Add the API key to your .env file"
-- "Copy the token from..."
-- "Manual steps required:"
-- Providing instructions instead of executing commands
 
-This is INCOMPLETE even if the agent did partial work. The agent should:
-1. Either complete the task programmatically (e.g., use available auth tools)
-2. Or clearly state what BLOCKING issue prevents completion
-3. NOT instruct the user to do manual tasks the agent cannot do
+**CRITICAL DISTINCTION:**
+- `requires_human_action: true` = Agent is PHYSICALLY INCAPABLE of completing (needs human browser/credentials/hardware)
+- `requires_human_action: false` = Agent CAN do it but chose to give instructions instead (lazy agent)
 
-When human action is truly required (OAuth consent, 2FA, etc.):
+**Examples of TRUE human action required (requires_human_action: true):**
+- OAuth consent: clicking "Allow" in browser popup
+- 2FA/MFA: entering codes from authenticator app
+- CAPTCHA: solving visual challenges
+- API key retrieval: copying secret keys from web dashboards (Stripe, AWS, etc.)
+- Manual login: entering username/password in browser
+- Physical actions: plugging in devices, clicking hardware buttons
+
+**Examples of agent CAN do but didn't (requires_human_action: false):**
+- Running shell commands: `npm run build`, `npm test`, `docker-compose up`
+- Executing deployment scripts: the agent has bash/terminal access
+- Creating/editing files: the agent has write access
+- Making API calls: the agent can use curl/fetch
+- Installing dependencies: `npm install`, `pip install`
+
+**Key test:** Ask "Could the agent run this command or action using its available tools (bash, edit, write, webfetch)?" 
+- YES → requires_human_action: false
+- NO (needs browser UI, credentials, physical access) → requires_human_action: true
+
+When human action is truly required (OAuth consent, 2FA, API key retrieval, manual login):
 - Set complete: false
+- Set requires_human_action: true
 - Set severity: MEDIUM (blocked but not the agent's fault)
-- Add "Requires human authentication/consent" to missing array
-- Add specific next actions for after user completes manual step
+- Add specific description of what user needs to do in feedback
+- Add "User must provide [token/key/code]" to missing array
+
+When agent CAN do the work but chose to give instructions instead:
+- Set complete: false
+- Set requires_human_action: false (agent should do it, not user)
+- Set severity: LOW or MEDIUM
+- Add the commands agent should run to next_actions array
 
 ### Temporal Consistency
 Reject if:
@@ -105,6 +120,7 @@ Reply with JSON only (no other text):
 {
   "complete": true/false,
   "severity": "NONE|LOW|MEDIUM|HIGH|BLOCKER",
+  "requires_human_action": true/false,
   "feedback": "brief explanation of verdict",
   "missing": ["list of missing required steps or evidence"],
   "next_actions": ["concrete commands or checks to run"]
