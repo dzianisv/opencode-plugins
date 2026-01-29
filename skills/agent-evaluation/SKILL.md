@@ -12,19 +12,25 @@ Evaluate AI agent task execution using world-class LLM-as-judge patterns from De
 
 ## Output Format
 
-```json
-{
-  "benchmark": "task-completion",
-  "input": "<original user prompt>",
-  "output": "<agent final output>",
-  "score": 4,
-  "verdict": "MOSTLY_COMPLETE",
-  "feedback": "Agent completed the task but used 3 extra tool calls.",
-  "recommendations": [
-    "Combine file reads into batch operation",
-    "Validate input before processing"
-  ]
-}
+Evaluation results are saved to `evals/results/eval-${yyyy-mm-dd-hh-mm}-${commit_id}.md`
+
+### Results Table
+
+| Task Input | Agent Output | Reflection Input | Reflection Output | Score | Verdict | Feedback |
+|------------|--------------|------------------|-------------------|-------|---------|----------|
+| Create hello.js... | I've created hello.js with... | Task: Create hello.js Agent Output: ... | Task complete | 5/5 | COMPLETE | Agent produced output; Found completion indicators |
+| Fix the bug... | I found the issue and... | Task: Fix bug Agent Output: ... | (none) | 3/5 | PARTIAL | Agent produced output; Missing reflection |
+
+### Run Evaluation
+
+```bash
+# Run E2E evaluation
+npx tsx eval.ts
+
+# Or via npm
+npm run eval:e2e
+
+# Output saved to: evals/results/eval-2026-01-28-12-30-abc1234.md
 ```
 
 ---
