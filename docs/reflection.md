@@ -285,3 +285,101 @@ Reflection data saved to:
   ├── <session>_<timestamp>.json  # Full evaluation data
   └── verdict_<session>.json       # Signal for TTS/Telegram
 ```
+
+## Evaluation Framework
+
+The reflection plugin's GenAI functions are evaluated using **[promptfoo](https://promptfoo.dev/)**, an open-source LLM evaluation framework.
+
+### Why Promptfoo?
+
+| Pros | Cons |
+|------|------|
+| Easy YAML configuration | Config-driven (less flexible for complex evals) |
+| Good CLI/UI for viewing results | Limited statistical analysis |
+| Multi-provider support | Not designed for large-scale research |
+| Open source, actively maintained | |
+| Great for CI/CD integration | |
+
+### Alternatives Considered
+
+| Framework | Best For | Language |
+|-----------|----------|----------|
+| **[Braintrust](https://braintrust.dev/)** | Production evals, logging, tracing | TypeScript/Python |
+| **[LangSmith](https://smith.langchain.com/)** | LangChain ecosystem, tracing | Python/TypeScript |
+| **[DeepEval](https://github.com/confident-ai/deepeval)** | Unit testing style, pytest-like | Python |
+| **[RAGAS](https://github.com/explodinggradients/ragas)** | RAG-specific evaluations | Python |
+| **[OpenAI Evals](https://github.com/openai/evals)** | Research-grade benchmarks | Python |
+
+### Why Promptfoo for This Project?
+
+1. **Simple YAML config** - easy to add test cases without code changes
+2. **TypeScript-friendly** - works well with Node.js projects
+3. **CI integration** - runs in GitHub Actions easily
+4. **Good enough** - for evaluating 3 GenAI functions, it's sufficient
+
+For more complex evaluation needs (statistical significance, human-in-the-loop, large datasets), consider Braintrust or building a custom solution.
+
+### Evaluation Files
+
+```
+evals/
+├── promptfooconfig.yaml      # Task verification judge (15 tests)
+├── stuck-detection.yaml      # Stuck detection (12 tests)
+├── post-compression.yaml     # Post-compression nudges (12 tests)
+├── agent-evaluation.yaml     # Agent task evaluation
+├── prompts/
+│   ├── task-verification.txt # Judge prompt template
+│   ├── stuck-detection.txt   # Stuck detection prompt
+│   └── post-compression.txt  # Post-compression prompt
+└── results/
+    └── latest.json           # Most recent eval results
+```
+
+### Running Evaluations
+
+```bash
+# Run all task verification tests
+npx promptfoo eval --config evals/promptfooconfig.yaml
+
+# Run stuck detection tests
+npx promptfoo eval --config evals/stuck-detection.yaml
+
+# Run post-compression tests
+npx promptfoo eval --config evals/post-compression.yaml
+
+# View results in browser
+npx promptfoo view
+```
+
+### Test Case Structure
+
+```yaml
+tests:
+  - description: "Agent asks user to manually login - INCOMPLETE"
+    vars:
+      task: "Connect to the API and fetch data"
+      tools_used: "webfetch: {url: 'https://api.example.com'}"
+      agent_response: |
+        I received a 401 error. Please log in manually...
+    assert:
+      - type: javascript
+        value: |
+          const verdict = JSON.parse(output.match(/\{[\s\S]*\}/)[0]);
+          return verdict.complete === false;
+```
+
+### Current Test Coverage
+
+| Eval File | Tests | Pass Rate |
+|-----------|-------|-----------|
+| Task Verification | 15 | 100% |
+| Stuck Detection | 12 | 100% |
+| Post-Compression | 12 | 100% |
+
+### Key Test Categories
+
+1. **Complete Tasks** - Agent finished work correctly
+2. **Incomplete Tasks** - Tests/builds failing, missing steps
+3. **Human Action Required** - Agent delegates manual actions to user
+4. **Edge Cases** - Empty responses, claims without evidence
+5. **Flaky Tests** - Dismissed without proper mitigation
