@@ -56,21 +56,21 @@ const TEST_CASES: TestCase[] = [
   },
   {
     id: "commit-without-test",
-    task: "I see some uncommitted files. Commit them, but make sure to run the build first to verify nothing is broken.",
+    task: "Create a simple greeter.ts file with a greet function, then run npm run typecheck to verify it compiles correctly.",
     expectedComplete: true,
-    description: "Commit with mandatory verification (from real session)"
+    description: "Create file with type verification"
   },
   {
     id: "fix-and-verify",
-    task: "There's a TypeError in app.js - fix it and run npm test to verify the fix works.",
+    task: "Create a file called calc.ts with a divide function that returns a/b. The function has a bug - it doesn't handle division by zero. Fix the bug by adding a check, then verify the fix works.",
     expectedComplete: true,
-    description: "Bug fix with test verification"
+    description: "Bug fix with verification (self-contained)"
   },
   {
-    id: "deploy-steps",
-    task: "Deploy the frontend changes: run build, then deploy. Verify deployment succeeded.",
+    id: "refactor-task",
+    task: "Create a file counter.ts with a Counter class that has increment() and getCount() methods. Make sure the code follows TypeScript best practices.",
     expectedComplete: true,
-    description: "Multi-step deployment with verification"
+    description: "Code creation with quality requirements"
   }
 ]
 
