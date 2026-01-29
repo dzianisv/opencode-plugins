@@ -20,6 +20,7 @@
     "eval:stuck": "cd evals && npx promptfoo eval -c stuck-detection.yaml",
     "eval:compression": "cd evals && npx promptfoo eval -c post-compression.yaml",
     "eval:agent": "cd evals && npx promptfoo eval -c agent-evaluation.yaml",
+    "eval:e2e": "npx tsx eval.ts",
     "eval:view": "npx promptfoo view --latest"
   },
   "keywords": [
