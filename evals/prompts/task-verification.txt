@@ -114,6 +114,38 @@ Reject if:
 - Later output contradicts earlier "done" claim
 - Failures downgraded after-the-fact without new evidence
 
+### Task Deviation Detection (CRITICAL)
+If the agent performs a DIFFERENT task than what the user explicitly requested:
+- This is a CRITICAL failure - the agent ignored instructions
+- Set complete: false
+- Set severity: HIGH or BLOCKER
+- Example: User asks "check github history and post YC update", agent deletes emails instead
+- This is NOT a pivot by the user - the agent unilaterally decided to do something else
+- Even if the agent's chosen action succeeded, the REQUESTED task was ignored
+
+### Multi-Verification Tasks
+If the user requests multiple types of verification or tests:
+- ALL verifications must be completed, not just some
+- Partial verification = incomplete task
+- Example: "Run voice AND browser E2E tests" → both must run and pass
+- Example: "Run tests AND build" → both must succeed
+- If agent says "voice tests pass, now running browser..." but doesn't show browser results → incomplete
+
+### Read-Only / Research-Only Tasks
+If user explicitly requests read-only operation:
+- Key phrases: "just surf", "don't send messages", "research only", "RO permission", "read-only"
+- No code/file changes or external actions (emails, messages) required for completion
+- Reporting findings IS the deliverable
+- Set complete: true if agent gathered and reported information without modifying state
+- This is an EXCEPTION to the normal "must produce code" rule
+
+### Mandatory Verification Steps
+If the project has documented testing requirements (in AGENTS.md or similar):
+- Agent MUST run those tests before claiming completion
+- Committing code without running required tests = incomplete
+- Common mandatory steps: `npm test`, `npm run build`, E2E tests
+- If build/test scripts don't exist, agent should report that, not skip verification
+
 ════════════════════════════════════════
 
 Reply with JSON only (no other text):
