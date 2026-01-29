@@ -70,6 +70,44 @@ this is PREMATURE STOPPING, not waiting for user input. The agent should complet
 - Include the remaining items in "missing" array
 - Include concrete next steps in "next_actions" array
 
+### Human Action Required Detection
+
+**CRITICAL DISTINCTION:**
+- `requires_human_action: true` = Agent is PHYSICALLY INCAPABLE of completing (needs human browser/credentials/hardware)
+- `requires_human_action: false` = Agent CAN do it but chose to give instructions instead (lazy agent)
+
+**Examples of TRUE human action required (requires_human_action: true):**
+- OAuth consent: clicking "Allow" in browser popup
+- 2FA/MFA: entering codes from authenticator app
+- CAPTCHA: solving visual challenges
+- API key retrieval: copying secret keys from web dashboards (Stripe, AWS, etc.)
+- Manual login: entering username/password in browser
+- Physical actions: plugging in devices, clicking hardware buttons
+
+**Examples of agent CAN do but didn't (requires_human_action: false):**
+- Running shell commands: `npm run build`, `npm test`, `docker-compose up`
+- Executing deployment scripts: the agent has bash/terminal access
+- Creating/editing files: the agent has write access
+- Making API calls: the agent can use curl/fetch
+- Installing dependencies: `npm install`, `pip install`
+
+**Key test:** Ask "Could the agent run this command or action using its available tools (bash, edit, write, webfetch)?" 
+- YES → requires_human_action: false
+- NO (needs browser UI, credentials, physical access) → requires_human_action: true
+
+When human action is truly required (OAuth consent, 2FA, API key retrieval, manual login):
+- Set complete: false
+- Set requires_human_action: true
+- Set severity: MEDIUM (blocked but not the agent's fault)
+- Add specific description of what user needs to do in feedback
+- Add "User must provide [token/key/code]" to missing array
+
+When agent CAN do the work but chose to give instructions instead:
+- Set complete: false
+- Set requires_human_action: false (agent should do it, not user)
+- Set severity: LOW or MEDIUM
+- Add the commands agent should run to next_actions array
+
 ### Temporal Consistency
 Reject if:
 - Readiness claimed before verification ran
@@ -82,6 +120,7 @@ Reply with JSON only (no other text):
 {
   "complete": true/false,
   "severity": "NONE|LOW|MEDIUM|HIGH|BLOCKER",
+  "requires_human_action": true/false,
   "feedback": "brief explanation of verdict",
   "missing": ["list of missing required steps or evidence"],
   "next_actions": ["concrete commands or checks to run"]

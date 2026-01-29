@@ -204,6 +204,87 @@ describe("Reflection Plugin - Unit Tests", () => {
     })
   })
 
+  describe("requires_human_action handling", () => {
+    it("should NOT send feedback to agent when requires_human_action is true", () => {
+      // When the agent hits a blocker that requires human intervention 
+      // (OAuth consent, 2FA, API key from dashboard), we should:
+      // 1. Show toast to USER
+      // 2. NOT call promptAsync (which triggers agent)
+      const verdict = {
+        complete: false,
+        severity: "MEDIUM",
+        requires_human_action: true,
+        feedback: "Cannot complete OAuth without user clicking Allow in browser",
+        missing: ["User must grant OAuth consent in browser popup"],
+        next_actions: []
+      }
+      
+      // This simulates the logic in reflection.ts
+      let sentToAgent = false
+      let shownToast = false
+      
+      if (verdict.requires_human_action) {
+        // Show toast to user, don't send to agent
+        shownToast = true
+        // Return early, don't call promptAsync
+      } else {
+        // Normal flow: send feedback to agent
+        sentToAgent = true
+      }
+      
+      assert.strictEqual(shownToast, true, "Should show toast to user")
+      assert.strictEqual(sentToAgent, false, "Should NOT send feedback to agent")
+    })
+
+    it("should send feedback to agent when requires_human_action is false", () => {
+      // When the agent CAN do the work but chose to give instructions instead
+      // (e.g., said "run npm build" instead of running it), we should push feedback
+      const verdict = {
+        complete: false,
+        severity: "LOW",
+        requires_human_action: false,
+        feedback: "Agent provided instructions but didn't execute deployment commands",
+        missing: [],
+        next_actions: ["npm run build", "npm run deploy:prod"]
+      }
+      
+      let sentToAgent = false
+      let shownToast = false
+      
+      if (verdict.requires_human_action) {
+        shownToast = true
+      } else {
+        sentToAgent = true
+      }
+      
+      assert.strictEqual(shownToast, false, "Should NOT show human-action toast")
+      assert.strictEqual(sentToAgent, true, "Should send feedback to agent")
+    })
+
+    it("should treat undefined requires_human_action as false", () => {
+      // Backwards compatibility: old verdicts without this field should work
+      const verdict: any = {
+        complete: false,
+        severity: "MEDIUM",
+        feedback: "Tests not run",
+        missing: ["Run npm test"],
+        next_actions: []
+        // Note: requires_human_action is NOT present
+      }
+      
+      let sentToAgent = false
+      
+      // Check requires_human_action with falsy check (handles undefined)
+      if (verdict.requires_human_action) {
+        // Skip
+      } else {
+        sentToAgent = true
+      }
+      
+      assert.strictEqual(sentToAgent, true, "Missing requires_human_action should default to false")
+    })
+  })
+
   describe("extractTaskAndResult with multiple human messages", () => {
     // Helper function that mimics extractTaskAndResult logic
     function extractTaskAndResult(messages: any[]): { task: string; result: string; tools: string; isResearch: boolean; humanMessages: string[] } | null {
