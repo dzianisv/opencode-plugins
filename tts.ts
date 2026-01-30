@@ -58,7 +58,156 @@ const lastTelegramMessages = new Map<string, TelegramMessageRef>()
 // Config file path for persistent TTS settings
 const TTS_CONFIG_PATH = join(homedir(), ".config", "opencode", "tts.json")
 
-// Global speech lock - prevents multiple agents from speaking simultaneously
+// Global playback process tracking
+let currentPlaybackProcess: ReturnType<typeof exec> | null = null
+
+/**
+ * Stop currently playing audio immediately
+ */
+function stopCurrentPlayback() {
+  if (currentPlaybackProcess) {
+    try {
+      currentPlaybackProcess.kill()
+    } catch {}
+    currentPlaybackProcess = null
+  }
+}
+
+
+// ==================== GLOBAL CONSTANTS ====================
+
+const TTS_STOP_SIGNAL_PATH = join(homedir(), ".config", "opencode", "tts_stop_signal");
+
+// ... (other global constants)
+
+// ==================== STOP SIGNAL FUNCTIONS ====================
+
+/**
+ * Creates a global stop signal to halt all active TTS operations.
+ * This is used to interrupt speech immediately when the user commands it.
+ */
+async function triggerGlobalStop(): Promise<void> {
+  try {
+    const content = JSON.stringify({
+      timestamp: Date.now(),
+      triggeredBy: process.pid
+    });
+    await writeFile(TTS_STOP_SIGNAL_PATH, content);
+  } catch (e) {
+    console.error("[TTS] Failed to create stop signal:", e);
+  }
+}
+
+/**
+ * Checks if a stop signal has been triggered recently.
+ * @returns true if TTS should stop
+ */
+async function shouldStop(): Promise<boolean> {
+  try {
+    const content = await readFile(TTS_STOP_SIGNAL_PATH, "utf-8");
+    const signal = JSON.parse(content);
+    // Consider the signal active for 2 seconds
+    return Date.now() - signal.timestamp < 2000;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Clears the stop signal.
+ */
+async function clearStopSignal(): Promise<void> {
+  try {
+    await unlink(TTS_STOP_SIGNAL_PATH);
+  } catch {}
+}
+
+/**
+ * Execute command and track process for cancellation.
+ * Enhanced to respect global stop signal.
+ */
+async function execAndTrack(command: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    // If TTS is disabled or stop signal is active, don't start playback
+    if (process.env.TTS_DISABLED === "1") {
+      resolve();
+      return;
+    }
+    
+    // Check global stop signal before starting
+    // We can't use await here easily inside the Promise executor without wrapping
+    // so we'll just check the env var which is the primary disable mechanism
+    // For the file-based check, we rely on the caller (playAudioFile)
+    
+    const proc = exec(command);
+    currentPlaybackProcess = proc;
+    
+    // Poll for stop signal while playing
+    const stopCheckInterval = setInterval(async () => {
+      if (await shouldStop()) {
+        if (currentPlaybackProcess === proc) {
+          try {
+            proc.kill(); // Kill the process immediately
+          } catch {}
+          currentPlaybackProcess = null;
+        }
+        clearInterval(stopCheckInterval);
+        // We resolve successfully because "stopping" is a valid completion state for the user
+        resolve(); 
+      }
+    }, 100);
+    
+    proc.on("exit", (code) => {
+      clearInterval(stopCheckInterval);
+      if (currentPlaybackProcess === proc) {
+        currentPlaybackProcess = null;
+      }
+      if (code === 0 || code === null) { // null if killed
+        resolve();
+      } else {
+        // If killed by us (signal), treat as success
+        // But we can't easily distinguish signal kill from error here without more state
+        // For 'afplay'/'paplay', a kill usually results in a non-zero exit code or null
+        // We'll treat errors as warnings but resolve to not break the flow
+        resolve();
+      }
+    });
+    
+    proc.on("error", (err) => {
+      clearInterval(stopCheckInterval);
+      if (currentPlaybackProcess === proc) {
+        currentPlaybackProcess = null;
+      }
+      // Log error but resolve to prevent crashing the plugin
+      console.error("[TTS] Audio playback error:", err);
+      resolve();
+    });
+  });
+}
+
+/**
+ * Play audio file using platform-specific command
+ */
+async function playAudioFile(audioPath: string): Promise<void> {
+  // Check if TTS is enabled before playing
+  const enabled = await isEnabled();
+  if (!enabled) return;
+
+  // Check for global stop signal
+  if (await shouldStop()) return;
+
+  if (platform() === "darwin") {
+    await execAndTrack(`afplay "${audioPath}"`);
+  } else {
+    try {
+      await execAndTrack(`paplay "${audioPath}"`);
+    } catch {
+      await execAndTrack(`aplay "${audioPath}"`);
+    }
+  }
+}
+
+
 const SPEECH_LOCK_PATH = join(homedir(), ".config", "opencode", "speech.lock")
 const SPEECH_LOCK_TIMEOUT = 120000  // Max speech duration (2 minutes)
 const SPEECH_QUEUE_DIR = join(homedir(), ".config", "opencode", "speech-queue")
@@ -284,6 +433,11 @@ async function setTTSEnabled(enabled: boolean): Promise<void> {
   const config = await loadConfig()
   config.enabled = enabled
   await saveConfig(config)
+  
+  // If disabled, stop current playback immediately
+  if (!enabled) {
+    stopCurrentPlayback()
+  }
 }
 
 /**
@@ -835,17 +989,13 @@ async function speakWithChatterboxServerAndGetPath(text: string, config: TTSConf
         }
         
         // Play the audio
-        if (platform() === "darwin") {
-          await execAsync(`afplay "${outputPath}"`)
-        } else {
-          try {
-            await execAsync(`paplay "${outputPath}"`)
-          } catch {
-            await execAsync(`aplay "${outputPath}"`)
-          }
+        try {
+          await playAudioFile(outputPath)
+          // Return the path - caller is responsible for cleanup
+          resolve({ success: true, audioPath: outputPath })
+        } catch {
+          resolve({ success: false })
         }
-        // Return the path - caller is responsible for cleanup
-        resolve({ success: true, audioPath: outputPath })
       } catch {
         resolve({ success: false })
       }
@@ -936,15 +1086,7 @@ async function speakWithChatterboxAndGetPath(text: string, config: TTSConfig): P
       
       try {
         // Play the audio
-        if (platform() === "darwin") {
-          await execAsync(`afplay "${outputPath}"`)
-        } else {
-          try {
-            await execAsync(`paplay "${outputPath}"`)
-          } catch {
-            await execAsync(`aplay "${outputPath}"`)
-          }
-        }
+        await playAudioFile(outputPath)
         // Return the path - caller is responsible for cleanup
         resolve({ success: true, audioPath: outputPath })
       } catch {
@@ -1396,15 +1538,7 @@ async function speakWithCoquiAndGetPath(text: string, config: TTSConfig): Promis
       
       try {
         // Play the audio
-        if (platform() === "darwin") {
-          await execAsync(`afplay "${outputPath}"`)
-        } else {
-          try {
-            await execAsync(`paplay "${outputPath}"`)
-          } catch {
-            await execAsync(`aplay "${outputPath}"`)
-          }
-        }
+        await playAudioFile(outputPath)
         // Return the path - caller is responsible for cleanup
         resolve({ success: true, audioPath: outputPath })
       } catch {
@@ -1454,17 +1588,13 @@ async function speakWithCoquiServerAndGetPath(text: string, config: TTSConfig): 
         }
         
         // Play the audio
-        if (platform() === "darwin") {
-          await execAsync(`afplay "${outputPath}"`)
-        } else {
-          try {
-            await execAsync(`paplay "${outputPath}"`)
-          } catch {
-            await execAsync(`aplay "${outputPath}"`)
-          }
+        try {
+          await playAudioFile(outputPath)
+          // Return the path - caller is responsible for cleanup
+          resolve({ success: true, audioPath: outputPath })
+        } catch {
+          resolve({ success: false })
         }
-        // Return the path - caller is responsible for cleanup
-        resolve({ success: true, audioPath: outputPath })
       } catch {
         resolve({ success: false })
       }
@@ -1878,11 +2008,14 @@ async function speakWithOS(text: string, config: TTSConfig): Promise<boolean> {
   const voice = opts.voice || "Samantha"
   const rate = opts.rate || 200
   
+  // Check if enabled first
+  if (!(await isEnabled())) return false
+
   try {
     if (platform() === "darwin") {
-      await execAsync(`say -v "${voice}" -r ${rate} '${escaped}'`)
+      await execAndTrack(`say -v "${voice}" -r ${rate} '${escaped}'`)
     } else {
-      await execAsync(`espeak '${escaped}'`)
+      await execAndTrack(`espeak '${escaped}'`)
     }
     return true
   } catch {
@@ -2598,6 +2731,14 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
     const gotTurn = await waitForSpeechTurn(ticketId, 180000) // 3 min timeout
     if (!gotTurn) {
       await debugLog(`Failed to acquire speech turn for ${sessionId}`)
+      return
+    }
+
+    // Check if TTS is still enabled after waiting in queue
+    if (!(await isEnabled())) {
+      await debugLog(`TTS disabled while waiting in queue, skipping`)
+      await releaseSpeechLock(ticketId)
+      await removeSpeechTicket(ticketId)
       return
     }
 
