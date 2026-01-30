@@ -29,6 +29,15 @@ import { join } from "path"
 import { homedir, tmpdir, platform } from "os"
 import * as net from "net"
 
+// Import Telegram functions from centralized module
+import {
+  sendTelegramNotification as sendTelegramNotificationCore,
+  updateMessageReaction as updateMessageReactionCore,
+  isFfmpegAvailable as isFfmpegAvailableCore,
+  convertWavToOgg as convertWavToOggCore,
+  initSupabaseClient as initSupabaseClientCore,
+} from "./telegram.js"
+
 const execAsync = promisify(exec)
 
 // Maximum characters to read (to avoid very long speeches)
@@ -36,6 +45,15 @@ const MAX_SPEECH_LENGTH = 1000
 
 // Track sessions we've already spoken for
 const spokenSessions = new Set<string>()
+
+// Track last Telegram message per session for reaction updates
+// When a new task starts in a session, we update the previous message's reaction
+interface TelegramMessageRef {
+  chatId: number
+  messageId: number
+  timestamp: number
+}
+const lastTelegramMessages = new Map<string, TelegramMessageRef>()
 
 // Config file path for persistent TTS settings
 const TTS_CONFIG_PATH = join(homedir(), ".config", "opencode", "tts.json")
@@ -1880,175 +1898,40 @@ const DEFAULT_UPDATE_REACTION_URL = "https://slqxwymujuoipyiqscrl.supabase.co/fu
 
 /**
  * Check if ffmpeg is available for audio conversion
+ * (wrapper around centralized telegram.ts function)
  */
 async function isFfmpegAvailable(): Promise<boolean> {
-  try {
-    await execAsync("which ffmpeg")
-    return true
-  } catch {
-    return false
-  }
+  return isFfmpegAvailableCore()
 }
 
 /**
  * Convert WAV file to OGG (Opus) format for Telegram voice messages
- * Returns the path to the OGG file, or null if conversion failed
+ * (wrapper around centralized telegram.ts function)
  */
 async function convertWavToOgg(wavPath: string): Promise<string | null> {
-  const oggPath = wavPath.replace(/\.wav$/i, ".ogg")
-  
-  try {
-    // Use ffmpeg to convert WAV to OGG with Opus codec
-    // -c:a libopus: Use Opus codec (required for Telegram voice)
-    // -b:a 32k: 32kbps bitrate (good quality for speech)
-    // -ar 48000: 48kHz sample rate (Opus standard)
-    // -ac 1: Mono audio (voice doesn't need stereo)
-    await execAsync(
-      `ffmpeg -y -i "${wavPath}" -c:a libopus -b:a 32k -ar 48000 -ac 1 "${oggPath}"`,
-      { timeout: 30000 }
-    )
-    return oggPath
-  } catch (err) {
-    console.error("[TTS] Failed to convert WAV to OGG:", err)
-    return null
-  }
+  return convertWavToOggCore(wavPath)
 }
 
 /**
  * Send notification to Telegram via Supabase Edge Function
+ * (wrapper around centralized telegram.ts function)
+ * 
+ * NOTE: The `context.directory` should be the SESSION's directory (from session info),
+ * NOT the plugin's closure directory. This ensures correct routing when multiple
+ * git worktrees share the same OpenCode server.
  */
 async function sendTelegramNotification(
   text: string,
   voicePath: string | null,
   config: TTSConfig,
   context?: { model?: string; directory?: string; sessionId?: string }
-): Promise<{ success: boolean; error?: string }> {
-  const telegramConfig = config.telegram
-  if (!telegramConfig?.enabled) {
-    return { success: false, error: "Telegram notifications disabled" }
-  }
-
-  // Get UUID from config or environment variable
-  const uuid = telegramConfig.uuid || process.env.TELEGRAM_NOTIFICATION_UUID
-  if (!uuid) {
-    return { success: false, error: "No UUID configured for Telegram notifications" }
-  }
-
-  const serviceUrl = telegramConfig.serviceUrl || DEFAULT_TELEGRAM_SERVICE_URL
-  const sendText = telegramConfig.sendText !== false
-  const sendVoice = telegramConfig.sendVoice !== false
-
-  try {
-    const body: { 
-      uuid: string
-      text?: string
-      voice_base64?: string
-      session_id?: string
-      directory?: string 
-    } = { uuid }
-
-    // Add session context for reply support
-    if (context?.sessionId) {
-      body.session_id = context.sessionId
-    }
-    if (context?.directory) {
-      body.directory = context.directory
-    }
-
-    // Add text if enabled
-    if (sendText && text) {
-      // Build clean header: {directory} | {session_id} | {model}
-      // Format: "vibe.2 | ses_3fee5a2b1c4d | claude-opus-4.5"
-      const dirName = context?.directory?.split("/").pop() || null
-      const sessionId = context?.sessionId || null
-      const modelName = context?.model || null
-
-      const headerParts = [dirName, sessionId, modelName].filter(Boolean)
-      const header = headerParts.join(" | ")
-
-      // Add reply hint if session context is provided (enables reply routing)
-      const replyHint = sessionId 
-        ? "\n\n💬 Reply to this message to continue"
-        : ""
-
-      const formattedText = header 
-        ? `${header}\n${"─".repeat(Math.min(40, header.length))}\n\n${text}${replyHint}`
-        : `${text}${replyHint}`
-      
-      // Truncate to Telegram's limit (leave room for header and hint)
-      body.text = formattedText.slice(0, 3800)
-    }
-
-    // Add voice if enabled and path provided
-    if (sendVoice && voicePath) {
-      try {
-        // First check if ffmpeg is available
-        const ffmpegAvailable = await isFfmpegAvailable()
-        
-        let audioPath = voicePath
-        let oggPath: string | null = null
-        
-        if (ffmpegAvailable && voicePath.endsWith(".wav")) {
-          // Convert WAV to OGG for better Telegram compatibility
-          oggPath = await convertWavToOgg(voicePath)
-          if (oggPath) {
-            audioPath = oggPath
-          }
-        }
-
-        // Read the audio file and encode to base64
-        const audioData = await readFile(audioPath)
-        body.voice_base64 = audioData.toString("base64")
-
-        // Clean up converted OGG file
-        if (oggPath) {
-          await unlink(oggPath).catch(() => {})
-        }
-      } catch (err) {
-        console.error("[TTS] Failed to read voice file for Telegram:", err)
-        // Continue without voice - text notification is still valuable
-      }
-    }
-
-    // Only send if we have something to send
-    if (!body.text && !body.voice_base64) {
-      return { success: false, error: "No content to send" }
-    }
-
-    // Send to Supabase Edge Function
-    // Supabase Edge Functions require Authorization header with anon key
-    const supabaseKey = telegramConfig.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY
-    const response = await fetch(serviceUrl, {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${supabaseKey}`,
-        "apikey": supabaseKey,
-      },
-      body: JSON.stringify(body),
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      let errorJson: any = {}
-      try {
-        errorJson = JSON.parse(errorText)
-      } catch {}
-      return { 
-        success: false, 
-        error: errorJson.error || `HTTP ${response.status}: ${errorText.slice(0, 100)}` 
-      }
-    }
-
-    const result = await response.json()
-    return { success: result.success, error: result.error }
-  } catch (err: any) {
-    return { success: false, error: err?.message || "Network error" }
-  }
+): Promise<{ success: boolean; error?: string; messageId?: number; chatId?: number }> {
+  return sendTelegramNotificationCore(text, voicePath, config, context)
 }
 
 /**
  * Update a message reaction in Telegram
+ * (wrapper around centralized telegram.ts function)
  * Used to change from 👀 (received) to 👍 (delivered) after forwarding to OpenCode
  * Note: ✅ is not a valid Telegram reaction emoji, valid ones include: 👍 👎 ❤️ 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡 🥱 🥴 😍 🐳 ❤️‍🔥 🌚 🌭 💯 🤣 ⚡️ 🍌 🏆 💔 🤨 😐 🍓 🍾 💋 🖕 😈 😴 😭 🤓 👻 👨‍💻 👀 🎃 🙈 😇 😨 🤝 ✍️ 🤗 🫡 🎅 🎄 ☃️ 💅 🤪 🗿 🆒 💘 🙉 🦄 😘 💊 🙊 😎 👾 🤷 🤷‍♀️ 🤷‍♂️ 😡
  */
@@ -2058,33 +1941,7 @@ async function updateMessageReaction(
   emoji: string,
   config: TTSConfig
 ): Promise<{ success: boolean; error?: string }> {
-  const telegramConfig = config.telegram
-  const supabaseKey = telegramConfig?.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY
-
-  try {
-    const response = await fetch(DEFAULT_UPDATE_REACTION_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${supabaseKey}`,
-        "apikey": supabaseKey,
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        message_id: messageId,
-        emoji,
-      }),
-    })
-
-    if (!response.ok) {
-      const error = await response.text()
-      return { success: false, error }
-    }
-
-    return { success: true }
-  } catch (err: any) {
-    return { success: false, error: err?.message || "Network error" }
-  }
+  return updateMessageReactionCore(chatId, messageId, emoji, config)
 }
 
 /**
@@ -2724,7 +2581,11 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
       .trim()
   }
 
-  async function speak(text: string, sessionId: string, modelID?: string): Promise<void> {
+  async function speak(text: string, sessionId: string, modelID?: string, sessionDirectory?: string): Promise<void> {
+    // Use session-specific directory if provided, otherwise fall back to plugin directory
+    // This is important for worktrees - the plugin may be loaded in one directory but
+    // the session may belong to a different worktree directory
+    const targetDirectory = sessionDirectory || directory
     const cleaned = cleanTextForSpeech(text)
     if (!cleaned) return
 
@@ -2786,15 +2647,24 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
 
       // Send Telegram notification if enabled (runs in parallel, non-blocking)
       if (telegramEnabled) {
-        await debugLog(`Sending Telegram notification...`)
+        await debugLog(`Sending Telegram notification for directory: ${targetDirectory}`)
         const telegramResult = await sendTelegramNotification(
           cleaned, 
           generatedAudioPath, 
           config,
-          { model: modelID, directory, sessionId }
+          { model: modelID, directory: targetDirectory, sessionId }
         )
         if (telegramResult.success) {
           await debugLog(`Telegram notification sent successfully`)
+          // Store the message reference for reaction updates on new tasks
+          if (telegramResult.messageId && telegramResult.chatId) {
+            lastTelegramMessages.set(sessionId, {
+              chatId: telegramResult.chatId,
+              messageId: telegramResult.messageId,
+              timestamp: Date.now()
+            })
+            await debugLog(`Stored Telegram message ref: chat=${telegramResult.chatId}, msg=${telegramResult.messageId}`)
+          }
         } else {
           await debugLog(`Telegram notification failed: ${telegramResult.error}`)
         }
@@ -2862,6 +2732,48 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
 
   return {
     tool,
+    // React to previous Telegram message when user sends a new message (follow-up task)
+    "chat.message": async (
+      input: { sessionID: string; agent?: string; model?: { providerID: string; modelID: string }; messageID?: string },
+      _output: { message: any; parts: any[] }
+    ) => {
+      const sessionId = input.sessionID
+      if (!sessionId) return
+      
+      // Check if we have a stored Telegram message for this session
+      const lastMsg = lastTelegramMessages.get(sessionId)
+      if (!lastMsg) return
+      
+      // Only react if the message was sent within the last 24 hours
+      const ageMs = Date.now() - lastMsg.timestamp
+      if (ageMs > 24 * 60 * 60 * 1000) {
+        lastTelegramMessages.delete(sessionId)
+        return
+      }
+      
+      await debugLog(`New message in session ${sessionId.slice(0, 8)}, updating Telegram reaction to 😊`)
+      
+      try {
+        const config = await loadConfig()
+        const result = await updateMessageReaction(
+          lastMsg.chatId,
+          lastMsg.messageId,
+          '😊',  // Smile emoji indicates "working on your follow-up"
+          config
+        )
+        
+        if (result.success) {
+          await debugLog(`Updated Telegram reaction to 😊 for message ${lastMsg.messageId}`)
+        } else {
+          await debugLog(`Failed to update reaction: ${result.error}`)
+        }
+      } catch (err: any) {
+        await debugLog(`Error updating reaction: ${err?.message || err}`)
+      }
+      
+      // Clear the reference - we've processed this message's follow-up
+      lastTelegramMessages.delete(sessionId)
+    },
     // Intercept /tts command before it goes to the LLM - handles it directly and clears prompt
     "command.execute.before": async (
       input: { command: string; sessionID: string; arguments: string },
@@ -2950,6 +2862,10 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
         // (session.idle can fire multiple times rapidly before async operations complete)
         spokenSessions.add(sessionId)
         let shouldKeepInSet = false
+        // Session directory - will be fetched from session info to fix worktree routing bug
+        // When multiple worktrees share the same project, each session has its own directory
+        // stored in OpenCode's session database. We must use that, not the plugin's closure directory.
+        let sessionDirectory: string | undefined
 
         try {
           // First, check if this is a subagent session (has parentID)
@@ -2961,6 +2877,13 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
               await debugLog(`Subagent session (parent: ${sessionInfo.parentID}), skipping`)
               shouldKeepInSet = true // Don't process subagent sessions again
               return
+            }
+            // IMPORTANT: Get the session's actual directory for Telegram routing
+            // This fixes the bug where worktrees share the same plugin instance but have
+            // different session directories. The plugin's closure directory may be stale.
+            sessionDirectory = sessionInfo?.directory
+            if (sessionDirectory) {
+              await debugLog(`Session directory: ${sessionDirectory}`)
             }
           } catch (e: any) {
             // If we can't get session info, continue anyway
@@ -3005,7 +2928,9 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
             const maxWaitMs = config.reflection?.maxWaitMs || REFLECTION_VERDICT_WAIT_MS
             await debugLog(`Waiting for reflection verdict (max ${maxWaitMs}ms)...`)
             
-            const verdict = await waitForReflectionVerdict(directory, sessionId, maxWaitMs, debugLog)
+            // Use session's directory for verdict lookup (falls back to plugin directory)
+            const verdictDir = sessionDirectory || directory
+            const verdict = await waitForReflectionVerdict(verdictDir, sessionId, maxWaitMs, debugLog)
             
             if (verdict) {
               if (!verdict.complete) {
@@ -3032,7 +2957,7 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
           if (finalResponse) {
             shouldKeepInSet = true
             await debugLog(`Speaking now...`)
-            await speak(finalResponse, sessionId, modelID)
+            await speak(finalResponse, sessionId, modelID, sessionDirectory)
             await debugLog(`Speech complete`)
           }
         } catch (e: any) {

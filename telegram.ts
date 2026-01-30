@@ -88,6 +88,9 @@ export async function updateMessageReaction(
   emoji: string,
   config: TTSConfig
 ): Promise<{ success: boolean; error?: string }> {
+  if (!config) {
+    return { success: false, error: "No config provided" }
+  }
   const telegramConfig = config.telegram
   const supabaseKey = telegramConfig?.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY
 
@@ -122,42 +125,115 @@ export async function updateMessageReaction(
 }
 
 /**
- * Send Telegram notification
+ * Send Telegram notification via Supabase Edge Function
+ * 
+ * NOTE: The `context.directory` should be the SESSION's directory (from session info),
+ * NOT the plugin's closure directory. This ensures correct routing when multiple
+ * git worktrees share the same OpenCode server.
  */
 export async function sendTelegramNotification(
   text: string,
   voicePath: string | null,
   config: TTSConfig,
   context?: { model?: string; directory?: string; sessionId?: string }
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; messageId?: number; chatId?: number }> {
+  if (!config) {
+    return { success: false, error: "No config provided" }
+  }
   const telegramConfig = config.telegram
   if (!telegramConfig?.enabled) {
     return { success: false, error: "Telegram notifications disabled" }
   }
 
+  // Get UUID from config or environment variable
   const uuid = telegramConfig.uuid || process.env.TELEGRAM_NOTIFICATION_UUID
-  const serviceUrl = telegramConfig.serviceUrl || DEFAULT_TELEGRAM_SERVICE_URL
-  const sendText = telegramConfig.sendText !== false
-  const sendVoice = telegramConfig.sendVoice !== false
-
   if (!uuid) {
     return { success: false, error: "No UUID configured for Telegram notifications" }
   }
 
-  const body: Record<string, any> = { uuid }
-  if (sendText) body.text = text
-  if (sendVoice && voicePath) {
-    try {
-      const audioData = await readFile(voicePath)
-      body.voice_base64 = audioData.toString("base64")
-    } catch {
-      return { success: false, error: "Voice file unreadable" }
-    }
-  }
+  const serviceUrl = telegramConfig.serviceUrl || DEFAULT_TELEGRAM_SERVICE_URL
+  const sendText = telegramConfig.sendText !== false
+  const sendVoice = telegramConfig.sendVoice !== false
 
   try {
-    // Supabase Edge Functions require Authorization header with anon key
-    const supabaseKey = telegramConfig?.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY
+    const body: { 
+      uuid: string
+      text?: string
+      voice_base64?: string
+      session_id?: string
+      directory?: string 
+    } = { uuid }
+
+    // Add session context for reply support
+    if (context?.sessionId) {
+      body.session_id = context.sessionId
+    }
+    if (context?.directory) {
+      body.directory = context.directory
+    }
+
+    // Add text if enabled
+    if (sendText && text) {
+      // Build clean header: {directory} | {session_id} | {model}
+      // Format: "vibe.2 | ses_3fee5a2b1c4d | claude-opus-4.5"
+      const dirName = context?.directory?.split("/").pop() || null
+      const sessionId = context?.sessionId || null
+      const modelName = context?.model || null
+
+      const headerParts = [dirName, sessionId, modelName].filter(Boolean)
+      const header = headerParts.join(" | ")
+
+      // Add reply hint if session context is provided (enables reply routing)
+      const replyHint = sessionId 
+        ? "\n\n💬 Reply to this message to continue"
+        : ""
+
+      const formattedText = header 
+        ? `${header}\n${"─".repeat(Math.min(40, header.length))}\n\n${text}${replyHint}`
+        : `${text}${replyHint}`
+      
+      // Truncate to Telegram's limit (leave room for header and hint)
+      body.text = formattedText.slice(0, 3800)
+    }
+
+    // Add voice if enabled and path provided
+    if (sendVoice && voicePath) {
+      try {
+        // First check if ffmpeg is available
+        const ffmpegAvailable = await isFfmpegAvailable()
+        
+        let audioPath = voicePath
+        let oggPath: string | null = null
+        
+        if (ffmpegAvailable && voicePath.endsWith(".wav")) {
+          // Convert WAV to OGG for better Telegram compatibility
+          oggPath = await convertWavToOgg(voicePath)
+          if (oggPath) {
+            audioPath = oggPath
+          }
+        }
+
+        // Read the audio file and encode to base64
+        const audioData = await readFile(audioPath)
+        body.voice_base64 = audioData.toString("base64")
+
+        // Clean up converted OGG file
+        if (oggPath) {
+          await unlink(oggPath).catch(() => {})
+        }
+      } catch (err) {
+        console.error("[Telegram] Failed to read voice file:", err)
+        // Continue without voice - text notification is still valuable
+      }
+    }
+
+    // Only send if we have something to send
+    if (!body.text && !body.voice_base64) {
+      return { success: false, error: "No content to send" }
+    }
+
+    // Send to Supabase Edge Function
+    const supabaseKey = telegramConfig.supabaseAnonKey || DEFAULT_SUPABASE_ANON_KEY
     const response = await fetch(serviceUrl, {
       method: "POST",
       headers: { 
@@ -167,11 +243,28 @@ export async function sendTelegramNotification(
       },
       body: JSON.stringify(body),
     })
-    return response.ok
-      ? { success: true }
-      : { success: false, error: await response.text() }
-  } catch (err) {
-    return { success: false, error: String(err) }
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      let errorJson: any = {}
+      try {
+        errorJson = JSON.parse(errorText)
+      } catch {}
+      return { 
+        success: false, 
+        error: errorJson.error || `HTTP ${response.status}: ${errorText.slice(0, 100)}` 
+      }
+    }
+
+    const result = await response.json()
+    return { 
+      success: result.success, 
+      error: result.error,
+      messageId: result.message_id,
+      chatId: result.chat_id,
+    }
+  } catch (err: any) {
+    return { success: false, error: err?.message || "Network error" }
   }
 }
 
@@ -180,6 +273,7 @@ export async function sendTelegramNotification(
  */
 export async function initSupabaseClient(config: TTSConfig): Promise<any> {
   if (supabaseClient) return supabaseClient
+  if (!config) return null
 
   const telegramConfig = config.telegram
   const supabaseUrl = telegramConfig?.supabaseUrl || DEFAULT_SUPABASE_URL
@@ -203,6 +297,7 @@ export async function subscribeToReplies(
   client: any
 ): Promise<void> {
   if (replySubscription) return
+  if (!config) return
   const telegramConfig = config.telegram
   if (!telegramConfig?.enabled) return
 
