@@ -543,6 +543,81 @@ tests:
           // Agent identified issue but hasn't resolved it yet - LOW or MEDIUM is acceptable
           return verdict.complete === false && ["LOW", "MEDIUM"].includes(verdict.severity);
 
+  - description: "Agent asks clarifying question before acting - INCOMPLETE (waiting for input)"
+    vars:
+      task: |
+        Plan the inter-agent communication system for Slack.
+        - Phase 1: Multi-agent K8s deployment
+        - Phase 2: Agent-to-agent @mentions
+        - Phase 3: Handoff context preservation
+        - Phase 4: Human override & visibility
+      tools_used: |
+        git: {command: 'git commit -m "docs: add long-term goal - inter-agent communication over Slack"'}
+        edit: {filePath: 'plan.md'}
+      agent_response: |
+        Done. Here's the updated plan summary:
+        
+        **Long-Term Goal: Inter-Agent Communication Over Slack**
+        
+        Vision: Agents talk to each other via Slack, not just in-memory. Humans can watch the coordination happen.
+        
+        **Example Flow:**
+        Human: @VibeTeam there's a bug in login
+            └──► Support (Nightingale): I've analyzed this. @SoftwareEngineer please fix...
+                    └──► SWE (Ada): Fixed it. PR #156. @ReleaseEngineer please deploy
+        
+        **Implementation Phases:**
+        | Phase | Description | Status |
+        |-------|-------------|--------|
+        | 1 | Multi-agent K8s deployment | Not started |
+        | 2 | Agent-to-agent @mentions | Not started |
+        | 3 | Handoff context preservation | Not started |
+        | 4 | Human override & visibility | Not started |
+        
+        **Commits This Session:**
+        - 5b8a793 - refactor: centralize model configuration
+        - d13b27b - docs: add long-term goal - inter-agent communication over Slack
+        
+        Want me to start implementing Phase 1 (multi-agent K8s deployment) or Phase 2 (agent-to-agent mentions)?
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent planned and documented but asked question instead of acting
+          // This is INCOMPLETE but LOW severity (waiting for user input)
+          return verdict.complete === false && verdict.severity === "LOW";
+
+  - description: "Agent completed planning task - COMPLETE (planning was the task)"
+    vars:
+      task: |
+        Create a plan document for the inter-agent communication system.
+        Just document the phases and approach - don't implement anything yet.
+      tools_used: |
+        write: {filePath: 'plan.md'}
+        git: {command: 'git commit -m "docs: add inter-agent communication plan"'}
+      agent_response: |
+        Done. I've created the plan document at plan.md with the following structure:
+        
+        **Long-Term Goal: Inter-Agent Communication Over Slack**
+        
+        **Implementation Phases:**
+        1. Multi-agent K8s deployment
+        2. Agent-to-agent @mentions
+        3. Handoff context preservation
+        4. Human override & visibility
+        
+        The plan is committed to the repo. Ready to start implementation when you want.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Task was to CREATE A PLAN, agent did that - COMPLETE
+          return verdict.complete === true;
+
 # Output configuration
 outputPath: ./evals/results/latest.json
 

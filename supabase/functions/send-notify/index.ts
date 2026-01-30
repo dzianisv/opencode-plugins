@@ -392,6 +392,8 @@ Deno.serve(async (req) => {
         voice_sent: voiceSent,
         reply_enabled: !!session_id,
         text_error: textError,
+        message_id: sentMessageId,  // Return message_id for reaction updates
+        chat_id: chatId,            // Return chat_id for reaction updates
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
