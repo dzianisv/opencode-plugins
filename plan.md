@@ -8,27 +8,46 @@ Enable the Telegram webhook to receive voice messages, download them from Telegr
 
 ## Tasks
 
-- [ ] Task 1: Research Telegram Voice API
+- [x] Task 1: Research Telegram Voice API
   - Understand `message.voice` object structure.
   - Check how to get file path via `getFile`.
   - Check how to download file content.
-- [ ] Task 2: Update `telegram-webhook` Supabase Function
+- [x] Task 2: Update `telegram-webhook` Supabase Function
   - Handle `message.voice` in the webhook payload.
   - If voice message, call Telegram `getFile` API to get download URL.
   - Download the OGG/OGA file.
-  - Forward the audio file (or download URL) to a processing service, or transcribe directly if feasible (likely need to pass to a service that can access Whisper).
-  - *Refinement:* Since the webhook is an Edge Function, it might be better to forward the file info to the local `telegram.ts` plugin, which has access to the local Whisper service.
-  - *Revised Plan:* Webhook stores voice file ID/URL in Supabase `telegram_replies` table.
-- [ ] Task 3: Update `telegram.ts` Plugin
-  - Update `pollTelegramReplies` to handle voice messages.
-  - If a reply contains a voice file ID:
-    - Download the file using Telegram Bot API.
-    - Convert OGG to WAV (ffmpeg required).
-    - Send to local Whisper service for transcription.
+  - Webhook stores voice audio as base64 in `telegram_replies` table (is_voice=true, audio_base64=<data>).
+- [x] Task 3: Update `telegram.ts` Plugin
+  - Added full Whisper server management (auto-setup, auto-start, health check).
+  - If a reply contains `is_voice=true` and `audio_base64`:
+    - Auto-starts local Whisper server if not running.
+    - Sends audio to Whisper for transcription.
     - Inject transcribed text into OpenCode session.
-- [ ] Task 4: Verify
-  - Send voice message to bot.
-  - Verify transcription appears in OpenCode.
+- [x] Task 4: Verify
+  - ✅ Enabled Whisper in config: `~/.config/opencode/telegram.json`
+  - ✅ Fixed API endpoint: changed `/transcribe` to `/transcribe-base64` for compatibility with existing Whisper server on port 5552
+  - ✅ Tested transcription endpoint - returns valid response
+  - ✅ All tests pass: typecheck (0 errors), unit (132 passed), plugin-load (5 passed)
+
+## Configuration
+
+To enable voice transcription, add to `~/.config/opencode/telegram.json`:
+
+```json
+{
+  "enabled": true,
+  "uuid": "your-uuid",
+  "receiveReplies": true,
+  "whisper": {
+    "enabled": true,
+    "model": "base",
+    "device": "auto"
+  }
+}
+```
+
+Available models: tiny, tiny.en, base, base.en, small, small.en, medium, medium.en, large-v2, large-v3
+Device options: auto, cuda, cpu
 
 ## Completed
 
@@ -39,3 +58,15 @@ Enable the Telegram webhook to receive voice messages, download them from Telegr
 - [x] Worktree Agent Delegation
   - Enhanced `worktree_create` to support optional task argument.
   - New worktrees launch with `opencode run "<task>"`.
+- [x] Whisper Server Management in telegram.ts
+  - Added Whisper server auto-setup (Python venv, faster-whisper, FastAPI)
+  - Added server lifecycle management (start, health check, lock mechanism)
+  - Updated transcribeAudio() to auto-start server if needed
+  - Supports voice, video_note, and video messages from Telegram
+  - Tests pass: typecheck, unit tests (132), plugin-load (5)
+- [x] Voice Transcription End-to-End (2026-01-31)
+  - Fixed API endpoint: changed `/transcribe` to `/transcribe-base64` for opencode-manager Whisper server compatibility
+  - Updated DEFAULT_SUPABASE_ANON_KEY to new token (expires 2081)
+  - Verified real voice message transcription: "It's ready to use, maybe." from 1.6s audio
+  - Full flow tested: Telegram → webhook → DB (audio_base64) → Whisper → transcription
+  - All tests pass: typecheck (0 errors), unit (132), plugin-load (5)
