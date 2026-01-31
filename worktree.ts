@@ -1,10 +1,8 @@
 import type { Plugin } from "@opencode-ai/plugin";
-import { spawnSync, exec } from "child_process";
-import { promisify } from "util";
-import { join, resolve, basename } from "path";
+import { tool } from "@opencode-ai/plugin/tool";
+import { spawnSync } from "child_process";
+import { join, resolve } from "path";
 import { existsSync } from "fs";
-
-const execAsync = promisify(exec);
 
 export const WorktreePlugin: Plugin = async (ctx) => {
   const { directory, client } = ctx;
@@ -19,26 +17,17 @@ export const WorktreePlugin: Plugin = async (ctx) => {
 
   return {
     tool: {
-        worktree_create: {
-          name: "worktree_create",
-          description: "Create a new git worktree for a feature branch and open it in a new terminal with OpenCode.",
-          args: {
-            branch: { 
-              type: "string", 
-              description: "Name of the new feature branch (e.g. 'feat/new-ui')" 
-            },
-            base: { 
-              type: "string", 
-              description: "Base branch to start from (default: 'main' or 'master')" 
-            },
-            task: {
-              type: "string",
-              description: "Initial task/prompt for the agent in the new window (optional)"
-            }
-          },
-          async execute(args: { branch: string, base?: string, task?: string }) {
-            const { branch, task } = args;
-            let { base } = args;
+      worktree_create: tool({
+        description: "Create a new git worktree for a feature branch and open it in a new terminal with OpenCode.",
+        args: {
+          branch: tool.schema.string().describe("Name of the new feature branch (e.g. 'feat/new-ui')"),
+          base: tool.schema.string().optional().describe("Base branch to start from (default: 'main' or 'master')"),
+          task: tool.schema.string().optional().describe("Initial task/prompt for the agent in the new window")
+        },
+        async execute(args) {
+          const { branch, task } = args;
+          let base = args.base;
+          
           if (!base) {
             try {
               const branches = await git(["branch", "-r"]);
@@ -48,22 +37,19 @@ export const WorktreePlugin: Plugin = async (ctx) => {
             }
           }
 
-          // 2. Determine sibling path
-          // If we are in /repo/foo, new worktree is /repo/branch-name
+          // Determine sibling path
           const parentDir = resolve(directory, "..");
-          const worktreePath = join(parentDir, branch.replace(/\//g, "-")); // sanitize branch name for dir
+          const worktreePath = join(parentDir, branch.replace(/\//g, "-"));
           
           if (existsSync(worktreePath)) {
             return `Worktree directory already exists at ${worktreePath}`;
           }
 
           try {
-            // 3. Create worktree
-            // git worktree add -b <branch> <path> <base>
+            // Create worktree
             await git(["worktree", "add", "-b", branch, worktreePath, base]);
             
-            // 4. Launch new OpenCode session in that directory
-            // macOS only for now
+            // Launch new OpenCode session (macOS only)
             if (process.platform === "darwin") {
               const escapeShell = (s: string) => s.replace(/'/g, "'\\''");
               const escapeAppleScript = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -72,7 +58,7 @@ export const WorktreePlugin: Plugin = async (ctx) => {
               let shellCmd = `cd '${shellPath}' && opencode`;
               
               if (task) {
-                 shellCmd += ` run '${escapeShell(task)}'`;
+                shellCmd += ` run '${escapeShell(task)}'`;
               }
 
               const appleScriptCmd = escapeAppleScript(shellCmd);
@@ -94,10 +80,11 @@ export const WorktreePlugin: Plugin = async (ctx) => {
             return `Failed to create worktree: ${e.message}`;
           }
         }
-      },
-      worktree_list: {
-        name: "worktree_list",
+      }),
+
+      worktree_list: tool({
         description: "List all active git worktrees.",
+        args: {},
         async execute() {
           try {
             const output = await git(["worktree", "list"]);
@@ -106,48 +93,47 @@ export const WorktreePlugin: Plugin = async (ctx) => {
             return `Error listing worktrees: ${e.message}`;
           }
         }
-      },
-      worktree_delete: {
-        name: "worktree_delete",
+      }),
+
+      worktree_delete: tool({
         description: "Delete a worktree and clean up.",
         args: {
-          path: {
-             type: "string",
-             description: "Path to the worktree to remove (or branch name if directory matches)"
-          },
-          force: {
-             type: "boolean",
-             description: "Force remove even if dirty (git worktree remove --force)"
-          }
+          path: tool.schema.string().describe("Path to the worktree to remove (or branch name if directory matches)"),
+          force: tool.schema.boolean().optional().describe("Force remove even if dirty (git worktree remove --force)")
         },
-        async execute(args: { path: string, force?: boolean }) {
-           const { path, force } = args;
-           try {
-             const args = ["worktree", "remove", path];
-             if (force) args.push("--force");
-             
-             await git(args);
-             return `Removed worktree at ${path}`;
-           } catch(e: any) {
-             return `Failed to remove worktree: ${e.message}`;
-           }
+        async execute(args) {
+          const { path, force } = args;
+          try {
+            const gitArgs = ["worktree", "remove", path];
+            if (force) gitArgs.push("--force");
+            
+            await git(gitArgs);
+            return `Removed worktree at ${path}`;
+          } catch (e: any) {
+            return `Failed to remove worktree: ${e.message}`;
+          }
         }
-      },
-      worktree_status: {
-        name: "worktree_status",
+      }),
+
+      worktree_status: tool({
         description: "Check current worktree state (dirty, branch, sessions).",
+        args: {},
         async execute() {
-          const status = await git(["status", "--porcelain"]);
-          const branch = await git(["branch", "--show-current"]);
-          const sessions = await client.session.list({ query: { directory } });
-          
-          return JSON.stringify({
-            dirty: status.length > 0,
-            currentBranch: branch,
-            activeSessions: (sessions.data || []).filter((s: any) => s.directory === directory).length
-          }, null, 2);
+          try {
+            const status = await git(["status", "--porcelain"]);
+            const branch = await git(["branch", "--show-current"]);
+            const sessions = await client.session.list({ query: { directory } });
+            
+            return JSON.stringify({
+              dirty: status.length > 0,
+              currentBranch: branch,
+              activeSessions: (sessions.data || []).filter((s: any) => s.directory === directory).length
+            }, null, 2);
+          } catch (e: any) {
+            return `Error getting status: ${e.message}`;
+          }
         }
-      }
+      })
     }
   };
 };
