@@ -70,3 +70,77 @@ Device options: auto, cuda, cpu
   - Verified real voice message transcription: "It's ready to use, maybe." from 1.6s audio
   - Full flow tested: Telegram → webhook → DB (audio_base64) → Whisper → transcription
   - All tests pass: typecheck (0 errors), unit (132), plugin-load (5)
+
+---
+
+# Feature: Configurable Reflection Prompts
+
+Issue: Allow per-project and per-query customization of the reflection/judge prompt.
+Started: 2026-01-31
+
+## Goal
+Enable users to customize how the reflection plugin evaluates task completion:
+1. Per-project config via `.opencode/reflection.json`
+2. Query-based overrides for specific types of tasks
+3. Custom evaluation rules and severity mappings
+
+## Tasks
+
+- [x] Task 1: Design config schema
+  - Defined ReflectionConfig interface with customRules, taskPatterns, severityMapping
+  - Support custom evaluation rules per task type (coding/research)
+  - Support custom severity mappings
+  - Support task-type-specific rules via taskPatterns
+- [x] Task 2: Implement config loading
+  - Load from `<project>/.opencode/reflection.json`
+  - Fall back to global `~/.config/opencode/reflection.json`
+  - Implemented loadConfig(), mergeConfig() functions
+- [x] Task 3: Add query-based customization
+  - Implemented findMatchingPattern() to match task text
+  - Patterns can override task type detection
+  - Extra rules applied from matched patterns
+- [x] Task 4: Write tests (15 new tests added)
+  - Unit tests for findMatchingPattern
+  - Unit tests for buildCustomRules
+  - Unit tests for mergeConfig
+  - Unit tests for config-based task type detection
+- [x] Task 5: Update documentation
+  - Added config section to AGENTS.md
+  - Documented all config options with examples
+
+## Config Schema (Draft)
+
+```json
+{
+  "enabled": true,
+  "model": "claude-sonnet-4-20250514",
+  "customRules": {
+    "coding": [
+      "All tests must pass",
+      "Build must succeed",
+      "No console.log statements in production code"
+    ],
+    "research": [
+      "Provide sources for claims",
+      "Include code examples where relevant"
+    ]
+  },
+  "severityMapping": {
+    "testFailure": "BLOCKER",
+    "buildFailure": "BLOCKER",
+    "missingDocs": "LOW"
+  },
+  "taskPatterns": [
+    {
+      "pattern": "fix.*bug|debug",
+      "type": "coding",
+      "extraRules": ["Verify the bug is actually fixed with a test"]
+    },
+    {
+      "pattern": "research|investigate|explore",
+      "type": "research"
+    }
+  ],
+  "promptTemplate": null
+}
+```

@@ -168,6 +168,118 @@ This will print debug logs to stderr showing:
 ### Reflection Data Location
 Reflection verdicts are saved to `<workspace>/.reflection/` directory as JSON files.
 
+## Reflection Plugin Configuration
+
+The reflection plugin supports per-project and query-based customization of evaluation rules.
+
+### Config File Locations
+
+Config is loaded from (in priority order):
+1. `<project>/.opencode/reflection.json` - Per-project config
+2. `~/.config/opencode/reflection.json` - Global config
+3. Built-in defaults
+
+### Configuration Options
+
+```json
+{
+  "enabled": true,
+  "model": "claude-sonnet-4-20250514",
+  "strictMode": false,
+  "customRules": {
+    "coding": [
+      "All tests must pass",
+      "Build must succeed",
+      "No console.log statements in production code"
+    ],
+    "research": [
+      "Provide sources for claims",
+      "Include code examples where relevant"
+    ]
+  },
+  "severityMapping": {
+    "testFailure": "BLOCKER",
+    "buildFailure": "BLOCKER",
+    "missingDocs": "LOW"
+  },
+  "taskPatterns": [
+    {
+      "pattern": "fix.*bug|debug",
+      "type": "coding",
+      "extraRules": ["Verify the bug is actually fixed with a test"]
+    },
+    {
+      "pattern": "research|investigate|explore",
+      "type": "research"
+    }
+  ],
+  "promptTemplate": null
+}
+```
+
+### Option Reference
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `enabled` | boolean | Enable/disable reflection (default: true) |
+| `model` | string | LLM model for judge evaluation |
+| `strictMode` | boolean | If true, requires explicit PASS criteria |
+| `customRules.coding` | string[] | Additional rules for coding tasks |
+| `customRules.research` | string[] | Additional rules for research tasks |
+| `severityMapping` | object | Map issue types to severity levels |
+| `taskPatterns` | array | Patterns to match task text for custom behavior |
+| `promptTemplate` | string | Custom prompt template (advanced) |
+
+### Task Patterns
+
+Task patterns allow query-based customization. Each pattern has:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pattern` | string | Regex pattern to match task text |
+| `type` | string | Override task type detection ("coding" or "research") |
+| `extraRules` | string[] | Additional rules for this pattern only |
+
+**Example: Security-focused project**
+
+```json
+{
+  "customRules": {
+    "coding": [
+      "Never expose secrets in code",
+      "Sanitize all user inputs",
+      "Use parameterized queries for database access"
+    ]
+  },
+  "taskPatterns": [
+    {
+      "pattern": "api|endpoint|route",
+      "type": "coding",
+      "extraRules": [
+        "Validate authentication on all endpoints",
+        "Return proper HTTP status codes"
+      ]
+    }
+  ]
+}
+```
+
+**Example: Documentation-strict project**
+
+```json
+{
+  "customRules": {
+    "coding": [
+      "All public functions must have JSDoc comments",
+      "README must be updated for new features"
+    ]
+  },
+  "severityMapping": {
+    "missingDocs": "BLOCKER"
+  }
+}
+```
+
 ## TTS Plugin (`tts.ts`)
 
 ### Overview
