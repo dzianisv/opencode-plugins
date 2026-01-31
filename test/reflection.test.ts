@@ -904,4 +904,233 @@ describe("Reflection Plugin - Unit Tests", () => {
       })
     })
   })
+
+  describe("Configurable Reflection Prompts", () => {
+    // Mock types matching the plugin's config types
+    interface TaskPattern {
+      pattern: string
+      type?: "coding" | "research"
+      extraRules?: string[]
+    }
+
+    interface ReflectionConfig {
+      enabled?: boolean
+      customRules?: {
+        coding?: string[]
+        research?: string[]
+      }
+      taskPatterns?: TaskPattern[]
+      promptTemplate?: string | null
+    }
+
+    const DEFAULT_CONFIG: ReflectionConfig = {
+      enabled: true,
+      customRules: {
+        coding: [
+          "All explicitly requested functionality implemented",
+          "Tests run and pass (if tests were requested or exist)",
+          "Build/compile succeeds (if applicable)",
+          "No unhandled errors in output"
+        ],
+        research: [
+          "Research findings delivered with reasonable depth",
+          "Sources or references provided where appropriate"
+        ]
+      },
+      taskPatterns: [],
+      promptTemplate: null
+    }
+
+    // Helper function mimicking findMatchingPattern
+    function findMatchingPattern(task: string, config: ReflectionConfig): TaskPattern | null {
+      if (!config.taskPatterns?.length) return null
+      
+      for (const pattern of config.taskPatterns) {
+        try {
+          const regex = new RegExp(pattern.pattern, "i")
+          if (regex.test(task)) {
+            return pattern
+          }
+        } catch {
+          continue
+        }
+      }
+      return null
+    }
+
+    // Helper function mimicking buildCustomRules
+    function buildCustomRules(isResearch: boolean, config: ReflectionConfig, matchedPattern: TaskPattern | null): string {
+      const rules: string[] = []
+      
+      if (isResearch) {
+        rules.push(...(config.customRules?.research || []))
+      } else {
+        rules.push(...(config.customRules?.coding || []))
+      }
+      
+      if (matchedPattern?.extraRules) {
+        rules.push(...matchedPattern.extraRules)
+      }
+      
+      if (rules.length === 0) return ""
+      
+      const numberedRules = rules.map((r, i) => `${i + 1}. ${r}`).join("\n")
+      return isResearch 
+        ? `\n### Research Task Rules\n${numberedRules}\n`
+        : `\n### Coding Task Rules\n${numberedRules}\n`
+    }
+
+    // Helper function mimicking mergeConfig
+    function mergeConfig(defaults: ReflectionConfig, override: ReflectionConfig): ReflectionConfig {
+      return {
+        enabled: override.enabled ?? defaults.enabled,
+        customRules: {
+          coding: override.customRules?.coding ?? defaults.customRules?.coding,
+          research: override.customRules?.research ?? defaults.customRules?.research
+        },
+        taskPatterns: override.taskPatterns ?? defaults.taskPatterns,
+        promptTemplate: override.promptTemplate ?? defaults.promptTemplate
+      }
+    }
+
+    describe("findMatchingPattern", () => {
+      it("returns null when no patterns configured", () => {
+        const config: ReflectionConfig = { taskPatterns: [] }
+        const result = findMatchingPattern("fix the bug", config)
+        assert.strictEqual(result, null)
+      })
+
+      it("matches bug fix pattern", () => {
+        const config: ReflectionConfig = {
+          taskPatterns: [
+            { pattern: "fix.*bug|debug", type: "coding", extraRules: ["Verify bug is fixed with test"] }
+          ]
+        }
+        const result = findMatchingPattern("Please fix the login bug", config)
+        assert.ok(result, "Should match bug fix pattern")
+        assert.strictEqual(result!.type, "coding")
+        assert.deepStrictEqual(result!.extraRules, ["Verify bug is fixed with test"])
+      })
+
+      it("matches research pattern", () => {
+        const config: ReflectionConfig = {
+          taskPatterns: [
+            { pattern: "research|investigate|explore", type: "research" }
+          ]
+        }
+        const result = findMatchingPattern("Research how authentication works", config)
+        assert.ok(result, "Should match research pattern")
+        assert.strictEqual(result!.type, "research")
+      })
+
+      it("is case insensitive", () => {
+        const config: ReflectionConfig = {
+          taskPatterns: [
+            { pattern: "URGENT", extraRules: ["Prioritize this task"] }
+          ]
+        }
+        const result = findMatchingPattern("This is urgent: fix ASAP", config)
+        assert.ok(result, "Should match case-insensitively")
+      })
+
+      it("handles invalid regex gracefully", () => {
+        const config: ReflectionConfig = {
+          taskPatterns: [
+            { pattern: "[invalid(regex", extraRules: ["This should not crash"] },
+            { pattern: "valid", extraRules: ["This should match"] }
+          ]
+        }
+        const result = findMatchingPattern("This is valid", config)
+        assert.ok(result, "Should skip invalid regex and match valid pattern")
+        assert.deepStrictEqual(result!.extraRules, ["This should match"])
+      })
+    })
+
+    describe("buildCustomRules", () => {
+      it("builds coding rules from config", () => {
+        const rules = buildCustomRules(false, DEFAULT_CONFIG, null)
+        assert.ok(rules.includes("Coding Task Rules"))
+        assert.ok(rules.includes("1. All explicitly requested functionality implemented"))
+        assert.ok(rules.includes("4. No unhandled errors in output"))
+      })
+
+      it("builds research rules from config", () => {
+        const rules = buildCustomRules(true, DEFAULT_CONFIG, null)
+        assert.ok(rules.includes("Research Task Rules"))
+        assert.ok(rules.includes("Research findings delivered"))
+      })
+
+      it("includes extra rules from matched pattern", () => {
+        const pattern: TaskPattern = {
+          pattern: "security",
+          extraRules: ["Check for SQL injection", "Check for XSS"]
+        }
+        const rules = buildCustomRules(false, DEFAULT_CONFIG, pattern)
+        assert.ok(rules.includes("Check for SQL injection"))
+        assert.ok(rules.includes("Check for XSS"))
+      })
+
+      it("returns empty string when no rules", () => {
+        const emptyConfig: ReflectionConfig = { customRules: {} }
+        const rules = buildCustomRules(false, emptyConfig, null)
+        assert.strictEqual(rules, "")
+      })
+    })
+
+    describe("mergeConfig", () => {
+      it("overrides enabled flag", () => {
+        const merged = mergeConfig(DEFAULT_CONFIG, { enabled: false })
+        assert.strictEqual(merged.enabled, false)
+      })
+
+      it("overrides custom coding rules", () => {
+        const customRules = ["Custom rule 1", "Custom rule 2"]
+        const merged = mergeConfig(DEFAULT_CONFIG, { customRules: { coding: customRules } })
+        assert.deepStrictEqual(merged.customRules?.coding, customRules)
+        // Research rules should fall back to default
+        assert.deepStrictEqual(merged.customRules?.research, DEFAULT_CONFIG.customRules?.research)
+      })
+
+      it("overrides task patterns", () => {
+        const patterns: TaskPattern[] = [{ pattern: "custom", type: "coding" }]
+        const merged = mergeConfig(DEFAULT_CONFIG, { taskPatterns: patterns })
+        assert.deepStrictEqual(merged.taskPatterns, patterns)
+      })
+
+      it("preserves defaults when override is empty", () => {
+        const merged = mergeConfig(DEFAULT_CONFIG, {})
+        assert.strictEqual(merged.enabled, DEFAULT_CONFIG.enabled)
+        assert.deepStrictEqual(merged.customRules, DEFAULT_CONFIG.customRules)
+      })
+    })
+
+    describe("config-based task type detection", () => {
+      it("pattern can override task type to research", () => {
+        const config: ReflectionConfig = {
+          taskPatterns: [
+            { pattern: "how does.*work", type: "research" }
+          ]
+        }
+        const task = "How does the authentication work in this codebase?"
+        const matchedPattern = findMatchingPattern(task, config)
+        
+        // Pattern should override the default isResearch detection
+        const isResearch = matchedPattern?.type === "research"
+        assert.strictEqual(isResearch, true)
+      })
+
+      it("pattern can force coding type for ambiguous tasks", () => {
+        const config: ReflectionConfig = {
+          taskPatterns: [
+            { pattern: "implement|create|add", type: "coding" }
+          ]
+        }
+        const task = "Add a new feature for user authentication"
+        const matchedPattern = findMatchingPattern(task, config)
+        
+        const isCoding = matchedPattern?.type === "coding"
+        assert.strictEqual(isCoding, true)
+      })
+    })
+  })
 })
