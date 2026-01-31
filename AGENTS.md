@@ -494,6 +494,22 @@ if (event.type === "session.idle") {
 
 **CRITICAL: ALWAYS run ALL tests after ANY code changes before deploying. No exceptions.**
 
+### Quick Reference: Run ALL Tests
+
+```bash
+# Run this COMPLETE sequence for ANY change:
+npm run typecheck                           # 1. Type checking
+npm test                                    # 2. Unit tests (132+)
+npm run test:load                           # 3. Plugin load test (5)
+OPENCODE_E2E=1 npm run test:e2e             # 4. E2E tests (4) - for reflection.ts
+npm run test:telegram                       # 5. Telegram E2E - for telegram.ts
+npx tsx test/test-telegram-whisper.ts       # 6. Whisper integration - for telegram.ts
+npm run install:global                      # 7. Deploy
+# Then manual smoke test in real OpenCode session
+```
+
+**DO NOT skip any test.** If a test fails, FIX IT before proceeding.
+
 ### Before Committing ANY Changes
 
 **MANDATORY - These steps MUST be completed for EVERY change, no matter how small:**
@@ -514,7 +530,20 @@ npm test
 - If any test fails, FIX THE CODE immediately
 - Unit tests validate isolated logic
 
-#### 3. E2E Tests (REQUIRED for reflection.ts changes)
+#### 3. Plugin Load Test (REQUIRED - catches real crashes)
+```bash
+npm run test:load
+```
+- **MUST pass** all 5 tests
+- Tests ACTUAL plugin loading in real OpenCode environment
+- Catches issues unit tests miss:
+  - Missing imports/modules
+  - Invalid tool schemas (Zod errors)
+  - Plugin initialization failures
+  - Runtime errors during startup
+- If this test fails, the plugin WILL crash OpenCode
+
+#### 4. E2E Tests (REQUIRED for reflection.ts changes)
 ```bash
 OPENCODE_E2E=1 npm run test:e2e
 ```
@@ -523,7 +552,27 @@ OPENCODE_E2E=1 npm run test:e2e
 - E2E tests validate full plugin integration
 - E2E tests use the model specified in `~/.config/opencode/opencode.json`
 
-#### 4. Manual Smoke Test (REQUIRED - ALWAYS)
+#### 5. Telegram Tests (REQUIRED for telegram.ts changes)
+```bash
+# Quick Telegram E2E test (webhook, replies, contexts)
+npm run test:telegram
+
+# Whisper voice transcription integration test
+npx tsx test/test-telegram-whisper.ts
+```
+- **MUST pass** all tests before deploying telegram.ts changes
+- Tests verify:
+  - Webhook endpoint responds (with --no-verify-jwt)
+  - Reply contexts stored in database
+  - Voice messages stored with audio_base64
+  - Whisper server health and transcription endpoint
+  - Plugin has all required Whisper functions
+- If Whisper test fails on "transcription endpoint":
+  - Check the port matches config (`whisper.port` in telegram.json)
+  - Check endpoint is `/transcribe-base64` not `/transcribe`
+  - Verify Whisper server is running: `curl http://127.0.0.1:5552/health`
+
+#### 6. Manual Smoke Test (REQUIRED - ALWAYS)
 **CRITICAL: Even if all automated tests pass, you MUST manually test the plugin in a real OpenCode session before deploying!**
 
 ```bash
@@ -598,10 +647,10 @@ grep -i "error\|exception\|undefined" ~/.config/opencode/opencode.log || echo "N
 **If ANY error occurs during manual testing:**
 1. **STOP immediately** - DO NOT commit or deploy
 2. FIX THE BUG
-3. Re-run ALL tests (typecheck, unit, E2E, manual)
+3. Re-run ALL tests (typecheck, unit, load, E2E, manual)
 4. Only proceed when manual test shows ZERO errors
 
-#### 5. Verify Deployment (REQUIRED)
+#### 7. Verify Deployment (REQUIRED)
 ```bash
 # Verify all files deployed correctly
 ls -la ~/.config/opencode/plugin/*.ts
@@ -657,7 +706,8 @@ function convert(path: string) {
 Before committing changes to reflection.ts:
 
 - [ ] `npm run typecheck` passes
-- [ ] Unit tests pass: `npm test` (178 tests)
+- [ ] Unit tests pass: `npm test` (132 tests)
+- [ ] **Plugin load test MUST pass: `npm run test:load` (5 tests)** - catches real crashes
 - [ ] **E2E tests MUST ALWAYS run: `OPENCODE_E2E=1 npm run test:e2e` (4 tests)**
 - [ ] **Manual smoke test MUST pass with ZERO errors**
 - [ ] Check E2E logs for "SKIPPED" (hidden failures)
@@ -665,6 +715,17 @@ Before committing changes to reflection.ts:
 - [ ] Verify judge sessions are properly skipped
 - [ ] Verify deployed files have your changes
 - [ ] Verify OpenCode loads plugin without errors
+
+Before committing changes to telegram.ts:
+
+- [ ] `npm run typecheck` passes
+- [ ] Unit tests pass: `npm test`
+- [ ] **Plugin load test MUST pass: `npm run test:load`**
+- [ ] **Telegram E2E test MUST pass: `npm run test:telegram`**
+- [ ] **Whisper integration test MUST pass: `npx tsx test/test-telegram-whisper.ts`**
+- [ ] Test with REAL data from database (not just mocked data)
+- [ ] Verify Whisper transcription works with actual voice audio
+- [ ] Verify deployed files have your changes
 
 **E2E Test Requirements:**
 - E2E tests use the model specified in `~/.config/opencode/opencode.json`
