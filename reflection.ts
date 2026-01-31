@@ -12,6 +12,8 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { readFile, writeFile, mkdir } from "fs/promises"
 import { join } from "path"
+import { homedir } from "os"
+import { existsSync } from "fs"
 
 const MAX_ATTEMPTS = 3  // Reduced - we only evaluate, don't push
 const JUDGE_RESPONSE_TIMEOUT = 180_000
@@ -23,6 +25,49 @@ const SESSION_MAX_AGE = 1800_000 // Sessions older than 30 minutes can be cleane
 // Debug logging (only when REFLECTION_DEBUG=1)
 function debug(...args: any[]) {
   if (DEBUG) console.error("[Reflection]", ...args)
+}
+
+// ==================== CONFIG TYPES ====================
+
+interface TaskPattern {
+  pattern: string      // Regex pattern to match task text
+  type?: "coding" | "research"  // Override task type detection
+  extraRules?: string[]  // Additional rules for this pattern
+}
+
+interface ReflectionConfig {
+  enabled?: boolean
+  model?: string  // Override model for judge session
+  customRules?: {
+    coding?: string[]
+    research?: string[]
+  }
+  severityMapping?: {
+    [key: string]: "NONE" | "LOW" | "MEDIUM" | "HIGH" | "BLOCKER"
+  }
+  taskPatterns?: TaskPattern[]
+  promptTemplate?: string | null  // Full custom prompt template (advanced)
+  strictMode?: boolean  // If true, incomplete tasks block further work
+}
+
+const DEFAULT_CONFIG: ReflectionConfig = {
+  enabled: true,
+  customRules: {
+    coding: [
+      "All explicitly requested functionality implemented",
+      "Tests run and pass (if tests were requested or exist)",
+      "Build/compile succeeds (if applicable)",
+      "No unhandled errors in output"
+    ],
+    research: [
+      "Research findings delivered with reasonable depth",
+      "Sources or references provided where appropriate"
+    ]
+  },
+  severityMapping: {},
+  taskPatterns: [],
+  promptTemplate: null,
+  strictMode: false
 }
 
 export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
@@ -65,6 +110,118 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   // Cache for AGENTS.md content (avoid re-reading on every reflection)
   let agentsFileCache: { content: string; timestamp: number } | null = null
   const AGENTS_CACHE_TTL = 60_000 // Cache for 1 minute
+
+  // Cache for reflection config
+  let configCache: { config: ReflectionConfig; timestamp: number } | null = null
+  const CONFIG_CACHE_TTL = 60_000 // Cache for 1 minute
+
+  /**
+   * Load reflection config from project or global location.
+   * Priority: <project>/.opencode/reflection.json > ~/.config/opencode/reflection.json > defaults
+   */
+  async function loadConfig(): Promise<ReflectionConfig> {
+    const now = Date.now()
+    if (configCache && now - configCache.timestamp < CONFIG_CACHE_TTL) {
+      return configCache.config
+    }
+
+    const projectConfigPath = join(directory, ".opencode", "reflection.json")
+    const globalConfigPath = join(homedir(), ".config", "opencode", "reflection.json")
+
+    let config: ReflectionConfig = { ...DEFAULT_CONFIG }
+
+    // Try project config first
+    try {
+      if (existsSync(projectConfigPath)) {
+        const content = await readFile(projectConfigPath, "utf-8")
+        const projectConfig = JSON.parse(content) as ReflectionConfig
+        config = mergeConfig(DEFAULT_CONFIG, projectConfig)
+        debug("Loaded project config from", projectConfigPath)
+      }
+    } catch (e) {
+      debug("Failed to load project config:", e)
+    }
+
+    // Fall back to global config if no project config
+    if (!existsSync(projectConfigPath)) {
+      try {
+        if (existsSync(globalConfigPath)) {
+          const content = await readFile(globalConfigPath, "utf-8")
+          const globalConfig = JSON.parse(content) as ReflectionConfig
+          config = mergeConfig(DEFAULT_CONFIG, globalConfig)
+          debug("Loaded global config from", globalConfigPath)
+        }
+      } catch (e) {
+        debug("Failed to load global config:", e)
+      }
+    }
+
+    configCache = { config, timestamp: now }
+    return config
+  }
+
+  /**
+   * Deep merge config with defaults
+   */
+  function mergeConfig(defaults: ReflectionConfig, override: ReflectionConfig): ReflectionConfig {
+    return {
+      enabled: override.enabled ?? defaults.enabled,
+      model: override.model ?? defaults.model,
+      customRules: {
+        coding: override.customRules?.coding ?? defaults.customRules?.coding,
+        research: override.customRules?.research ?? defaults.customRules?.research
+      },
+      severityMapping: { ...defaults.severityMapping, ...override.severityMapping },
+      taskPatterns: override.taskPatterns ?? defaults.taskPatterns,
+      promptTemplate: override.promptTemplate ?? defaults.promptTemplate,
+      strictMode: override.strictMode ?? defaults.strictMode
+    }
+  }
+
+  /**
+   * Find matching task pattern for the given task text
+   */
+  function findMatchingPattern(task: string, config: ReflectionConfig): TaskPattern | null {
+    if (!config.taskPatterns?.length) return null
+    
+    for (const pattern of config.taskPatterns) {
+      try {
+        const regex = new RegExp(pattern.pattern, "i")
+        if (regex.test(task)) {
+          debug("Task matched pattern:", pattern.pattern)
+          return pattern
+        }
+      } catch (e) {
+        debug("Invalid pattern regex:", pattern.pattern, e)
+      }
+    }
+    return null
+  }
+
+  /**
+   * Build custom rules section based on config and task
+   */
+  function buildCustomRules(isResearch: boolean, config: ReflectionConfig, matchedPattern: TaskPattern | null): string {
+    const rules: string[] = []
+    
+    if (isResearch) {
+      rules.push(...(config.customRules?.research || []))
+    } else {
+      rules.push(...(config.customRules?.coding || []))
+    }
+    
+    // Add extra rules from matched pattern
+    if (matchedPattern?.extraRules) {
+      rules.push(...matchedPattern.extraRules)
+    }
+    
+    if (rules.length === 0) return ""
+    
+    const numberedRules = rules.map((r, i) => `${i + 1}. ${r}`).join("\n")
+    return isResearch 
+      ? `\n### Research Task Rules (APPLIES TO THIS TASK)\nThis is a RESEARCH task - the user explicitly requested investigation/analysis without code changes.\n${numberedRules}\n`
+      : `\n### Coding Task Rules\n${numberedRules}\n`
+  }
 
   async function ensureReflectionDir(): Promise<void> {
     try {
@@ -349,22 +506,24 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
 
       try {
         const agents = await getAgentsFile()
+        const config = await loadConfig()
         
-        const researchRules = extracted.isResearch ? `
-### Research Task Rules (APPLIES TO THIS TASK)
-This is a RESEARCH task - the user explicitly requested investigation/analysis without code changes.
-- Do NOT require tests, builds, or code changes
-- Complete = research findings delivered with reasonable depth
-- If agent provided research findings, mark complete: true
-` : ""
-
-        const codingRules = !extracted.isResearch ? `
-### Coding Task Rules
-1. All explicitly requested functionality implemented
-2. Tests run and pass (if tests were requested or exist)
-3. Build/compile succeeds (if applicable)
-4. No unhandled errors in output
-` : ""
+        // Check if reflection is disabled
+        if (config.enabled === false) {
+          debug("SKIP: reflection disabled in config")
+          return
+        }
+        
+        // Find matching task pattern for custom rules
+        const matchedPattern = findMatchingPattern(extracted.task, config)
+        
+        // Determine task type (pattern can override detection)
+        const isResearch = matchedPattern?.type 
+          ? matchedPattern.type === "research"
+          : extracted.isResearch
+        
+        // Build rules section from config
+        const rulesSection = buildCustomRules(isResearch, config, matchedPattern)
 
         const resultPreview = extracted.result.slice(0, 4000)
         const truncationNote = extracted.result.length > 4000 
@@ -375,7 +534,18 @@ This is a RESEARCH task - the user explicitly requested investigation/analysis w
           ? `\n\n**NOTE: The user sent ${extracted.humanMessages.length} messages. Evaluate completion based on the FINAL requirements.**`
           : ""
 
-        const prompt = `TASK VERIFICATION
+        // Use custom prompt template if provided, otherwise use default
+        const prompt = config.promptTemplate 
+          ? config.promptTemplate
+              .replace("{{agents}}", agents ? `## Project Instructions\n${agents.slice(0, 1500)}\n` : "")
+              .replace("{{conversationNote}}", conversationNote)
+              .replace("{{task}}", extracted.task)
+              .replace("{{tools}}", extracted.tools || "(none)")
+              .replace("{{result}}", resultPreview)
+              .replace("{{truncationNote}}", truncationNote)
+              .replace("{{taskType}}", isResearch ? "RESEARCH task (no code expected)" : "CODING/ACTION task")
+              .replace("{{rules}}", rulesSection)
+          : `TASK VERIFICATION
 
 Evaluate whether the agent completed what the user asked for.
 
@@ -394,7 +564,7 @@ ${resultPreview}${truncationNote}
 ## Evaluation Rules
 
 ### Task Type
-${extracted.isResearch ? "This is a RESEARCH task (no code expected)" : "This is a CODING/ACTION task"}
+${isResearch ? "This is a RESEARCH task (no code expected)" : "This is a CODING/ACTION task"}
 
 ### Severity Levels
 - BLOCKER: security, auth, billing, data loss, E2E broken
@@ -402,7 +572,7 @@ ${extracted.isResearch ? "This is a RESEARCH task (no code expected)" : "This is
 - MEDIUM: partial degradation
 - LOW: cosmetic
 - NONE: no issues
-${researchRules}${codingRules}
+${rulesSection}
 
 ---
 
