@@ -205,7 +205,13 @@ const REFLECTION_POLL_INTERVAL_MS = 500    // Poll interval for verdict file
 type TTSEngine = "coqui" | "chatterbox" | "os"
 
 // Coqui TTS model types
-type CoquiModel = "bark" | "xtts_v2" | "tortoise" | "vits" | "jenny"
+// - bark: Multilingual neural TTS (slower, higher quality)
+// - xtts_v2: XTTS v2 with voice cloning support
+// - tortoise: Very high quality but slow
+// - vits: Fast VITS model (LJSpeech single speaker)
+// - vctk_vits: VCTK multi-speaker VITS (supports speaker selection, e.g., p226)
+// - jenny: Jenny voice model
+type CoquiModel = "bark" | "xtts_v2" | "tortoise" | "vits" | "vctk_vits" | "jenny"
 
 interface TTSConfig {
   enabled?: boolean
@@ -215,14 +221,14 @@ interface TTSConfig {
     voice?: string                    // Voice name (e.g., "Samantha", "Alex"). Run `say -v ?` on macOS to list voices
     rate?: number                     // Speaking rate in words per minute (default: 200)
   }
-  // Coqui TTS options (supports bark, xtts_v2, tortoise, vits, etc.)
+  // Coqui TTS options (supports bark, xtts_v2, tortoise, vits, vctk_vits, etc.)
   coqui?: {
-    model?: CoquiModel                // Model to use: "bark", "xtts_v2", "tortoise", "vits" (default: "xtts_v2")
+    model?: CoquiModel                // Model to use: "vctk_vits" (recommended), "xtts_v2", "vits", etc.
     device?: "cuda" | "cpu" | "mps"   // GPU, CPU, or Apple Silicon (default: auto-detect)
     // XTTS-specific options  
     voiceRef?: string                 // Path to reference voice clip for cloning (XTTS)
     language?: string                 // Language code for XTTS (default: "en")
-    speaker?: string                  // Speaker name for XTTS (default: "Ana Florence")
+    speaker?: string                  // Speaker name/ID (e.g., "p226" for vctk_vits, "Ana Florence" for xtts)
     serverMode?: boolean              // Keep model loaded for fast subsequent requests (default: true)
   }
   // Chatterbox-specific options
@@ -337,9 +343,9 @@ async function loadConfig(): Promise<TTSConfig> {
       enabled: true, 
       engine: "coqui",
       coqui: {
-        model: "xtts_v2",
+        model: "vctk_vits",
         device: "mps",
-        language: "en",
+        speaker: "p226",
         serverMode: true
       },
       os: {
@@ -1103,11 +1109,11 @@ def main():
     parser = argparse.ArgumentParser(description="Coqui TTS")
     parser.add_argument("text", help="Text to synthesize")
     parser.add_argument("--output", "-o", required=True, help="Output WAV file")
-    parser.add_argument("--model", default="xtts_v2", choices=["bark", "xtts_v2", "tortoise", "vits", "jenny"])
+    parser.add_argument("--model", default="vctk_vits", choices=["bark", "xtts_v2", "tortoise", "vits", "vctk_vits", "jenny"])
     parser.add_argument("--device", default="cuda", choices=["cuda", "mps", "cpu"])
     parser.add_argument("--voice-ref", help="Reference voice audio path (for XTTS voice cloning)")
     parser.add_argument("--language", default="en", help="Language code (for XTTS)")
-    parser.add_argument("--speaker", default="Ana Florence", help="Speaker name for XTTS (e.g., 'Ana Florence', 'Claribel Dervla')")
+    parser.add_argument("--speaker", default="p226", help="Speaker ID for multi-speaker models (e.g., 'p226' for vctk_vits)")
     args = parser.parse_args()
     
     try:
@@ -1159,6 +1165,11 @@ def main():
             tts = TTS("tts_models/en/ljspeech/vits")
             tts = tts.to(device)
             tts.tts_to_file(text=args.text, file_path=args.output)
+        elif args.model == "vctk_vits":
+            # VCTK VITS multi-speaker model - clear, professional voices
+            tts = TTS("tts_models/en/vctk/vits")
+            tts = tts.to(device)
+            tts.tts_to_file(text=args.text, file_path=args.output, speaker=args.speaker)
         elif args.model == "jenny":
             tts = TTS("tts_models/en/jenny/jenny")
             tts = tts.to(device)
@@ -1186,10 +1197,10 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description="Coqui TTS Server")
     parser.add_argument("--socket", required=True, help="Unix socket path")
-    parser.add_argument("--model", default="xtts_v2", choices=["bark", "xtts_v2", "tortoise", "vits", "jenny"])
+    parser.add_argument("--model", default="vctk_vits", choices=["bark", "xtts_v2", "tortoise", "vits", "vctk_vits", "jenny"])
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu", "mps"])
     parser.add_argument("--voice-ref", help="Default reference voice (for XTTS)")
-    parser.add_argument("--speaker", default="Ana Florence", help="Default XTTS speaker")
+    parser.add_argument("--speaker", default="p226", help="Default speaker ID (e.g., 'p226' for vctk_vits)")
     parser.add_argument("--language", default="en", help="Default language")
     args = parser.parse_args()
     
@@ -1222,6 +1233,8 @@ def main():
         tts = TTS("tts_models/en/multi-dataset/tortoise-v2")
     elif args.model == "vits":
         tts = TTS("tts_models/en/ljspeech/vits")
+    elif args.model == "vctk_vits":
+        tts = TTS("tts_models/en/vctk/vits")
     elif args.model == "jenny":
         tts = TTS("tts_models/en/jenny/jenny")
     
@@ -1265,6 +1278,9 @@ def main():
                     tts.tts_to_file(text=text, file_path=output, speaker_wav=voice_ref, language=language)
                 else:
                     tts.tts_to_file(text=text, file_path=output, speaker=speaker, language=language)
+            elif args.model in ("vctk_vits",):
+                # Multi-speaker models use speaker ID
+                tts.tts_to_file(text=text, file_path=output, speaker=speaker)
             else:
                 tts.tts_to_file(text=text, file_path=output)
             
