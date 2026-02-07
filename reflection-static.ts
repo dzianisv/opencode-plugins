@@ -217,6 +217,17 @@ Rules:
         return
       }
 
+      // Check if last assistant message was aborted/incomplete
+      const lastAssistantMsg = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
+      if (lastAssistantMsg) {
+        const metadata = lastAssistantMsg.info?.time as any
+        // Skip if message has error or was not completed properly
+        if (metadata?.error || !metadata?.completed) {
+          debug("SKIP: last message was aborted or incomplete")
+          return
+        }
+      }
+
       if (isJudgeSession(sessionId, messages)) {
         debug("SKIP: is judge session")
         return
@@ -312,14 +323,26 @@ Rules:
     event: async ({ event }: { event: { type: string; properties?: any } }) => {
       debug("event received:", event.type)
 
-      // Track aborts
+      // Track aborts from session.error (Esc key press)
       if (event.type === "session.error") {
         const props = (event as any).properties
         const sessionId = props?.sessionID
         const error = props?.error
-        if (sessionId && error?.name === "MessageAbortedError") {
+        if (sessionId) {
+          // Track ANY error as abort - be aggressive to prevent spam
+          if (error?.name === "MessageAbortedError" || error?.message?.includes("abort")) {
+            abortedSessions.add(sessionId)
+            debug("Session aborted (error):", sessionId.slice(0, 8))
+          }
+        }
+      }
+
+      // Also track message.aborted events directly
+      if (event.type === "message.aborted" || event.type === "session.aborted") {
+        const sessionId = (event as any).properties?.sessionID
+        if (sessionId) {
           abortedSessions.add(sessionId)
-          debug("Session aborted:", sessionId.slice(0, 8))
+          debug("Session aborted (direct):", sessionId.slice(0, 8))
         }
       }
 
@@ -334,10 +357,20 @@ Rules:
             return
           }
 
-          // Skip aborted sessions
+          // Skip aborted sessions - check and clear
           if (abortedSessions.has(sessionId)) {
             abortedSessions.delete(sessionId)
-            debug("SKIP: session was aborted")
+            debug("SKIP: session was aborted (Esc)")
+            return
+          }
+
+          // Small delay to allow abort events to arrive first
+          await new Promise(r => setTimeout(r, 100))
+          
+          // Check again after delay in case abort came in
+          if (abortedSessions.has(sessionId)) {
+            abortedSessions.delete(sessionId)
+            debug("SKIP: session was aborted (Esc, after delay)")
             return
           }
 
