@@ -13,6 +13,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 const DEBUG = process.env.REFLECTION_DEBUG === "1"
 const JUDGE_RESPONSE_TIMEOUT = 120_000
 const POLL_INTERVAL = 2_000
+const ABORT_COOLDOWN = 10_000 // 10 second cooldown after Esc before allowing reflection
 
 function debug(...args: any[]) {
   if (DEBUG) console.error("[ReflectionStatic]", ...args)
@@ -36,8 +37,8 @@ export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
   const judgeSessionIds = new Set<string>()
   // Track sessions where agent confirmed completion
   const confirmedComplete = new Set<string>()
-  // Track aborted sessions
-  const abortedSessions = new Set<string>()
+  // Track aborted sessions with timestamps (cooldown-based to handle rapid Esc presses)
+  const recentlyAbortedSessions = new Map<string, number>()
   // Count human messages per session
   const lastReflectedMsgCount = new Map<string, number>()
   // Active reflections to prevent concurrent processing
@@ -204,6 +205,9 @@ Rules:
   async function runReflection(sessionId: string): Promise<void> {
     debug("runReflection called for session:", sessionId.slice(0, 8))
     
+    // Capture when this reflection started - used to detect aborts during judge evaluation
+    const reflectionStartTime = Date.now()
+    
     if (activeReflections.has(sessionId)) {
       debug("SKIP: active reflection in progress")
       return
@@ -221,9 +225,15 @@ Rules:
       const lastAssistantMsg = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
       if (lastAssistantMsg) {
         const metadata = lastAssistantMsg.info?.time as any
-        // Skip if message has error or was not completed properly
-        if (metadata?.error || !metadata?.completed) {
-          debug("SKIP: last message was aborted or incomplete")
+        // Skip if message was not completed properly
+        if (!metadata?.completed) {
+          debug("SKIP: last message not completed")
+          return
+        }
+        // Skip if message has an error (including abort)
+        const error = (lastAssistantMsg.info as any)?.error
+        if (error) {
+          debug("SKIP: last message has error:", error?.name || error?.message)
           return
         }
       }
@@ -323,26 +333,14 @@ Rules:
     event: async ({ event }: { event: { type: string; properties?: any } }) => {
       debug("event received:", event.type)
 
-      // Track aborts from session.error (Esc key press)
+      // Track aborts from session.error (Esc key press) with timestamp for cooldown
       if (event.type === "session.error") {
         const props = (event as any).properties
         const sessionId = props?.sessionID
         const error = props?.error
-        if (sessionId) {
-          // Track ANY error as abort - be aggressive to prevent spam
-          if (error?.name === "MessageAbortedError" || error?.message?.includes("abort")) {
-            abortedSessions.add(sessionId)
-            debug("Session aborted (error):", sessionId.slice(0, 8))
-          }
-        }
-      }
-
-      // Also track message.aborted events directly
-      if (event.type === "message.aborted" || event.type === "session.aborted") {
-        const sessionId = (event as any).properties?.sessionID
-        if (sessionId) {
-          abortedSessions.add(sessionId)
-          debug("Session aborted (direct):", sessionId.slice(0, 8))
+        if (sessionId && error?.name === "MessageAbortedError") {
+          recentlyAbortedSessions.set(sessionId, Date.now())
+          debug("Session aborted (Esc), cooldown started:", sessionId.slice(0, 8))
         }
       }
 
@@ -357,21 +355,17 @@ Rules:
             return
           }
 
-          // Skip aborted sessions - check and clear
-          if (abortedSessions.has(sessionId)) {
-            abortedSessions.delete(sessionId)
-            debug("SKIP: session was aborted (Esc)")
-            return
-          }
-
-          // Small delay to allow abort events to arrive first
-          await new Promise(r => setTimeout(r, 100))
-          
-          // Check again after delay in case abort came in
-          if (abortedSessions.has(sessionId)) {
-            abortedSessions.delete(sessionId)
-            debug("SKIP: session was aborted (Esc, after delay)")
-            return
+          // Skip recently aborted sessions (cooldown-based to handle race conditions)
+          const abortTime = recentlyAbortedSessions.get(sessionId)
+          if (abortTime) {
+            const elapsed = Date.now() - abortTime
+            if (elapsed < ABORT_COOLDOWN) {
+              debug("SKIP: session was recently aborted (Esc)", elapsed, "ms ago, cooldown:", ABORT_COOLDOWN)
+              return  // Don't delete - cooldown still active
+            }
+            // Cooldown expired, clean up
+            recentlyAbortedSessions.delete(sessionId)
+            debug("Abort cooldown expired, allowing reflection")
           }
 
           await runReflection(sessionId)
