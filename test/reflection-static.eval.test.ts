@@ -5,7 +5,14 @@
  * 1. Starts OpenCode with the reflection-static plugin
  * 2. Asks it to create a Python hello world with unit tests
  * 3. Verifies the plugin triggered and provided feedback
- * 4. Uses Azure GPT-5.2 to evaluate the plugin's effectiveness
+ * 4. Uses Azure OpenAI to evaluate the plugin's effectiveness
+ * 
+ * REQUIRES: Azure credentials in .env:
+ *   - AZURE_OPENAI_API_KEY
+ *   - AZURE_OPENAI_BASE_URL
+ *   - AZURE_OPENAI_DEPLOYMENT (optional, defaults to gpt-4.1-mini)
+ * 
+ * NO FALLBACK: Test will fail if Azure is unavailable - no fake mock scores.
  */
 
 import { describe, it, before, after } from "node:test"
@@ -83,15 +90,16 @@ async function waitForServer(port: number, timeout: number): Promise<boolean> {
 }
 
 /**
- * Call Azure GPT-5.2 to evaluate the reflection-static plugin's performance
+ * Call Azure to evaluate the reflection-static plugin's performance
+ * Uses Azure OpenAI endpoint with deployment from AZURE_OPENAI_DEPLOYMENT env var
  */
-async function evaluateWithGPT52(testResult: TestResult): Promise<EvaluationResult> {
+async function evaluateWithAzure(testResult: TestResult): Promise<EvaluationResult> {
   const apiKey = process.env.AZURE_OPENAI_API_KEY
   const baseUrl = process.env.AZURE_OPENAI_BASE_URL
+  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4.1-mini"
   
   if (!apiKey || !baseUrl) {
-    console.log("[Eval] Missing Azure credentials, using mock evaluation")
-    return mockEvaluation(testResult)
+    throw new Error("Missing Azure credentials: AZURE_OPENAI_API_KEY and AZURE_OPENAI_BASE_URL required in .env")
   }
 
   // Build conversation summary for evaluation
@@ -160,96 +168,45 @@ Return JSON only:
   "recommendations": ["list of improvements"]
 }`
 
-  try {
-    // Azure OpenAI endpoint format: {baseUrl}/openai/deployments/{deployment}/chat/completions?api-version=2024-02-15-preview
-    const deploymentName = "gpt-5.2" // or "gpt-4o" - adjust based on actual deployment name
-    const apiVersion = "2024-02-15-preview"
-    const endpoint = `${baseUrl.replace(/\/$/, "")}/openai/deployments/${deploymentName}/chat/completions?api-version=${apiVersion}`
+  // Azure OpenAI endpoint format
+  const apiVersion = "2024-12-01-preview"
+  const endpoint = `${baseUrl.replace(/\/$/, "")}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
 
-    console.log(`[Eval] Calling Azure GPT-5.2 at ${endpoint.slice(0, 50)}...`)
+  console.log(`[Eval] Calling Azure ${deployment}...`)
+  console.log(`[Eval] Endpoint: ${endpoint.slice(0, 70)}...`)
 
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "api-key": apiKey
-      },
-      body: JSON.stringify({
-        messages: [
-          { role: "system", content: "You are an expert evaluator of AI agent plugins. Return only valid JSON." },
-          { role: "user", content: evaluationPrompt }
-        ],
-        temperature: 0.3,
-        max_tokens: 1000
-      })
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-key": apiKey
+    },
+    body: JSON.stringify({
+      messages: [
+        { role: "system", content: "You are an expert evaluator of AI agent plugins. Return only valid JSON." },
+        { role: "user", content: evaluationPrompt }
+      ],
+      temperature: 0.3,
+      max_tokens: 1000
     })
+  })
 
-    if (!response.ok) {
-      const errorText = await response.text()
-      console.log(`[Eval] Azure API error: ${response.status} - ${errorText}`)
-      return mockEvaluation(testResult)
-    }
-
-    const data = await response.json()
-    const content = data.choices?.[0]?.message?.content || ""
-    
-    const jsonMatch = content.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      console.log("[Eval] No JSON in GPT response, using mock")
-      return mockEvaluation(testResult)
-    }
-
-    const result = JSON.parse(jsonMatch[0]) as EvaluationResult
-    console.log(`[Eval] GPT-5.2 score: ${result.score}/5 - ${result.verdict}`)
-    return result
-
-  } catch (e: any) {
-    console.log(`[Eval] Error calling Azure: ${e.message}`)
-    return mockEvaluation(testResult)
-  }
-}
-
-/**
- * Fallback mock evaluation based on observed behavior
- */
-function mockEvaluation(testResult: TestResult): EvaluationResult {
-  let score = 0
-  const pluginEffectiveness = {
-    triggeredCorrectly: false,
-    askedSelfAssessment: testResult.selfAssessmentQuestion,
-    analyzedResponse: testResult.pluginAnalysis,
-    tookAppropriateAction: testResult.pluginAction !== "none",
-    helpedCompleteTask: false
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`Azure API error: ${response.status} - ${errorText}`)
   }
 
-  // Score based on observed behavior
-  if (testResult.selfAssessmentQuestion) {
-    score += 1
-    pluginEffectiveness.triggeredCorrectly = true
-  }
-  if (testResult.selfAssessmentResponse) score += 1
-  if (testResult.pluginAnalysis) score += 1
-  if (testResult.pluginAction !== "none") score += 1
-  if (testResult.pythonTestsPassed) {
-    score += 1
-    pluginEffectiveness.helpedCompleteTask = true
+  const data = await response.json()
+  const content = data.choices?.[0]?.message?.content || ""
+  
+  const jsonMatch = content.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) {
+    throw new Error(`No JSON in Azure response: ${content.slice(0, 200)}`)
   }
 
-  const verdict = score >= 4 ? "COMPLETE" 
-    : score >= 3 ? "MOSTLY_COMPLETE"
-    : score >= 2 ? "PARTIAL"
-    : score >= 1 ? "ATTEMPTED"
-    : "FAILED"
-
-  return {
-    score,
-    verdict,
-    feedback: `Mock evaluation: Plugin ${testResult.selfAssessmentQuestion ? "triggered" : "did not trigger"}. Files: ${testResult.filesCreated.length}. Tests passed: ${testResult.pythonTestsPassed}`,
-    pluginEffectiveness,
-    recommendations: testResult.selfAssessmentQuestion 
-      ? ["Plugin triggered correctly"] 
-      : ["Plugin did not trigger - check session.idle event handling"]
-  }
+  const result = JSON.parse(jsonMatch[0]) as EvaluationResult
+  console.log(`[Eval] Azure score: ${result.score}/5 - ${result.verdict}`)
+  return result
 }
 
 describe("reflection-static.ts Plugin E2E Evaluation", { timeout: TIMEOUT + 60_000 }, () => {
@@ -499,12 +456,13 @@ Requirements:
     assert.ok(testResult.messages.length >= 2, "Should have at least 2 messages")
   })
 
-  it("evaluates plugin effectiveness with GPT-5.2", async () => {
+  it("evaluates plugin effectiveness with Azure LLM", async () => {
+    const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4.1-mini"
     console.log("\n" + "-".repeat(60))
-    console.log("--- Evaluating with Azure GPT-5.2 ---")
+    console.log(`--- Evaluating with Azure ${deployment} ---`)
     console.log("-".repeat(60) + "\n")
 
-    evaluationResult = await evaluateWithGPT52(testResult)
+    evaluationResult = await evaluateWithAzure(testResult)
 
     console.log("\n[Eval] Results:")
     console.log(`  Score: ${evaluationResult.score}/5`)
