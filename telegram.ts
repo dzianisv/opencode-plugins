@@ -688,7 +688,7 @@ async function transcribeAudio(
   }
   
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/transcribe-base64`, {
+    const response = await fetch(`http://127.0.0.1:${port}/transcribe`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
