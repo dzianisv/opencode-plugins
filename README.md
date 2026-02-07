@@ -29,7 +29,7 @@ This plugin adds a **judge layer** that automatically evaluates task completion 
 - **Automatic task verification** - Judge evaluates completion after each agent response
 - **Self-healing workflow** - Agent receives feedback and continues if work is incomplete
 - **Telegram notifications** - Get notified when tasks finish, reply via text or voice
-- **Local TTS** - Hear responses read aloud (Coqui XTTS, Chatterbox, macOS)
+- **Local TTS** - Hear responses read aloud (Coqui VCTK/VITS, Chatterbox, macOS)
 - **Voice-to-text** - Reply to Telegram with voice messages, transcribed by local Whisper
 
 ## Quick Install
@@ -152,9 +152,91 @@ Text-to-speech with Telegram integration for remote notifications and two-way co
 
 | Engine | Quality | Speed | Setup |
 |--------|---------|-------|-------|
-| **Coqui XTTS v2** | Excellent | 2-5s | Auto-installed, Python 3.9+ |
+| **Coqui TTS** | Excellent | Fast-Medium | Auto-installed, Python 3.9-3.11 |
 | **Chatterbox** | Excellent | 2-5s | Auto-installed, Python 3.11 |
 | **macOS say** | Good | Instant | None |
+
+### Coqui TTS Models
+
+| Model | Description | Multi-Speaker | Speed |
+|-------|-------------|---------------|-------|
+| `vctk_vits` | VCTK VITS (109 speakers, **recommended**) | Yes (p226 default) | Fast |
+| `vits` | LJSpeech single speaker | No | Fast |
+| `jenny` | Jenny voice | No | Medium |
+| `xtts_v2` | XTTS v2 with voice cloning | Yes (via voiceRef) | Slower |
+| `bark` | Multilingual neural TTS | No | Slower |
+| `tortoise` | Very high quality | No | Very slow |
+
+**Recommended**: `vctk_vits` with speaker `p226` (clear, professional British male voice)
+
+### VCTK Speakers (vctk_vits model)
+
+The VCTK corpus contains 109 speakers with various English accents. Speaker IDs are in format `pXXX`.
+
+**Popular speaker choices:**
+
+| Speaker | Gender | Accent | Description |
+|---------|--------|--------|-------------|
+| `p226` | Male | English | Clear, professional (recommended) |
+| `p225` | Female | English | Clear, neutral |
+| `p227` | Male | English | Deep voice |
+| `p228` | Female | English | Warm tone |
+| `p229` | Female | English | Higher pitch |
+| `p230` | Female | English | Soft voice |
+| `p231` | Male | English | Standard |
+| `p232` | Male | English | Casual |
+| `p233` | Female | Scottish | Scottish accent |
+| `p234` | Female | Scottish | Scottish accent |
+| `p236` | Female | English | Professional |
+| `p237` | Male | Scottish | Scottish accent |
+| `p238` | Female | N. Irish | Northern Irish |
+| `p239` | Female | English | Young voice |
+| `p240` | Female | English | Mature voice |
+| `p241` | Male | Scottish | Scottish accent |
+| `p243` | Male | English | Deep, authoritative |
+| `p244` | Female | English | Bright voice |
+| `p245` | Male | Irish | Irish accent |
+| `p246` | Male | Scottish | Scottish accent |
+| `p247` | Male | Scottish | Scottish accent |
+| `p248` | Female | Indian | Indian English |
+| `p249` | Female | Scottish | Scottish accent |
+| `p250` | Female | English | Standard |
+| `p251` | Male | Indian | Indian English |
+
+<details>
+<summary>All 109 VCTK speakers</summary>
+
+```
+p225, p226, p227, p228, p229, p230, p231, p232, p233, p234,
+p236, p237, p238, p239, p240, p241, p243, p244, p245, p246,
+p247, p248, p249, p250, p251, p252, p253, p254, p255, p256,
+p257, p258, p259, p260, p261, p262, p263, p264, p265, p266,
+p267, p268, p269, p270, p271, p272, p273, p274, p275, p276,
+p277, p278, p279, p280, p281, p282, p283, p284, p285, p286,
+p287, p288, p292, p293, p294, p295, p297, p298, p299, p300,
+p301, p302, p303, p304, p305, p306, p307, p308, p310, p311,
+p312, p313, p314, p316, p317, p318, p323, p326, p329, p330,
+p333, p334, p335, p336, p339, p340, p341, p343, p345, p347,
+p351, p360, p361, p362, p363, p364, p374, p376, ED
+```
+
+</details>
+
+### XTTS v2 Speakers
+
+XTTS v2 is primarily a voice cloning model. Use the `voiceRef` option to clone any voice:
+
+```json
+{
+  "coqui": {
+    "model": "xtts_v2",
+    "voiceRef": "/path/to/reference-voice.wav",
+    "language": "en"
+  }
+}
+```
+
+Supported languages: `en`, `es`, `fr`, `de`, `it`, `pt`, `pl`, `tr`, `ru`, `nl`, `cs`, `ar`, `zh-cn`, `ja`, `hu`, `ko`
 
 ### Configuration
 
@@ -165,9 +247,20 @@ Text-to-speech with Telegram integration for remote notifications and two-way co
   "enabled": true,
   "engine": "coqui",
   "coqui": {
-    "model": "xtts_v2",
+    "model": "vctk_vits",
     "device": "mps",
+    "speaker": "p226",
     "serverMode": true
+  },
+  "os": {
+    "voice": "Samantha",
+    "rate": 200
+  },
+  "chatterbox": {
+    "device": "mps",
+    "useTurbo": true,
+    "serverMode": true,
+    "exaggeration": 0.5
   },
   "telegram": {
     "enabled": true,
@@ -179,12 +272,49 @@ Text-to-speech with Telegram integration for remote notifications and two-way co
 }
 ```
 
+### Configuration Options
+
+#### Engine Selection
+
+| Option | Description |
+|--------|-------------|
+| `engine` | `"coqui"` (default), `"chatterbox"`, or `"os"` |
+
+#### Coqui Options (`coqui`)
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `model` | TTS model (see table above) | `"vctk_vits"` |
+| `device` | `"cuda"`, `"mps"`, or `"cpu"` | auto-detect |
+| `speaker` | Speaker ID for multi-speaker models | `"p226"` |
+| `serverMode` | Keep model loaded for fast requests | `true` |
+| `voiceRef` | Path to voice clip for cloning (XTTS) | - |
+| `language` | Language code for XTTS | `"en"` |
+
+#### Chatterbox Options (`chatterbox`)
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `device` | `"cuda"`, `"mps"`, or `"cpu"` | auto-detect |
+| `useTurbo` | Use Turbo model (10x faster) | `true` |
+| `serverMode` | Keep model loaded | `true` |
+| `exaggeration` | Emotion level (0.0-1.0) | `0.5` |
+| `voiceRef` | Path to voice clip for cloning | - |
+
+#### OS TTS Options (`os`)
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `voice` | macOS voice name (run `say -v ?` to list) | `"Samantha"` |
+| `rate` | Words per minute | `200` |
+
 ### Toggle Commands
 
 ```
 /tts        Toggle on/off
 /tts on     Enable
 /tts off    Disable
+/tts status Check current state
 ```
 
 ---
@@ -469,7 +599,7 @@ npm run test:tts:manual
 ## Requirements
 
 - OpenCode v1.0+
-- **TTS**: macOS (for `say`), Python 3.9+ (Coqui), Python 3.11 (Chatterbox)
+- **TTS**: macOS (for `say`), Python 3.9-3.11 (Coqui), Python 3.11 (Chatterbox)
 - **Telegram voice**: ffmpeg (`brew install ffmpeg`)
 - **Dependencies**: `bun` (OpenCode installs deps from package.json)
 

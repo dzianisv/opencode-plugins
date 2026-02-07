@@ -283,17 +283,18 @@ Task patterns allow query-based customization. Each pattern has:
 ## TTS Plugin (`tts.ts`)
 
 ### Overview
-Reads the final agent response aloud when a session completes. Supports two engines:
-- **OS TTS**: Native macOS `say` command (default, instant)
-- **Chatterbox**: High-quality neural TTS with voice cloning
+Reads the final agent response aloud when a session completes. Supports three engines:
+- **Coqui TTS**: High-quality neural TTS (default) - Model: `tts_models/en/vctk/vits` with p226 voice
+- **OS TTS**: Native macOS `say` command (instant, no setup)
+- **Chatterbox**: Alternative neural TTS with voice cloning
 
 ### Features
-- **Dual engine support**: OS TTS (instant) or Chatterbox (high quality)
-- **Server mode**: Chatterbox model stays loaded for fast subsequent requests
-- **Shared server**: Single Chatterbox instance shared across all OpenCode sessions
+- **Multiple engine support**: Coqui TTS (recommended), OS TTS (instant), Chatterbox
+- **Server mode**: TTS model stays loaded for fast subsequent requests
+- **Shared server**: Single TTS instance shared across all OpenCode sessions
 - **Lock mechanism**: Prevents multiple server startups from concurrent sessions
 - **Device auto-detection**: Supports CUDA, MPS (Apple Silicon), CPU
-- **Turbo model**: 10x faster Chatterbox inference
+- **Multi-speaker support**: Coqui VCTK model supports 109 speakers (p226 default)
 - Cleans markdown/code from text before speaking
 - Truncates long messages (1000 char limit)
 - Skips judge/reflection sessions
@@ -304,10 +305,16 @@ Edit `~/.config/opencode/tts.json`:
 ```json
 {
   "enabled": true,
-  "engine": "chatterbox",
+  "engine": "coqui",
   "os": {
     "voice": "Samantha",
     "rate": 200
+  },
+  "coqui": {
+    "model": "vctk_vits",
+    "device": "mps",
+    "speaker": "p226",
+    "serverMode": true
   },
   "chatterbox": {
     "device": "mps",
@@ -318,14 +325,24 @@ Edit `~/.config/opencode/tts.json`:
 }
 ```
 
-### Chatterbox Server Files
-Located in `~/.config/opencode/opencode-helpers/chatterbox/`:
+### Coqui TTS Models
+| Model | Description | Speed |
+|-------|-------------|-------|
+| `vctk_vits` | Multi-speaker VITS (109 speakers, p226 recommended) | Fast |
+| `vits` | LJSpeech single speaker | Fast |
+| `jenny` | Jenny voice | Medium |
+| `xtts_v2` | XTTS with voice cloning | Slower |
+| `bark` | Multilingual neural TTS | Slower |
+| `tortoise` | Very high quality | Very slow |
+
+### Coqui Server Files
+Located in `~/.config/opencode/opencode-helpers/coqui/`:
 - `tts.py` - One-shot TTS script
 - `tts_server.py` - Persistent server script
 - `tts.sock` - Unix socket for IPC
 - `server.pid` - Running server PID
 - `server.lock` - Startup lock file
-- `venv/` - Python virtualenv with chatterbox-tts
+- `venv/` - Python virtualenv with TTS package
 
 ### Testing
 ```bash
@@ -335,14 +352,14 @@ npm run test:tts:manual # Actually speaks test phrases
 
 ### Debugging
 ```bash
-# Check if Chatterbox server is running
-ls -la ~/.config/opencode/opencode-helpers/chatterbox/tts.sock
+# Check if Coqui server is running
+ls -la ~/.config/opencode/opencode-helpers/coqui/tts.sock
 
 # Check server PID
-cat ~/.config/opencode/opencode-helpers/chatterbox/server.pid
+cat ~/.config/opencode/opencode-helpers/coqui/server.pid
 
 # Stop server manually
-kill $(cat ~/.config/opencode/opencode-helpers/chatterbox/server.pid)
+kill $(cat ~/.config/opencode/opencode-helpers/coqui/server.pid)
 
 # Check server logs (stderr)
 # Server automatically restarts on next TTS request
