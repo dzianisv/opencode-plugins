@@ -29,7 +29,7 @@ This plugin adds a **judge layer** that automatically evaluates task completion 
 - **Automatic task verification** - Judge evaluates completion after each agent response
 - **Self-healing workflow** - Agent receives feedback and continues if work is incomplete
 - **Telegram notifications** - Get notified when tasks finish, reply via text or voice
-- **Local TTS** - Hear responses read aloud (Coqui XTTS, Chatterbox, macOS)
+- **Local TTS** - Hear responses read aloud (Coqui VCTK/VITS, Chatterbox, macOS)
 - **Voice-to-text** - Reply to Telegram with voice messages, transcribed by local Whisper
 
 ## Quick Install
@@ -152,9 +152,22 @@ Text-to-speech with Telegram integration for remote notifications and two-way co
 
 | Engine | Quality | Speed | Setup |
 |--------|---------|-------|-------|
-| **Coqui XTTS v2** | Excellent | 2-5s | Auto-installed, Python 3.9+ |
+| **Coqui TTS** | Excellent | Fast-Medium | Auto-installed, Python 3.9-3.11 |
 | **Chatterbox** | Excellent | 2-5s | Auto-installed, Python 3.11 |
 | **macOS say** | Good | Instant | None |
+
+### Coqui TTS Models
+
+| Model | Description | Multi-Speaker | Speed |
+|-------|-------------|---------------|-------|
+| `vctk_vits` | VCTK VITS (109 speakers, **recommended**) | Yes (p226 default) | Fast |
+| `vits` | LJSpeech single speaker | No | Fast |
+| `jenny` | Jenny voice | No | Medium |
+| `xtts_v2` | XTTS v2 with voice cloning | Yes | Slower |
+| `bark` | Multilingual neural TTS | No | Slower |
+| `tortoise` | Very high quality | No | Very slow |
+
+**Recommended**: `vctk_vits` with speaker `p226` (clear, professional British male voice)
 
 ### Configuration
 
@@ -165,9 +178,20 @@ Text-to-speech with Telegram integration for remote notifications and two-way co
   "enabled": true,
   "engine": "coqui",
   "coqui": {
-    "model": "xtts_v2",
+    "model": "vctk_vits",
     "device": "mps",
+    "speaker": "p226",
     "serverMode": true
+  },
+  "os": {
+    "voice": "Samantha",
+    "rate": 200
+  },
+  "chatterbox": {
+    "device": "mps",
+    "useTurbo": true,
+    "serverMode": true,
+    "exaggeration": 0.5
   },
   "telegram": {
     "enabled": true,
@@ -179,12 +203,49 @@ Text-to-speech with Telegram integration for remote notifications and two-way co
 }
 ```
 
+### Configuration Options
+
+#### Engine Selection
+
+| Option | Description |
+|--------|-------------|
+| `engine` | `"coqui"` (default), `"chatterbox"`, or `"os"` |
+
+#### Coqui Options (`coqui`)
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `model` | TTS model (see table above) | `"vctk_vits"` |
+| `device` | `"cuda"`, `"mps"`, or `"cpu"` | auto-detect |
+| `speaker` | Speaker ID for multi-speaker models | `"p226"` |
+| `serverMode` | Keep model loaded for fast requests | `true` |
+| `voiceRef` | Path to voice clip for cloning (XTTS) | - |
+| `language` | Language code for XTTS | `"en"` |
+
+#### Chatterbox Options (`chatterbox`)
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `device` | `"cuda"`, `"mps"`, or `"cpu"` | auto-detect |
+| `useTurbo` | Use Turbo model (10x faster) | `true` |
+| `serverMode` | Keep model loaded | `true` |
+| `exaggeration` | Emotion level (0.0-1.0) | `0.5` |
+| `voiceRef` | Path to voice clip for cloning | - |
+
+#### OS TTS Options (`os`)
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `voice` | macOS voice name (run `say -v ?` to list) | `"Samantha"` |
+| `rate` | Words per minute | `200` |
+
 ### Toggle Commands
 
 ```
 /tts        Toggle on/off
 /tts on     Enable
 /tts off    Disable
+/tts status Check current state
 ```
 
 ---
@@ -469,7 +530,7 @@ npm run test:tts:manual
 ## Requirements
 
 - OpenCode v1.0+
-- **TTS**: macOS (for `say`), Python 3.9+ (Coqui), Python 3.11 (Chatterbox)
+- **TTS**: macOS (for `say`), Python 3.9-3.11 (Coqui), Python 3.11 (Chatterbox)
 - **Telegram voice**: ffmpeg (`brew install ffmpeg`)
 - **Dependencies**: `bun` (OpenCode installs deps from package.json)
 
