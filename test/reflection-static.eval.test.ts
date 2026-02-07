@@ -24,8 +24,8 @@ import { fileURLToPath } from "url"
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/client"
 import { config } from "dotenv"
 
-// Load .env file
-config({ path: join(dirname(fileURLToPath(import.meta.url)), "../.env") })
+// Load .env file (override existing env vars to ensure we use the correct credentials)
+config({ path: join(dirname(fileURLToPath(import.meta.url)), "../.env"), override: true })
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_PATH = join(__dirname, "../reflection-static.ts")
