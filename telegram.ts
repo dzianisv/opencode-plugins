@@ -687,7 +687,7 @@ async function transcribeAudio(
   }
   
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/transcribe`, {
+    const response = await fetch(`http://127.0.0.1:${port}/transcribe-base64`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -904,11 +904,19 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
     }
   }
 
-  // Initialize on plugin load
+  // Initialize on plugin load (non-blocking to avoid hanging OpenCode startup)
   const config = await loadConfig()
   if (config.enabled) {
-    await subscribeToReplies(config)
-    await pollMissedReplies(config)
+    // Run initialization in background to avoid blocking OpenCode startup
+    // Supabase realtime subscription can take time to establish
+    setTimeout(async () => {
+      try {
+        await subscribeToReplies(config)
+        await pollMissedReplies(config)
+      } catch (err: any) {
+        await debug(`Background init failed: ${err?.message}`)
+      }
+    }, 100)
   }
 
   return {

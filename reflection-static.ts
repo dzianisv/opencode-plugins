@@ -19,15 +19,11 @@ function debug(...args: any[]) {
   if (DEBUG) console.error("[ReflectionStatic]", ...args)
 }
 
-const STATIC_QUESTION = `## Self-Assessment Required
-
-Please answer these questions honestly:
-
+const STATIC_QUESTION = `
 1. **What was the task?** (Summarize what the user asked you to do)
 2. **Are you sure you completed it?** (Yes/No with confidence level)
 3. **If you didn't complete it, why did you stop?**
 4. **What improvements or next steps could be made?**
-
 Be specific and honest. If you're uncertain about completion, say so.`
 
 export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
