@@ -1,4 +1,12 @@
 # OpenCode Plugins
+<img width="1428" height="926" alt="Screenshot 2026-02-08 at 09 13 26" src="https://github.com/user-attachments/assets/1f507538-be9e-43a4-a1da-cb328e8e1878" />
+@reflection-statis.ts - push opencode agent to reflect on the task, pretty usefull for continuous interrupted run
+
+
+@telegram.ts - integrates with Telegram over [t.me/OpencodeMgrBot](@OpenCodeMgrBot) bot
+
+@tts.ts - uses coqui TTS to read the opencode agent response. Useful to run a few agents on macOS and be notified when one finishes a task. 
+
 
 [![Tests](https://github.com/dzianisv/opencode-plugins/actions/workflows/test.yml/badge.svg)](https://github.com/dzianisv/opencode-plugins/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
