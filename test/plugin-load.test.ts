@@ -41,6 +41,7 @@ describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, 
     await cp(join(ROOT, "worktree.ts"), join(pluginDir, "worktree.ts"))
     await cp(join(ROOT, "tts.ts"), join(pluginDir, "tts.ts"))
     await cp(join(ROOT, "telegram.ts"), join(pluginDir, "telegram.ts"))
+    await cp(join(ROOT, "github.ts"), join(pluginDir, "github.ts"))
   }
 
   before(async () => {
