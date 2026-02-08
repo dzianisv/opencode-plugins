@@ -220,32 +220,36 @@ Create a plugin that posts all agent messages to the associated GitHub issue as 
 
 ## Tasks
 
-- [ ] Task 1: Create github.ts plugin skeleton
+- [x] Task 1: Create github.ts plugin skeleton
   - Plugin structure with event handlers
   - Configuration loading from ~/.config/opencode/github.json
   - Debug logging support
 
-- [ ] Task 2: Implement issue detection
+- [x] Task 2: Implement issue detection
   - Parse first message for GitHub issue URL
   - Read .github-issue file if exists
   - Use `gh` CLI to check PR's closingIssuesReferences
   - Extract issue number from branch name
   - Create new issue if none found
 
-- [ ] Task 3: Implement message posting
+- [x] Task 3: Implement message posting
   - Format agent messages as GitHub comments
   - Include metadata (timestamp, model, session ID)
   - Handle rate limiting
   - Batch messages to avoid spam
 
-- [ ] Task 4: Write tests
-  - Unit tests for issue URL parsing
-  - Unit tests for branch name extraction
-  - Integration tests with mock gh CLI
+- [x] Task 4: Write tests
+  - Unit tests for issue URL parsing (5 tests)
+  - Unit tests for branch name extraction (6 tests)
+  - Unit tests for message formatting (4 tests)
+  - Unit tests for config defaults (2 tests)
+  - Integration test for gh CLI availability (1 test)
 
-- [ ] Task 5: Documentation
-  - Update AGENTS.md
-  - Create example configuration
+- [x] Task 5: Documentation
+  - Updated AGENTS.md with full plugin documentation
+  - Added config options table
+  - Added .github-issue file format
+  - Added branch name patterns
 
 ## Configuration Schema
 
