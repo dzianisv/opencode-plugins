@@ -28,9 +28,8 @@ import { homedir } from "os"
 const execAsync = promisify(exec)
 
 // ==================== WHISPER PATHS ====================
-
-const HELPERS_DIR = join(homedir(), ".config", "opencode", "opencode-helpers")
-const WHISPER_DIR = join(HELPERS_DIR, "whisper")
+// Unified location shared with opencode-manager
+const WHISPER_DIR = join(homedir(), ".local", "lib", "whisper")
 const WHISPER_VENV = join(WHISPER_DIR, "venv")
 const WHISPER_SERVER_SCRIPT = join(WHISPER_DIR, "whisper_server.py")
 const WHISPER_PID = join(WHISPER_DIR, "server.pid")
@@ -688,7 +687,7 @@ async function transcribeAudio(
   }
   
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/transcribe`, {
+    const response = await fetch(`http://127.0.0.1:${port}/transcribe-base64`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -726,10 +725,8 @@ function isSessionComplete(messages: any[]): boolean {
   const lastAssistant = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
   if (!lastAssistant) return false
   if (lastAssistant.info?.error) return false
-  const hasPending = lastAssistant.parts?.some((p: any) => 
-    p.type === "tool" && p.state === "pending"
-  )
-  return !hasPending
+  // Check if message has completed timestamp (same logic as tts.ts)
+  return !!(lastAssistant.info?.time as any)?.completed
 }
 
 function extractLastResponse(messages: any[]): string {
@@ -907,11 +904,19 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
     }
   }
 
-  // Initialize on plugin load
+  // Initialize on plugin load (non-blocking to avoid hanging OpenCode startup)
   const config = await loadConfig()
   if (config.enabled) {
-    await subscribeToReplies(config)
-    await pollMissedReplies(config)
+    // Run initialization in background to avoid blocking OpenCode startup
+    // Supabase realtime subscription can take time to establish
+    setTimeout(async () => {
+      try {
+        await subscribeToReplies(config)
+        await pollMissedReplies(config)
+      } catch (err: any) {
+        await debug(`Background init failed: ${err?.message}`)
+      }
+    }, 100)
   }
 
   return {
