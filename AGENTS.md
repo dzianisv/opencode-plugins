@@ -64,6 +64,7 @@ ls -la ~/.config/opencode/plugin/  # Verify files are there
 
 1. **reflection.ts** - Judge layer that evaluates task completion and provides feedback
 2. **tts.ts** - Text-to-speech that reads agent responses aloud (macOS)
+3. **telegram.ts** - Sends notifications to Telegram when agent completes tasks
 
 ## IMPORTANT: OpenCode CLI Only
 
@@ -75,30 +76,22 @@ If you're using VS Code's Copilot Chat or another IDE integration, the reflectio
 
 **OpenCode loads plugins from `~/.config/opencode/plugin/`, NOT from npm global installs!**
 
-**IMPORTANT: telegram.ts must be in `lib/` subdirectory, NOT directly in `plugin/`!**
-OpenCode loads ALL `.ts` files in the plugin directory as plugins. Since `telegram.ts` is a module (not a plugin), it must be in a subdirectory to avoid being loaded incorrectly.
+All plugin `.ts` files must be directly in `~/.config/opencode/plugin/` directory.
 
 When deploying changes:
 1. Update source files in `/Users/engineer/workspace/opencode-plugins/`
-2. **MUST COPY** to the correct locations with path transformation:
+2. **MUST COPY** all plugins to `~/.config/opencode/plugin/`:
    - `reflection.ts` → `~/.config/opencode/plugin/`
-   - `tts.ts` → `~/.config/opencode/plugin/` (with import path fix)
-   - `telegram.ts` → `~/.config/opencode/plugin/lib/`
+   - `tts.ts` → `~/.config/opencode/plugin/`
+   - `telegram.ts` → `~/.config/opencode/plugin/`
 3. Restart OpenCode for changes to take effect
 
 ```bash
 # Deploy all plugin changes (CORRECT method)
 cd /Users/engineer/workspace/opencode-plugins
 
-# reflection.ts - direct copy
-cp reflection.ts ~/.config/opencode/plugin/
-
-# tts.ts - needs import path transformation for deployment
-cat tts.ts | sed 's|from "./telegram.js"|from "./lib/telegram.js"|g' > ~/.config/opencode/plugin/tts.ts
-
-# telegram.ts - must go in lib/ subdirectory (NOT plugin root!)
-mkdir -p ~/.config/opencode/plugin/lib
-cp telegram.ts ~/.config/opencode/plugin/lib/
+# Copy all plugins
+cp reflection.ts tts.ts telegram.ts ~/.config/opencode/plugin/
 
 # Then restart opencode
 ```
