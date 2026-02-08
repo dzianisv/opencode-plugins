@@ -19,15 +19,11 @@ function debug(...args: any[]) {
   if (DEBUG) console.error("[ReflectionStatic]", ...args)
 }
 
-const STATIC_QUESTION = `## Self-Assessment Required
-
-Please answer these questions honestly:
-
+const STATIC_QUESTION = `
 1. **What was the task?** (Summarize what the user asked you to do)
 2. **Are you sure you completed it?** (Yes/No with confidence level)
 3. **If you didn't complete it, why did you stop?**
 4. **What improvements or next steps could be made?**
-
 Be specific and honest. If you're uncertain about completion, say so.`
 
 export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
@@ -140,22 +136,25 @@ ${selfAssessment.slice(0, 3000)}
 
 ## Analysis Instructions:
 Evaluate the agent's response and determine:
-1. Did the agent confirm the task is COMPLETE with high confidence?
-2. Did the agent identify remaining work or improvements they could make?
+1. Did the agent confirm the task is FULLY COMPLETE with 100% confidence?
+2. Did the agent identify ANY remaining work, improvements, or uncommitted changes?
 3. Should the agent continue working?
 
 Return JSON only:
 {
-  "complete": true/false,      // Agent believes task is fully complete
-  "shouldContinue": true/false, // Agent identified improvements they can make
+  "complete": true/false,      // Agent believes task is 100% fully complete with NO remaining work
+  "shouldContinue": true/false, // Agent identified ANY improvements or work they can do
   "reason": "brief explanation"
 }
 
 Rules:
-- If agent says "Yes, I completed it" with confidence -> complete: true
-- If agent lists remaining steps or improvements -> shouldContinue: true
-- If agent stopped due to needing user input -> complete: false, shouldContinue: false
-- If agent is uncertain -> complete: false, shouldContinue: true`
+- complete: true ONLY if agent explicitly says task is 100% done with nothing remaining
+- If confidence is below 100% (e.g., "85% confident") -> complete: false, shouldContinue: true
+- If agent asks "should I do X?" -> that means X is NOT done -> shouldContinue: true
+- If agent says "I did NOT commit" or mentions uncommitted changes -> shouldContinue: true (agent should commit)
+- If agent lists "next steps" or "improvements" -> shouldContinue: true
+- If agent explicitly says they need user input to proceed -> complete: false, shouldContinue: false
+- When in doubt, shouldContinue: true (push agent to finish)`
 
       debug("Sending analysis prompt to judge session:", judgeSession.id.slice(0, 8))
       await client.session.promptAsync({

@@ -144,3 +144,137 @@ Enable users to customize how the reflection plugin evaluates task completion:
   "promptTemplate": null
 }
 ```
+
+---
+
+# Feature: Reflection Static Plugin (ABANDONED)
+
+Issue: Original `reflection.ts` plugin was accidentally made read-only in commit `5a3e31e`.
+GitHub Issue: #42
+Started: 2026-02-07
+**Status: ABANDONED** - Discovered original `reflection.ts` was active before it was accidentally made passive.
+
+## What Happened
+
+1. The original `reflection.ts` (before commit `5a3e31e`) was ACTIVE with:
+   - GenAI stuck detection
+   - Compression nudges
+   - Automatic feedback to continue incomplete tasks
+   - 1641 lines of sophisticated logic
+
+2. Commit `5a3e31e` ("Update reflection plugin to be read-only") accidentally stripped all active features:
+   - Reduced to 711 lines
+   - Removed stuck detection
+   - Removed compression nudges
+   - Made it passive (toast-only)
+
+3. `reflection-static.ts` was created as a simpler alternative, but the real fix was to restore the original active version.
+
+## Resolution (2026-02-07)
+
+- Restored `reflection.ts` to the active version from before commit `5a3e31e`
+- Re-deployed `reflection.ts` (68KB, 1641 lines) instead of the broken passive version
+- `reflection-static.ts` is kept in the repo but NOT deployed (it's a simpler alternative if needed)
+- All tests pass: unit (147), plugin-load (5)
+
+## Deployed Plugins
+
+- `reflection.ts` - Full active version with stuck detection, compression nudges, GenAI evaluation
+- `tts.ts` - Text-to-speech
+- `worktree.ts` - Git worktree management
+- `telegram.ts` (lib/) - Telegram notifications
+
+---
+
+# Feature: GitHub Issue Integration Plugin
+
+Issue: Document all agent thoughts and messages to associated GitHub issues
+Started: 2026-02-07
+
+## Goal
+Create a plugin that posts all agent messages to the associated GitHub issue as comments, keeping a complete history of the agent's work. This provides transparency and documentation of the AI's decision-making process.
+
+## Issue Detection Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Issue Detection Priority                      │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. Check first message for GitHub issue URL                     │
+│    Pattern: github.com/owner/repo/issues/N                      │
+│                                                                 │
+│ 2. Check .github-issue file in project root                     │
+│    Contains: issue URL or number                                │
+│                                                                 │
+│ 3. Check PR's closingIssuesReferences (if PR exists)           │
+│    gh pr view --json closingIssuesReferences                    │
+│                                                                 │
+│ 4. Extract from branch name convention                          │
+│    Patterns: issue-123, fix/123-desc, feat/GH-42-desc          │
+│                                                                 │
+│ 5. Create new issue with task description                       │
+│    Use first user message as issue body                         │
+│    Save to .github-issue                                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Tasks
+
+- [x] Task 1: Create github.ts plugin skeleton
+  - Plugin structure with event handlers
+  - Configuration loading from ~/.config/opencode/github.json
+  - Debug logging support
+
+- [x] Task 2: Implement issue detection
+  - Parse first message for GitHub issue URL
+  - Read .github-issue file if exists
+  - Use `gh` CLI to check PR's closingIssuesReferences
+  - Extract issue number from branch name
+  - Create new issue if none found
+
+- [x] Task 3: Implement message posting
+  - Format agent messages as GitHub comments
+  - Include metadata (timestamp, model, session ID)
+  - Handle rate limiting
+  - Batch messages to avoid spam
+
+- [x] Task 4: Write tests
+  - Unit tests for issue URL parsing (5 tests)
+  - Unit tests for branch name extraction (6 tests)
+  - Unit tests for message formatting (4 tests)
+  - Unit tests for config defaults (2 tests)
+  - Integration test for gh CLI availability (1 test)
+
+- [x] Task 5: Documentation
+  - Updated AGENTS.md with full plugin documentation
+  - Added config options table
+  - Added .github-issue file format
+  - Added branch name patterns
+
+## Configuration Schema
+
+```json
+{
+  "enabled": true,
+  "postUserMessages": false,
+  "postAssistantMessages": true,
+  "postToolCalls": false,
+  "batchInterval": 5000,
+  "maxMessageLength": 65000,
+  "createIssueIfMissing": true,
+  "issueLabels": ["opencode", "ai-session"]
+}
+```
+
+## File: .github-issue
+
+Simple text file containing the GitHub issue URL:
+```
+https://github.com/owner/repo/issues/123
+```
+
+Or just the issue number (repo detected from git remote):
+```
+123
+```
+
