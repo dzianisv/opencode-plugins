@@ -512,7 +512,7 @@ Local speech-to-text for voice message transcription.
 ### Server
 
 Auto-started on first voice message:
-- Location: `~/.config/opencode/opencode-helpers/whisper/`
+- Location: `~/.local/lib/whisper/`
 - Port: 8787 (configurable)
 - Model: `base` by default (configurable)
 
@@ -533,6 +533,8 @@ Auto-started on first voice message:
 
 ## File Locations
 
+### OpenCode Config (`~/.config/opencode/`)
+
 ```
 ~/.config/opencode/
 ├── package.json              # Plugin dependencies (bun install)
@@ -541,22 +543,54 @@ Auto-started on first voice message:
 ├── plugin/
 │   ├── reflection.ts         # Reflection plugin (judge layer)
 │   ├── tts.ts                # TTS plugin (speech + Telegram)
-│   ├── telegram.ts           # Telegram helper module (used by tts.ts)
+│   ├── lib/
+│   │   └── telegram.ts       # Telegram helper module (used by tts.ts)
 │   └── worktree-status.ts    # Git worktree status tool
-├── node_modules/             # Dependencies (@supabase/supabase-js)
-└── opencode-helpers/
-    ├── coqui/                # Coqui TTS server
-    │   ├── venv/
-    │   ├── tts.sock
-    │   └── server.pid
-    ├── chatterbox/           # Chatterbox TTS server
-    │   ├── venv/
-    │   ├── tts.sock
-    │   └── server.pid
-    └── whisper/              # Whisper STT server
-        ├── venv/
-        ├── whisper_server.py
-        └── server.pid
+└── node_modules/             # Dependencies (@supabase/supabase-js)
+```
+
+### Unified TTS & STT Storage (`~/.local/lib/`)
+
+TTS and Whisper venvs are shared across multiple projects (opencode-plugins, opencode-manager, personal scripts) to save disk space (~4GB per duplicate venv avoided).
+
+```
+~/.local/lib/
+├── tts/                      # ~1.8GB total
+│   ├── coqui/
+│   │   ├── venv/             # Shared Python venv with TTS package
+│   │   ├── tts.py            # One-shot TTS script
+│   │   ├── tts_server.py     # Persistent server script
+│   │   ├── tts.sock          # Unix socket for IPC
+│   │   └── server.pid        # Running server PID
+│   └── chatterbox/
+│       ├── venv/             # Chatterbox Python venv
+│       ├── tts.py
+│       ├── tts_server.py
+│       ├── tts.sock
+│       └── voices/           # Voice reference files
+└── whisper/                  # ~316MB
+    ├── venv/                 # Shared Python venv with faster-whisper
+    ├── whisper_server.py     # STT server script
+    └── server.pid
+```
+
+### Model Caches (NOT venvs)
+
+Models are cached separately from venvs and managed by the respective libraries:
+
+| Library | Cache Location | Size | Env Override |
+|---------|---------------|------|--------------|
+| **Coqui TTS** | `~/Library/Application Support/tts/` (macOS) | ~10GB | `TTS_HOME` |
+| **Coqui TTS** | `~/.local/share/tts/` (Linux) | ~10GB | `TTS_HOME` or `XDG_DATA_HOME` |
+| **Whisper** | `~/.cache/huggingface/hub/` | ~1-3GB | `HF_HOME` |
+
+**Environment Variables:**
+```bash
+# Override TTS model location (applies to Coqui TTS)
+export TTS_HOME=/custom/path/tts
+
+# Override Whisper/HuggingFace cache
+export HF_HOME=/custom/path/huggingface
 ```
 
 ---
