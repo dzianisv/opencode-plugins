@@ -184,3 +184,93 @@ Started: 2026-02-07
 - `worktree.ts` - Git worktree management
 - `telegram.ts` (lib/) - Telegram notifications
 
+---
+
+# Feature: GitHub Issue Integration Plugin
+
+Issue: Document all agent thoughts and messages to associated GitHub issues
+Started: 2026-02-07
+
+## Goal
+Create a plugin that posts all agent messages to the associated GitHub issue as comments, keeping a complete history of the agent's work. This provides transparency and documentation of the AI's decision-making process.
+
+## Issue Detection Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Issue Detection Priority                      │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. Check first message for GitHub issue URL                     │
+│    Pattern: github.com/owner/repo/issues/N                      │
+│                                                                 │
+│ 2. Check .github-issue file in project root                     │
+│    Contains: issue URL or number                                │
+│                                                                 │
+│ 3. Check PR's closingIssuesReferences (if PR exists)           │
+│    gh pr view --json closingIssuesReferences                    │
+│                                                                 │
+│ 4. Extract from branch name convention                          │
+│    Patterns: issue-123, fix/123-desc, feat/GH-42-desc          │
+│                                                                 │
+│ 5. Create new issue with task description                       │
+│    Use first user message as issue body                         │
+│    Save to .github-issue                                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Tasks
+
+- [ ] Task 1: Create github.ts plugin skeleton
+  - Plugin structure with event handlers
+  - Configuration loading from ~/.config/opencode/github.json
+  - Debug logging support
+
+- [ ] Task 2: Implement issue detection
+  - Parse first message for GitHub issue URL
+  - Read .github-issue file if exists
+  - Use `gh` CLI to check PR's closingIssuesReferences
+  - Extract issue number from branch name
+  - Create new issue if none found
+
+- [ ] Task 3: Implement message posting
+  - Format agent messages as GitHub comments
+  - Include metadata (timestamp, model, session ID)
+  - Handle rate limiting
+  - Batch messages to avoid spam
+
+- [ ] Task 4: Write tests
+  - Unit tests for issue URL parsing
+  - Unit tests for branch name extraction
+  - Integration tests with mock gh CLI
+
+- [ ] Task 5: Documentation
+  - Update AGENTS.md
+  - Create example configuration
+
+## Configuration Schema
+
+```json
+{
+  "enabled": true,
+  "postUserMessages": false,
+  "postAssistantMessages": true,
+  "postToolCalls": false,
+  "batchInterval": 5000,
+  "maxMessageLength": 65000,
+  "createIssueIfMissing": true,
+  "issueLabels": ["opencode", "ai-session"]
+}
+```
+
+## File: .github-issue
+
+Simple text file containing the GitHub issue URL:
+```
+https://github.com/owner/repo/issues/123
+```
+
+Or just the issue number (repo detected from git remote):
+```
+123
+```
+
