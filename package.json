@@ -16,6 +16,7 @@
     "test:load": "node --import tsx --test test/plugin-load.test.ts",
     "test:reflection-static": "node --import tsx --test test/reflection-static.eval.test.ts",
     "typecheck": "npx tsc --noEmit",
+    "install:global": "mkdir -p ~/.config/opencode/plugin && cp reflection.ts telegram.ts tts.ts worktree.ts github.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
     "install:telegram": "mkdir -p ~/.config/opencode/plugin && cp telegram.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
     "install:tts": "mkdir -p ~/.config/opencode/plugin && cp tts.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
     "install:reflection-static": "mkdir -p ~/.config/opencode/plugin && cp reflection-static.ts ~/.config/opencode/plugin/ && rm -f ~/.config/opencode/plugin/reflection.ts && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
