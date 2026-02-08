@@ -144,3 +144,43 @@ Enable users to customize how the reflection plugin evaluates task completion:
   "promptTemplate": null
 }
 ```
+
+---
+
+# Feature: Reflection Static Plugin (ABANDONED)
+
+Issue: Original `reflection.ts` plugin was accidentally made read-only in commit `5a3e31e`.
+GitHub Issue: #42
+Started: 2026-02-07
+**Status: ABANDONED** - Discovered original `reflection.ts` was active before it was accidentally made passive.
+
+## What Happened
+
+1. The original `reflection.ts` (before commit `5a3e31e`) was ACTIVE with:
+   - GenAI stuck detection
+   - Compression nudges
+   - Automatic feedback to continue incomplete tasks
+   - 1641 lines of sophisticated logic
+
+2. Commit `5a3e31e` ("Update reflection plugin to be read-only") accidentally stripped all active features:
+   - Reduced to 711 lines
+   - Removed stuck detection
+   - Removed compression nudges
+   - Made it passive (toast-only)
+
+3. `reflection-static.ts` was created as a simpler alternative, but the real fix was to restore the original active version.
+
+## Resolution (2026-02-07)
+
+- Restored `reflection.ts` to the active version from before commit `5a3e31e`
+- Re-deployed `reflection.ts` (68KB, 1641 lines) instead of the broken passive version
+- `reflection-static.ts` is kept in the repo but NOT deployed (it's a simpler alternative if needed)
+- All tests pass: unit (147), plugin-load (5)
+
+## Deployed Plugins
+
+- `reflection.ts` - Full active version with stuck detection, compression nudges, GenAI evaluation
+- `tts.ts` - Text-to-speech
+- `worktree.ts` - Git worktree management
+- `telegram.ts` (lib/) - Telegram notifications
+

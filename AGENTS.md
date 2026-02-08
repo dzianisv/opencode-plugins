@@ -50,6 +50,38 @@ ls -la ~/.config/opencode/plugin/  # Verify files are there
 - Start a new feature when user asked to fix a bug
 - Optimize code when user asked for a new feature
 - Ignore urgent requests (e.g., "server is down") to do other work
+- **KILL USER'S OPENCODE SESSIONS** - see critical warning below
+- **DEPLOY PLUGINS WITHOUT BEING ASKED** - never run `cp *.ts ~/.config/opencode/plugin/` unless explicitly requested
+
+---
+
+## ⚠️ CRITICAL: NEVER Kill OpenCode Processes
+
+**DO NOT run `pkill -f opencode` or similar commands!**
+
+The user may have active OpenCode sessions running on localhost. Killing all OpenCode processes will:
+- Terminate the user's current session (the one you're running in!)
+- Kill any `opencode serve` instances the user has running
+- Lose unsaved work and session state
+- Cause extreme frustration
+
+**If you need to kill a specific test process you started:**
+```bash
+# WRONG - kills ALL opencode processes including user's sessions!
+pkill -f opencode
+pkill -9 -f "opencode"
+
+# CORRECT - only kill the specific process you started
+kill $SPECIFIC_PID
+
+# CORRECT - kill only test servers on specific ports
+lsof -ti:3333 | xargs kill 2>/dev/null  # Kill only port 3333
+```
+
+**For stuck tests:**
+- Let them timeout naturally
+- Use Ctrl+C in the terminal running the test
+- Kill only the specific test process PID, not all opencode processes
 
 ---
 

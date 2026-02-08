@@ -75,38 +75,24 @@ function convertToTelegramHtml(text: string): string {
   try {
     let processed = text
     
-    // Use UUID-like placeholders that won't appear in normal text
-    const PLACEHOLDER_PREFIX = '___PLACEHOLDER_'
-    const PLACEHOLDER_SUFFIX = '___'
+    // Use simple numeric placeholders that won't be affected by escapeHtml
+    // Format: \x00CB0\x00, \x00IC0\x00 (null bytes won't appear in normal text)
     const codeBlocks: string[] = []
     const inlineCode: string[] = []
     
     // Step 1: Extract fenced code blocks (```lang\ncode```)
-    const codeBlockRegex = /```(\w*)\n?([\s\S]*?)```/g
-    let match
-    while ((match = codeBlockRegex.exec(processed)) !== null) {
-      const idx = codeBlocks.length
-      const lang = match[1] || ''
-      const code = match[2] || ''
-      const langAttr = lang ? ` class="language-${lang}"` : ''
-      codeBlocks.push(`<pre><code${langAttr}>${escapeHtml(code)}</code></pre>`)
-    }
-    // Replace all matches
     let cbIdx = 0
-    processed = processed.replace(/```(\w*)\n?([\s\S]*?)```/g, () => {
-      return `${PLACEHOLDER_PREFIX}CB${cbIdx++}${PLACEHOLDER_SUFFIX}`
+    processed = processed.replace(/```(\w*)\n?([\s\S]*?)```/g, (_match, lang, code) => {
+      const langAttr = lang ? ` class="language-${lang}"` : ''
+      codeBlocks.push(`<pre><code${langAttr}>${escapeHtml(code || '')}</code></pre>`)
+      return `\x00CB${cbIdx++}\x00`
     })
     
     // Step 2: Extract inline code (`code`)
-    const inlineCodeRegex = /`([^`]+)`/g
-    while ((match = inlineCodeRegex.exec(processed)) !== null) {
-      const code = match[1] || ''
-      inlineCode.push(`<code>${escapeHtml(code)}</code>`)
-    }
-    // Replace all matches
     let icIdx = 0
-    processed = processed.replace(/`([^`]+)`/g, () => {
-      return `${PLACEHOLDER_PREFIX}IC${icIdx++}${PLACEHOLDER_SUFFIX}`
+    processed = processed.replace(/`([^`]+)`/g, (_match, code) => {
+      inlineCode.push(`<code>${escapeHtml(code || '')}</code>`)
+      return `\x00IC${icIdx++}\x00`
     })
     
     // Step 3: Escape HTML in remaining text
@@ -121,10 +107,10 @@ function convertToTelegramHtml(text: string): string {
     
     // Step 5: Restore code blocks and inline code
     for (let i = 0; i < codeBlocks.length; i++) {
-      processed = processed.replace(`${PLACEHOLDER_PREFIX}CB${i}${PLACEHOLDER_SUFFIX}`, codeBlocks[i])
+      processed = processed.replace(`\x00CB${i}\x00`, codeBlocks[i])
     }
     for (let i = 0; i < inlineCode.length; i++) {
-      processed = processed.replace(`${PLACEHOLDER_PREFIX}IC${i}${PLACEHOLDER_SUFFIX}`, inlineCode[i])
+      processed = processed.replace(`\x00IC${i}\x00`, inlineCode[i])
     }
     
     return processed
