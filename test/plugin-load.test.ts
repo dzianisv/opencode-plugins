@@ -33,21 +33,14 @@ describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, 
   let serverErrors: string[] = []
 
   /**
-   * Deploy plugins to test directory exactly as install:global does
+   * Deploy plugins to test directory - all plugins directly in plugin/
    */
-  async function deployPlugins(pluginDir: string, libDir: string) {
-    // Copy reflection.ts and worktree.ts directly
+  async function deployPlugins(pluginDir: string) {
+    // Copy all plugins directly to plugin directory
     await cp(join(ROOT, "reflection.ts"), join(pluginDir, "reflection.ts"))
     await cp(join(ROOT, "worktree.ts"), join(pluginDir, "worktree.ts"))
-    
-    // Transform tts.ts import path and copy
-    const { readFile } = await import("fs/promises")
-    let ttsContent = await readFile(join(ROOT, "tts.ts"), "utf-8")
-    ttsContent = ttsContent.replace(/from "\.\/telegram\.js"/g, 'from "./lib/telegram.js"')
-    await writeFile(join(pluginDir, "tts.ts"), ttsContent)
-    
-    // Copy telegram.ts to lib/
-    await cp(join(ROOT, "telegram.ts"), join(libDir, "telegram.ts"))
+    await cp(join(ROOT, "tts.ts"), join(pluginDir, "tts.ts"))
+    await cp(join(ROOT, "telegram.ts"), join(pluginDir, "telegram.ts"))
   }
 
   before(async () => {
@@ -57,20 +50,17 @@ describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, 
     await rm(TEST_DIR, { recursive: true, force: true })
     await mkdir(TEST_DIR, { recursive: true })
     
-    // Create plugin directories
+    // Create plugin directory
     const pluginDir = join(TEST_DIR, ".opencode", "plugin")
-    const libDir = join(pluginDir, "lib")
-    await mkdir(libDir, { recursive: true })
+    await mkdir(pluginDir, { recursive: true })
     
     // Deploy plugins
     console.log("Deploying plugins...")
-    await deployPlugins(pluginDir, libDir)
+    await deployPlugins(pluginDir)
     
     // List deployed files
     const deployed = await readdir(pluginDir)
-    const libDeployed = await readdir(libDir)
-    console.log(`Deployed: ${deployed.join(", ")}`)
-    console.log(`Deployed (lib/): ${libDeployed.join(", ")}`)
+    console.log(`Deployed plugins: ${deployed.join(", ")}`)
     
     // Create minimal opencode config
     const config = {
