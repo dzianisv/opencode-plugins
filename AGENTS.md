@@ -50,6 +50,38 @@ ls -la ~/.config/opencode/plugin/  # Verify files are there
 - Start a new feature when user asked to fix a bug
 - Optimize code when user asked for a new feature
 - Ignore urgent requests (e.g., "server is down") to do other work
+- **KILL USER'S OPENCODE SESSIONS** - see critical warning below
+- **DEPLOY PLUGINS WITHOUT BEING ASKED** - never run `cp *.ts ~/.config/opencode/plugin/` unless explicitly requested
+
+---
+
+## ⚠️ CRITICAL: NEVER Kill OpenCode Processes
+
+**DO NOT run `pkill -f opencode` or similar commands!**
+
+The user may have active OpenCode sessions running on localhost. Killing all OpenCode processes will:
+- Terminate the user's current session (the one you're running in!)
+- Kill any `opencode serve` instances the user has running
+- Lose unsaved work and session state
+- Cause extreme frustration
+
+**If you need to kill a specific test process you started:**
+```bash
+# WRONG - kills ALL opencode processes including user's sessions!
+pkill -f opencode
+pkill -9 -f "opencode"
+
+# CORRECT - only kill the specific process you started
+kill $SPECIFIC_PID
+
+# CORRECT - kill only test servers on specific ports
+lsof -ti:3333 | xargs kill 2>/dev/null  # Kill only port 3333
+```
+
+**For stuck tests:**
+- Let them timeout naturally
+- Use Ctrl+C in the terminal running the test
+- Kill only the specific test process PID, not all opencode processes
 
 ---
 
@@ -64,6 +96,8 @@ ls -la ~/.config/opencode/plugin/  # Verify files are there
 
 1. **reflection.ts** - Judge layer that evaluates task completion and provides feedback
 2. **tts.ts** - Text-to-speech that reads agent responses aloud (macOS)
+3. **telegram.ts** - Sends notifications to Telegram when agent completes tasks
+4. **github.ts** - Posts agent messages to associated GitHub issues as comments
 
 ## IMPORTANT: OpenCode CLI Only
 
@@ -75,30 +109,23 @@ If you're using VS Code's Copilot Chat or another IDE integration, the reflectio
 
 **OpenCode loads plugins from `~/.config/opencode/plugin/`, NOT from npm global installs!**
 
-**IMPORTANT: telegram.ts must be in `lib/` subdirectory, NOT directly in `plugin/`!**
-OpenCode loads ALL `.ts` files in the plugin directory as plugins. Since `telegram.ts` is a module (not a plugin), it must be in a subdirectory to avoid being loaded incorrectly.
+All plugin `.ts` files must be directly in `~/.config/opencode/plugin/` directory.
 
 When deploying changes:
 1. Update source files in `/Users/engineer/workspace/opencode-plugins/`
-2. **MUST COPY** to the correct locations with path transformation:
+2. **MUST COPY** all plugins to `~/.config/opencode/plugin/`:
    - `reflection.ts` → `~/.config/opencode/plugin/`
-   - `tts.ts` → `~/.config/opencode/plugin/` (with import path fix)
-   - `telegram.ts` → `~/.config/opencode/plugin/lib/`
+   - `tts.ts` → `~/.config/opencode/plugin/`
+   - `telegram.ts` → `~/.config/opencode/plugin/`
+   - `github.ts` → `~/.config/opencode/plugin/`
 3. Restart OpenCode for changes to take effect
 
 ```bash
 # Deploy all plugin changes (CORRECT method)
 cd /Users/engineer/workspace/opencode-plugins
 
-# reflection.ts - direct copy
-cp reflection.ts ~/.config/opencode/plugin/
-
-# tts.ts - needs import path transformation for deployment
-cat tts.ts | sed 's|from "./telegram.js"|from "./lib/telegram.js"|g' > ~/.config/opencode/plugin/tts.ts
-
-# telegram.ts - must go in lib/ subdirectory (NOT plugin root!)
-mkdir -p ~/.config/opencode/plugin/lib
-cp telegram.ts ~/.config/opencode/plugin/lib/
+# Copy all plugins
+cp reflection.ts tts.ts telegram.ts github.ts ~/.config/opencode/plugin/
 
 # Then restart opencode
 ```
@@ -364,6 +391,74 @@ kill $(cat ~/.config/opencode/opencode-helpers/coqui/server.pid)
 # Check server logs (stderr)
 # Server automatically restarts on next TTS request
 ```
+
+## GitHub Issue Plugin (`github.ts`)
+
+### Overview
+Posts all agent messages to the associated GitHub issue as comments, keeping a complete history of the agent's work and thought process.
+
+### Features
+- **Automatic issue detection** - Finds the relevant GitHub issue in 5 ways (priority order):
+  1. GitHub issue URL in first message
+  2. `.github-issue` file in project root
+  3. PR's `closingIssuesReferences` (via `gh` CLI)
+  4. Branch name convention (`issue-123`, `fix/123-desc`, `GH-42`)
+  5. Create new issue automatically if enabled
+- **Batched posting** - Queues messages and posts in batches to avoid spam
+- **Role filtering** - Configure which messages to post (user, assistant, tool)
+- **Truncation** - Long messages truncated to GitHub's 65K limit
+
+### Configuration
+Create `~/.config/opencode/github.json`:
+```json
+{
+  "enabled": true,
+  "postUserMessages": false,
+  "postAssistantMessages": true,
+  "postToolCalls": false,
+  "batchInterval": 5000,
+  "maxMessageLength": 65000,
+  "createIssueIfMissing": true,
+  "issueLabels": ["opencode", "ai-session"]
+}
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | boolean | `true` | Enable/disable the plugin |
+| `postUserMessages` | boolean | `false` | Post user messages to issue |
+| `postAssistantMessages` | boolean | `true` | Post assistant messages to issue |
+| `postToolCalls` | boolean | `false` | Include tool calls/results in posts |
+| `batchInterval` | number | `5000` | Milliseconds to wait before posting batch |
+| `createIssueIfMissing` | boolean | `true` | Create new issue if none detected |
+| `issueLabels` | string[] | `["opencode", "ai-session"]` | Labels for auto-created issues |
+
+### .github-issue File
+Create a `.github-issue` file in your project root to link a session to a specific issue:
+
+```bash
+# Option 1: Full URL
+https://github.com/owner/repo/issues/123
+
+# Option 2: Just the number (repo detected from git remote)
+123
+```
+
+### Branch Name Patterns
+The plugin recognizes these branch naming conventions:
+- `issue-123` or `issue/123`
+- `GH-42` or `gh-42`
+- `fix/123-description` or `feat/456-feature`
+- `123-fix-bug`
+
+### Debug Logging
+```bash
+GITHUB_DEBUG=1 opencode
+```
+
+### Requirements
+- `gh` CLI must be installed and authenticated (`gh auth login`)
+- Git repository with GitHub remote
 
 ## Supabase Deployment
 
