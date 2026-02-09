@@ -9,6 +9,8 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
+import { readFile } from "fs/promises"
+import { join } from "path"
 
 const DEBUG = process.env.REFLECTION_DEBUG === "1"
 const JUDGE_RESPONSE_TIMEOUT = 120_000
@@ -26,6 +28,22 @@ const STATIC_QUESTION = `
 4. **What improvements or next steps could be made?**
 Be specific and honest. If you're uncertain about completion, say so.`
 
+/**
+ * Load custom reflection prompt from ./reflection.md in the working directory.
+ * Falls back to STATIC_QUESTION if file doesn't exist or can't be read.
+ */
+async function loadReflectionPrompt(directory: string): Promise<string> {
+  try {
+    const reflectionPath = join(directory, "reflection.md")
+    const customPrompt = await readFile(reflectionPath, "utf-8")
+    debug("Loaded custom prompt from reflection.md")
+    return customPrompt.trim()
+  } catch (e) {
+    // File doesn't exist or can't be read - use default
+    return STATIC_QUESTION
+  }
+}
+
 export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
   // Track sessions to prevent duplicate reflection
   const reflectedSessions = new Set<string>()
@@ -36,23 +54,41 @@ export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
   // Track aborted sessions with timestamps (cooldown-based to handle rapid Esc presses)
   const recentlyAbortedSessions = new Map<string, number>()
   // Count human messages per session
-  const lastReflectedMsgCount = new Map<string, number>()
+  const lastReflectedMsgId = new Map<string, string>()
   // Active reflections to prevent concurrent processing
   const activeReflections = new Set<string>()
 
-  function countHumanMessages(messages: any[]): number {
-    let count = 0
-    for (const msg of messages) {
+  function getMessageSignature(msg: any): string {
+    if (msg.id) return msg.id
+    // Fallback signature if ID is missing
+    const role = msg.info?.role || "unknown"
+    const time = msg.info?.time?.start || 0
+    const textPart = msg.parts?.find((p: any) => p.type === "text")?.text?.slice(0, 20) || ""
+    return `${role}:${time}:${textPart}`
+  }
+
+  function getLastRelevantUserMessageId(messages: any[]): string | null {
+    // Iterate backwards to find the last user message that isn't a reflection prompt
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
       if (msg.info?.role === "user") {
+        let isReflection = false
         for (const part of msg.parts || []) {
-          if (part.type === "text" && part.text && !part.text.includes("## Self-Assessment")) {
-            count++
-            break
+          if (part.type === "text" && part.text) {
+             // Check for static question
+             if (part.text.includes("1. **What was the task?**")) {
+               isReflection = true
+               break
+             }
+             // Check for other internal prompts if any (e.g. analysis prompts are usually in judge session, not here)
           }
+        }
+        if (!isReflection) {
+          return getMessageSignature(msg)
         }
       }
     }
-    return count
+    return null
   }
 
   function isJudgeSession(sessionId: string, messages: any[]): boolean {
@@ -62,6 +98,49 @@ export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
       for (const part of msg.parts || []) {
         if (part.type === "text" && part.text?.includes("ANALYZE AGENT RESPONSE")) {
           return true
+        }
+      }
+    }
+    return false
+  }
+
+  function isPlanMode(messages: any[]): boolean {
+    // 1. Check for System/Developer messages indicating Plan Mode
+    const hasSystemPlanMode = messages.some((m: any) => 
+      (m.info?.role === "system" || m.info?.role === "developer") && 
+      m.parts?.some((p: any) => 
+        p.type === "text" && 
+        p.text && 
+        (p.text.includes("Plan Mode") || 
+         p.text.includes("plan mode ACTIVE") ||
+         p.text.includes("read-only mode"))
+      )
+    )
+    if (hasSystemPlanMode) {
+      debug("Plan Mode detected from system/developer message")
+      return true
+    }
+
+    // 2. Check user intent for plan-related queries
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
+      if (msg.info?.role === "user") {
+        let isReflection = false
+        let text = ""
+        for (const part of msg.parts || []) {
+          if (part.type === "text" && part.text) {
+             text = part.text
+             if (part.text.includes("1. **What was the task?**")) {
+               isReflection = true
+               break
+             }
+          }
+        }
+        if (!isReflection && text) {
+          if (/plan mode/i.test(text)) return true
+          if (/\b(create|make|draft|generate|propose|write|update)\b.{1,30}\bplan\b/i.test(text)) return true
+          if (/^plan\b/i.test(text.trim())) return true
+          return false
         }
       }
     }
@@ -242,17 +321,28 @@ Rules:
         return
       }
 
-      const humanMsgCount = countHumanMessages(messages)
-      if (humanMsgCount === 0) {
-        debug("SKIP: no human messages")
+      if (isPlanMode(messages)) {
+        debug("SKIP: plan mode detected")
         return
       }
 
-      // Skip if already reflected for this message count
-      const lastCount = lastReflectedMsgCount.get(sessionId) || 0
-      if (humanMsgCount <= lastCount) {
-        debug("SKIP: already reflected for this task")
+      const lastUserMsgId = getLastRelevantUserMessageId(messages)
+      if (!lastUserMsgId) {
+        debug("SKIP: no relevant human messages")
         return
+      }
+
+      // Skip if already reflected for this message ID
+      const lastReflectedId = lastReflectedMsgId.get(sessionId)
+      if (lastUserMsgId === lastReflectedId) {
+        debug("SKIP: already reflected for this task ID:", lastUserMsgId)
+        return
+      }
+
+      // Reset confirmedComplete if we have a NEW user message
+      if (lastUserMsgId !== lastReflectedId && confirmedComplete.has(sessionId)) {
+        debug("New human message detected, resetting confirmedComplete status")
+        confirmedComplete.delete(sessionId)
       }
 
       // Skip if already confirmed complete for this session
@@ -261,13 +351,15 @@ Rules:
         return
       }
 
-      // Step 1: Ask the static question
+      // Step 1: Ask the static question (or custom prompt from reflection.md)
       debug("Asking static self-assessment question...")
       await showToast("Asking for self-assessment...", "info")
 
+      const reflectionPrompt = await loadReflectionPrompt(directory)
+
       await client.session.promptAsync({
         path: { id: sessionId },
-        body: { parts: [{ type: "text", text: STATIC_QUESTION }] }
+        body: { parts: [{ type: "text", text: reflectionPrompt }] }
       })
 
       // Wait for agent's self-assessment
@@ -275,7 +367,7 @@ Rules:
       
       if (!selfAssessment) {
         debug("SKIP: no self-assessment response")
-        lastReflectedMsgCount.set(sessionId, humanMsgCount)
+        lastReflectedMsgId.set(sessionId, lastUserMsgId)
         return
       }
       debug("Got self-assessment, length:", selfAssessment.length)
@@ -285,17 +377,42 @@ Rules:
       const analysis = await analyzeResponse(selfAssessment)
       debug("Analysis result:", JSON.stringify(analysis))
 
-      // Update tracking
-      lastReflectedMsgCount.set(sessionId, humanMsgCount)
-
       // Step 3: Act on the analysis
       if (analysis.complete) {
         // Agent says task is complete - stop here
+        lastReflectedMsgId.set(sessionId, lastUserMsgId)
         confirmedComplete.add(sessionId)
         await showToast("Task confirmed complete", "success")
         debug("Agent confirmed task complete, stopping")
       } else if (analysis.shouldContinue) {
         // Agent identified improvements - push them to continue
+        // NOTE: We do NOT update lastReflectedMsgId here.
+        // This ensures that when the agent finishes the pushed work (and idles),
+        // we re-run reflection to verify the new state (which will still map to the same user Msg ID,
+        // or a new one if we consider the push as a user message).
+        
+        // Actually, if "Push" is a user message, getLastRelevantUserMessageId will return IT next time.
+        // So we don't need to manually block the update.
+        // BUT, if we want to reflect on the RESULT of the push, we should let the loop happen.
+        // If we update lastReflectedMsgId here, and next time getLastRelevantUserMessageId returns the SAME id (because push is the last one),
+        // we would skip.
+        // Wait, "Please continue..." IS a user message.
+        // So next time, lastUserMsgId will be the ID of "Please continue...".
+        // It will differ from the current lastUserMsgId (which is the original request).
+        // So we will reflect again.
+        // So it is SAFE to update lastReflectedMsgId here?
+        // No, if we update it here to "Original Request ID", and next time we see "Push ID", we reflect. Correct.
+        // What if we DON'T update it?
+        // Next time we see "Push ID". "Push ID" != "Original Request ID". We reflect. Correct.
+        
+        // The only risk is if "Push" message is NOT considered a relevant user message (e.g. if we filter it out).
+        // My filter is `!part.text.includes("1. **What was the task?**")`.
+        // "Please continue..." passes this filter. So it IS a relevant user message.
+        
+        // So we can just let the natural logic handle it.
+        // I will NOT update it here just to be safe and consistent with previous logic
+        // (treating the "Push" phase as part of the same transaction until completion).
+        
         await showToast("Pushing agent to continue...", "info")
         debug("Pushing agent to continue improvements")
         
@@ -310,6 +427,7 @@ Rules:
         })
       } else {
         // Agent stopped for valid reason (needs user input, etc.)
+        lastReflectedMsgId.set(sessionId, lastUserMsgId)
         await showToast(`Stopped: ${analysis.reason}`, "warning")
         debug("Agent stopped for valid reason:", analysis.reason)
       }
