@@ -218,9 +218,10 @@ describe("Text Reply Routing: Telegram -> Correct Session", () => {
     // Cleanup
     await supabase.from("telegram_reply_contexts").delete().eq("session_id", sessionId)
     await supabase.from("telegram_replies").delete().eq("telegram_message_id", replyMessageId)
-  })
+  }, 15000) // Extended timeout for webhook + DB operations
 
   it("routes replies to correct session with multiple parallel sessions", async () => {
+    // Increase timeout for this complex multi-session test
     // This tests the critical multi-session routing scenario
     // Two sessions exist, replies must go to the session whose notification was replied to
 
@@ -324,7 +325,7 @@ describe("Text Reply Routing: Telegram -> Correct Session", () => {
     // Cleanup
     await supabase.from("telegram_reply_contexts").delete().in("session_id", [session1Id, session2Id])
     await supabase.from("telegram_replies").delete().in("telegram_message_id", [reply1MessageId, reply2MessageId])
-  })
+  }, 15000) // Extended timeout for multiple webhook calls
 
   it("rejects direct messages without reply_to_message (no fallback)", async () => {
     // Direct messages (not replies) should NOT be stored
@@ -687,7 +688,7 @@ describe("Error Handling", () => {
 
     // Should not crash - return error
     expect(response.status).toBeGreaterThanOrEqual(400)
-  })
+  }, 10000) // Extended timeout for network latency
 
   it("webhook handles missing message field", async () => {
     const response = await fetch(WEBHOOK_URL, {
@@ -701,5 +702,5 @@ describe("Error Handling", () => {
 
     // Should handle gracefully
     expect(response.status).toBe(200) // Telegram expects 200 even for ignored updates
-  })
+  }, 10000) // Extended timeout for network latency
 })
