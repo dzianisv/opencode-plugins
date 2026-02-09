@@ -133,7 +133,7 @@ describe("Message Delivery: OpenCode -> Telegram", () => {
       // Small delay to avoid rate limiting
       await new Promise(r => setTimeout(r, 500))
     }
-  })
+  }, 30000)
 })
 
 // ============================================================================

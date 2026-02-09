@@ -230,6 +230,24 @@ p351, p360, p361, p362, p363, p364, p374, p376, ED
 
 </details>
 
+### Tortoise TTS Voices
+
+Tortoise is a high-quality multi-speaker model. Specify the voice name in the `speaker` field.
+
+**Available voices:**
+`angie`, `applejack`, `daniel`, `deniro`, `emma`, `freeman`, `geralt`, `halle`, `jlaw`, `lj`, `mol`, `myself`, `pat`, `pat2`, `rainbow`, `snakes`, `tim_reynolds`, `tom`, `train_docks`, `weaver`, `william`
+
+### Bark TTS Speakers
+
+Bark is a multilingual model. Specify the speaker ID in the `speaker` field.
+
+**English speakers:**
+`v2/en_speaker_0` through `v2/en_speaker_9`
+
+**Other languages:**
+Replace `en` with language code (e.g., `v2/de_speaker_0`, `v2/fr_speaker_0`).
+Supported: `en`, `de`, `es`, `fr`, `hi`, `it`, `ja`, `ko`, `pl`, `pt`, `ru`, `tr`, `zh`
+
 ### XTTS v2 Speakers
 
 XTTS v2 is primarily a voice cloning model. Use the `voiceRef` option to clone any voice:

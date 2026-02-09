@@ -46,7 +46,7 @@ interface GitHubConfig {
 }
 
 const CONFIG_PATH = join(homedir(), ".config", "opencode", "github.json")
-const ISSUE_FILE = ".github-issue"
+const ISSUE_FILE = ".github-issue.md"
 const MAX_COMMENT_LENGTH = 65000 // GitHub's limit is 65536
 
 // Debug logging

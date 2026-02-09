@@ -1001,4 +1001,11 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
   }
 }
 
+export const _test_internal = {
+  transcribeAudio,
+  findPython3,
+  findPython311,
+  startWhisperServer
+}
+
 export default TelegramPlugin

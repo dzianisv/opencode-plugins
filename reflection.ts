@@ -49,13 +49,13 @@ function debug(...args: any[]) {
 
 export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   
-  // Track attempts per (sessionId, humanMsgCount) - resets automatically for new messages
+  // Track attempts per (sessionId, humanMsgId) - resets automatically for new messages
   const attempts = new Map<string, number>()
-  // Track which human message count we last completed reflection on
-  const lastReflectedMsgCount = new Map<string, number>()
+  // Track which human message ID we last completed reflection on
+  const lastReflectedMsgId = new Map<string, string>()
   const activeReflections = new Set<string>()
-  // Track aborted message counts per session - only skip reflection for the aborted task, not future tasks
-  const abortedMsgCounts = new Map<string, Set<number>>()
+  // Track aborted message IDs per session - only skip reflection for the aborted task, not future tasks
+  const abortedMsgIds = new Map<string, Set<string>>()
   const judgeSessionIds = new Set<string>() // Track judge session IDs to skip them
   // Track session last-seen timestamps for cleanup
   const sessionTimestamps = new Map<string, number>()
@@ -164,8 +164,8 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
       if (now - timestamp > SESSION_MAX_AGE) {
         // Clean up all data for this old session
         sessionTimestamps.delete(sessionId)
-        lastReflectedMsgCount.delete(sessionId)
-        abortedMsgCounts.delete(sessionId)
+        lastReflectedMsgId.delete(sessionId)
+        abortedMsgIds.delete(sessionId)
         // Clean attempt keys for this session
         for (const key of attempts.keys()) {
           if (key.startsWith(sessionId)) attempts.delete(key)
@@ -285,13 +285,45 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     return false
   }
 
-  // Check if the CURRENT task (identified by human message count) was aborted
+  function getMessageSignature(msg: any): string {
+    if (msg.id) return msg.id
+    // Fallback signature if ID is missing
+    const role = msg.info?.role || "unknown"
+    const time = msg.info?.time?.start || 0
+    const textPart = msg.parts?.find((p: any) => p.type === "text")?.text?.slice(0, 20) || ""
+    return `${role}:${time}:${textPart}`
+  }
+
+  function getLastRelevantUserMessageId(messages: any[]): string | null {
+    // Iterate backwards to find the last user message that isn't a reflection prompt
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
+      if (msg.info?.role === "user") {
+        let isReflection = false
+        for (const part of msg.parts || []) {
+          if (part.type === "text" && part.text) {
+             // Check for reflection feedback
+             if (part.text.includes("## Reflection:")) {
+               isReflection = true
+               break
+             }
+          }
+        }
+        if (!isReflection) {
+          return getMessageSignature(msg)
+        }
+      }
+    }
+    return null
+  }
+
+  // Check if the CURRENT task (identified by human message ID) was aborted
   // Returns true only if the most recent assistant response for this task was aborted
   // This allows reflection to run on NEW tasks after an abort
-  function wasCurrentTaskAborted(sessionId: string, messages: any[], humanMsgCount: number): boolean {
-    // Fast path: check if this specific message count was already marked as aborted
-    const abortedCounts = abortedMsgCounts.get(sessionId)
-    if (abortedCounts?.has(humanMsgCount)) return true
+  function wasCurrentTaskAborted(sessionId: string, messages: any[], humanMsgId: string): boolean {
+    // Fast path: check if this specific message ID was already marked as aborted
+    const abortedIds = abortedMsgIds.get(sessionId)
+    if (abortedIds?.has(humanMsgId)) return true
     
     // Check if the LAST assistant message has an abort error
     // Only the last message matters - previous aborts don't block new tasks
@@ -303,43 +335,27 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     
     // Check for MessageAbortedError
     if (error.name === "MessageAbortedError") {
-      // Mark this specific message count as aborted
-      if (!abortedMsgCounts.has(sessionId)) {
-        abortedMsgCounts.set(sessionId, new Set())
+      // Mark this specific message ID as aborted
+      if (!abortedMsgIds.has(sessionId)) {
+        abortedMsgIds.set(sessionId, new Set())
       }
-      abortedMsgCounts.get(sessionId)!.add(humanMsgCount)
-      debug("Marked task as aborted:", sessionId.slice(0, 8), "msgCount:", humanMsgCount)
+      abortedMsgIds.get(sessionId)!.add(humanMsgId)
+      debug("Marked task as aborted:", sessionId.slice(0, 8), "msgId:", humanMsgId)
       return true
     }
     
     // Also check error message content for abort indicators
     const errorMsg = error.data?.message || error.message || ""
     if (typeof errorMsg === "string" && errorMsg.toLowerCase().includes("abort")) {
-      if (!abortedMsgCounts.has(sessionId)) {
-        abortedMsgCounts.set(sessionId, new Set())
+      if (!abortedMsgIds.has(sessionId)) {
+        abortedMsgIds.set(sessionId, new Set())
       }
-      abortedMsgCounts.get(sessionId)!.add(humanMsgCount)
-      debug("Marked task as aborted:", sessionId.slice(0, 8), "msgCount:", humanMsgCount)
+      abortedMsgIds.get(sessionId)!.add(humanMsgId)
+      debug("Marked task as aborted:", sessionId.slice(0, 8), "msgId:", humanMsgId)
       return true
     }
     
     return false
-  }
-
-  function countHumanMessages(messages: any[]): number {
-    let count = 0
-    for (const msg of messages) {
-      if (msg.info?.role === "user") {
-        // Don't count reflection feedback as human input
-        for (const part of msg.parts || []) {
-          if (part.type === "text" && part.text && !part.text.includes("## Reflection:")) {
-            count++
-            break
-          }
-        }
-      }
-    }
-    return count
   }
 
   function extractTaskAndResult(messages: any[]): { task: string; result: string; tools: string; isResearch: boolean; humanMessages: string[] } | null {
@@ -409,9 +425,9 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     return null
   }
 
-  // Generate a key for tracking attempts per task (session + human message count)
-  function getAttemptKey(sessionId: string, humanMsgCount: number): string {
-    return `${sessionId}:${humanMsgCount}`
+  // Generate a key for tracking attempts per task (session + human message ID)
+  function getAttemptKey(sessionId: string, humanMsgId: string): string {
+    return `${sessionId}:${humanMsgId}`
   }
 
   // Check if a session is currently idle (agent not responding)
@@ -968,36 +984,36 @@ Guidelines for nudgeMessage:
         return
       }
 
-      // Count human messages to determine current "task"
-      const humanMsgCount = countHumanMessages(messages)
-      debug("humanMsgCount:", humanMsgCount)
-      if (humanMsgCount === 0) {
-        debug("SKIP: no human messages")
+      // Identify current task by ID (robust against context compression)
+      const humanMsgId = getLastRelevantUserMessageId(messages)
+      debug("humanMsgId:", humanMsgId)
+      if (!humanMsgId) {
+        debug("SKIP: no relevant human messages")
         return
       }
 
       // Skip if current task was aborted/cancelled by user (Esc key)
       // This only skips the specific aborted task, not future tasks in the same session
-      if (wasCurrentTaskAborted(sessionId, messages, humanMsgCount)) {
+      if (wasCurrentTaskAborted(sessionId, messages, humanMsgId)) {
         debug("SKIP: current task was aborted")
         return
       }
 
-      // Check if we already completed reflection for this exact message count
-      const lastReflected = lastReflectedMsgCount.get(sessionId) || 0
-      if (humanMsgCount <= lastReflected) {
-        debug("SKIP: already reflected for this message count", { humanMsgCount, lastReflected })
+      // Check if we already completed reflection for this exact message ID
+      const lastReflected = lastReflectedMsgId.get(sessionId)
+      if (humanMsgId === lastReflected) {
+        debug("SKIP: already reflected for this message ID:", humanMsgId)
         return
       }
 
-      // Get attempt count for THIS specific task (session + message count)
-      const attemptKey = getAttemptKey(sessionId, humanMsgCount)
+      // Get attempt count for THIS specific task (session + message ID)
+      const attemptKey = getAttemptKey(sessionId, humanMsgId)
       const attemptCount = attempts.get(attemptKey) || 0
       debug("attemptCount:", attemptCount, "/ MAX:", MAX_ATTEMPTS)
       
       if (attemptCount >= MAX_ATTEMPTS) {
         // Max attempts for this task - mark as reflected and stop
-        lastReflectedMsgCount.set(sessionId, humanMsgCount)
+        lastReflectedMsgId.set(sessionId, humanMsgId)
         await showToast(`Max attempts (${MAX_ATTEMPTS}) reached`, "warning")
         debug("SKIP: max attempts reached")
         return
@@ -1170,7 +1186,8 @@ Reply with JSON only (no other text):
   "severity": "NONE|LOW|MEDIUM|HIGH|BLOCKER",
   "feedback": "brief explanation of verdict",
   "missing": ["list of missing required steps or evidence"],
-  "next_actions": ["concrete commands or checks to run"]
+  "next_actions": ["concrete commands or checks to run"],
+  "requires_human_action": true/false  // NEW: set true ONLY if user must physically act (auth, hardware, 2FA)
 }`
 
         await client.session.promptAsync({
@@ -1184,7 +1201,7 @@ Reply with JSON only (no other text):
         if (!response) {
           debug("SKIP: waitForResponse returned null (timeout)")
           // Timeout - mark this task as reflected to avoid infinite retries
-          lastReflectedMsgCount.set(sessionId, humanMsgCount)
+          lastReflectedMsgId.set(sessionId, humanMsgId)
           return
         }
         debug("judge response received, length:", response.length)
@@ -1192,7 +1209,7 @@ Reply with JSON only (no other text):
         const jsonMatch = response.match(/\{[\s\S]*\}/)
         if (!jsonMatch) {
           debug("SKIP: no JSON found in response")
-          lastReflectedMsgCount.set(sessionId, humanMsgCount)
+          lastReflectedMsgId.set(sessionId, humanMsgId)
           return
         }
 
@@ -1220,7 +1237,7 @@ Reply with JSON only (no other text):
 
         if (isComplete) {
           // COMPLETE: mark this task as reflected, show toast only (no prompt!)
-          lastReflectedMsgCount.set(sessionId, humanMsgCount)
+          lastReflectedMsgId.set(sessionId, humanMsgId)
           attempts.delete(attemptKey)
           const toastMsg = severity === "NONE" ? "Task complete ✓" : `Task complete ✓ (${severity})`
           await showToast(toastMsg, "success")
@@ -1231,7 +1248,7 @@ Reply with JSON only (no other text):
           if (abortTime && abortTime > reflectionStartTime) {
             debug("SKIP feedback: session was aborted after reflection started", 
               "abortTime:", abortTime, "reflectionStart:", reflectionStartTime)
-            lastReflectedMsgCount.set(sessionId, humanMsgCount)  // Mark as reflected to prevent retry
+            lastReflectedMsgId.set(sessionId, humanMsgId)  // Mark as reflected to prevent retry
             return
           }
           
@@ -1240,7 +1257,7 @@ Reply with JSON only (no other text):
           // The agent cannot complete these tasks - it's up to the user
           if (verdict.requires_human_action) {
             debug("REQUIRES_HUMAN_ACTION: notifying user, not agent")
-            lastReflectedMsgCount.set(sessionId, humanMsgCount)  // Mark as reflected to prevent retry
+            lastReflectedMsgId.set(sessionId, humanMsgId)  // Mark as reflected to prevent retry
             attempts.delete(attemptKey)  // Reset attempts since this isn't agent's fault
             
             // Show helpful toast with what user needs to do
@@ -1256,7 +1273,7 @@ Reply with JSON only (no other text):
           const hasMissingItems = verdict.missing?.length > 0 || verdict.next_actions?.length > 0
           if (severity === "NONE" && !hasMissingItems) {
             debug("SKIP feedback: severity NONE and no missing items means waiting for user input")
-            lastReflectedMsgCount.set(sessionId, humanMsgCount)  // Mark as reflected
+            lastReflectedMsgId.set(sessionId, humanMsgId)  // Mark as reflected
             await showToast("Awaiting user input", "info")
             return
           }
@@ -1284,30 +1301,32 @@ Reply with JSON only (no other text):
             body: {
               parts: [{
                 type: "text",
-                text: `## Reflection: Task Incomplete (${attemptCount + 1}/${MAX_ATTEMPTS}) [${severity}]
+                text: `## Reflection: Task Incomplete (${severity})
+${verdict.feedback}
+${missing}
+${nextActions}
 
-${verdict.feedback || "Please review and complete the task."}${missing}${nextActions}
-
-Please address the above and continue.`
+Please address these issues and continue.`
               }]
             }
           })
-          // Schedule a nudge in case the agent gets stuck after receiving feedback
+
+          // Schedule a nudge to ensure the agent continues if it gets stuck after feedback
           scheduleNudge(sessionId, STUCK_CHECK_DELAY, "reflection")
-          // Don't mark as reflected yet - we want to check again after agent responds
         }
+
+      } catch (e) {
+        debug("Error in reflection evaluation:", e)
       } finally {
-        // Always clean up judge session to prevent clutter in /session list
         await cleanupJudgeSession()
       }
+
     } catch (e) {
-      // On error, don't mark as reflected - allow retry
       debug("ERROR in runReflection:", e)
     } finally {
       activeReflections.delete(sessionId)
     }
   }
-
   /**
    * Check all sessions for stuck state on startup.
    * This handles the case where OpenCode is restarted with -c (continue)
