@@ -9,6 +9,8 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
+import { readFile } from "fs/promises"
+import { join } from "path"
 
 const DEBUG = process.env.REFLECTION_DEBUG === "1"
 const JUDGE_RESPONSE_TIMEOUT = 120_000
@@ -25,6 +27,22 @@ const STATIC_QUESTION = `
 3. **If you didn't complete it, why did you stop?**
 4. **What improvements or next steps could be made?**
 Be specific and honest. If you're uncertain about completion, say so.`
+
+/**
+ * Load custom reflection prompt from ./reflection.md in the working directory.
+ * Falls back to STATIC_QUESTION if file doesn't exist or can't be read.
+ */
+async function loadReflectionPrompt(directory: string): Promise<string> {
+  try {
+    const reflectionPath = join(directory, "reflection.md")
+    const customPrompt = await readFile(reflectionPath, "utf-8")
+    debug("Loaded custom prompt from reflection.md")
+    return customPrompt.trim()
+  } catch (e) {
+    // File doesn't exist or can't be read - use default
+    return STATIC_QUESTION
+  }
+}
 
 export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
   // Track sessions to prevent duplicate reflection
@@ -87,6 +105,23 @@ export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
   }
 
   function isPlanMode(messages: any[]): boolean {
+    // 1. Check for System/Developer messages indicating Plan Mode
+    const hasSystemPlanMode = messages.some((m: any) => 
+      (m.info?.role === "system" || m.info?.role === "developer") && 
+      m.parts?.some((p: any) => 
+        p.type === "text" && 
+        p.text && 
+        (p.text.includes("Plan Mode") || 
+         p.text.includes("plan mode ACTIVE") ||
+         p.text.includes("read-only mode"))
+      )
+    )
+    if (hasSystemPlanMode) {
+      debug("Plan Mode detected from system/developer message")
+      return true
+    }
+
+    // 2. Check user intent for plan-related queries
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i]
       if (msg.info?.role === "user") {
@@ -316,13 +351,15 @@ Rules:
         return
       }
 
-      // Step 1: Ask the static question
+      // Step 1: Ask the static question (or custom prompt from reflection.md)
       debug("Asking static self-assessment question...")
       await showToast("Asking for self-assessment...", "info")
 
+      const reflectionPrompt = await loadReflectionPrompt(directory)
+
       await client.session.promptAsync({
         path: { id: sessionId },
-        body: { parts: [{ type: "text", text: STATIC_QUESTION }] }
+        body: { parts: [{ type: "text", text: reflectionPrompt }] }
       })
 
       // Wait for agent's self-assessment
