@@ -255,6 +255,12 @@ Rules:
         return
       }
 
+      // Reset confirmedComplete if we have new human messages
+      if (humanMsgCount > lastCount && confirmedComplete.has(sessionId)) {
+        debug("New human messages detected, resetting confirmedComplete status")
+        confirmedComplete.delete(sessionId)
+      }
+
       // Skip if already confirmed complete for this session
       if (confirmedComplete.has(sessionId)) {
         debug("SKIP: agent already confirmed complete")
@@ -285,17 +291,18 @@ Rules:
       const analysis = await analyzeResponse(selfAssessment)
       debug("Analysis result:", JSON.stringify(analysis))
 
-      // Update tracking
-      lastReflectedMsgCount.set(sessionId, humanMsgCount)
-
       // Step 3: Act on the analysis
       if (analysis.complete) {
         // Agent says task is complete - stop here
+        lastReflectedMsgCount.set(sessionId, humanMsgCount)
         confirmedComplete.add(sessionId)
         await showToast("Task confirmed complete", "success")
         debug("Agent confirmed task complete, stopping")
       } else if (analysis.shouldContinue) {
         // Agent identified improvements - push them to continue
+        // NOTE: We do NOT update lastReflectedMsgCount here.
+        // This ensures that when the agent finishes the pushed work (and idles),
+        // we re-run reflection to verify the new state.
         await showToast("Pushing agent to continue...", "info")
         debug("Pushing agent to continue improvements")
         
@@ -310,6 +317,7 @@ Rules:
         })
       } else {
         // Agent stopped for valid reason (needs user input, etc.)
+        lastReflectedMsgCount.set(sessionId, humanMsgCount)
         await showToast(`Stopped: ${analysis.reason}`, "warning")
         debug("Agent stopped for valid reason:", analysis.reason)
       }
