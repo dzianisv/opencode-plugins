@@ -86,6 +86,32 @@ export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
     return false
   }
 
+  function isPlanMode(messages: any[]): boolean {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
+      if (msg.info?.role === "user") {
+        let isReflection = false
+        let text = ""
+        for (const part of msg.parts || []) {
+          if (part.type === "text" && part.text) {
+             text = part.text
+             if (part.text.includes("1. **What was the task?**")) {
+               isReflection = true
+               break
+             }
+          }
+        }
+        if (!isReflection && text) {
+          if (/plan mode/i.test(text)) return true
+          if (/\b(create|make|draft|generate|propose|write|update)\b.{1,30}\bplan\b/i.test(text)) return true
+          if (/^plan\b/i.test(text.trim())) return true
+          return false
+        }
+      }
+    }
+    return false
+  }
+
   async function showToast(message: string, variant: "info" | "success" | "warning" | "error" = "info") {
     try {
       await client.tui.publish({
@@ -257,6 +283,11 @@ Rules:
 
       if (isJudgeSession(sessionId, messages)) {
         debug("SKIP: is judge session")
+        return
+      }
+
+      if (isPlanMode(messages)) {
+        debug("SKIP: plan mode detected")
         return
       }
 
