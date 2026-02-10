@@ -62,7 +62,7 @@ describe("Message Delivery: OpenCode -> Telegram", () => {
     expect(response.status).toBe(200)
     const result = await response.json()
     expect(result.text_sent).toBe(true)
-  })
+  }, 15000) // Extended timeout for network
 
   it("send-notify creates reply context for session routing", async () => {
     const sessionId = `ses_${uniqueId()}`
