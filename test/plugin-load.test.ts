@@ -25,7 +25,7 @@ const ROOT = join(__dirname, "..")
 // Test configuration
 const TEST_DIR = "/tmp/opencode-plugin-load-test"
 const PORT = 3333
-const SERVER_TIMEOUT = 30_000
+const SERVER_TIMEOUT = 60_000  // 60s for server startup with all plugins
 
 describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, () => {
   let server: ChildProcess | null = null
@@ -169,12 +169,21 @@ describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, 
       
       // Try to connect
       try {
-        const res = await fetch(`http://localhost:${PORT}/session`)
+        const res = await fetch(`http://127.0.0.1:${PORT}/session`)
         if (res.ok) {
           serverReady = true
+          console.log(`[connect] Server ready after ${Date.now() - startTime}ms`)
           break
+        } else {
+          console.log(`[connect] Response not ok: ${res.status}`)
         }
-      } catch {}
+      } catch (e: unknown) {
+        const err = e as Error
+        // Only log occasionally to reduce noise
+        if ((Date.now() - startTime) % 5000 < 500) {
+          console.log(`[connect] Error: ${err.message}`)
+        }
+      }
       
       await new Promise(r => setTimeout(r, 500))
     }

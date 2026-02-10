@@ -1001,11 +1001,9 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
   }
 }
 
-export const _test_internal = {
-  transcribeAudio,
-  findPython3,
-  findPython311,
-  startWhisperServer
-}
+// Note: _test_internal is intentionally NOT exported as a named export
+// OpenCode's plugin loader treats all named exports as plugins, which breaks loading
+// Tests that need these functions should be rewritten to test through the plugin interface
+// or use jest module mocking
 
 export default TelegramPlugin
