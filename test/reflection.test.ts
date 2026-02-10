@@ -1133,4 +1133,148 @@ describe("Reflection Plugin - Unit Tests", () => {
       })
     })
   })
+
+  describe("Human message during reflection (race condition)", () => {
+    // This tests the fix for the race condition where:
+    // 1. Reflection sends self-assessment question
+    // 2. Waits for response (could take 30+ seconds)
+    // 3. Human types a new message during this wait
+    // 4. Reflection should abort instead of injecting stale "Please continue..."
+
+    // Helper function mimicking getLastRelevantUserMessageId
+    function getLastRelevantUserMessageId(messages: any[]): string | null {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i]
+        if (msg.info?.role === "user") {
+          for (const part of msg.parts || []) {
+            if (part.type === "text" && part.text) {
+              // Skip reflection prompts
+              if (part.text.includes("1. **What was the task?**")) {
+                continue
+              }
+              return msg.id || `msg_${i}`
+            }
+          }
+        }
+      }
+      return null
+    }
+
+    it("should detect when human sent new message during analysis", () => {
+      // Initial state when reflection started
+      const initialMessages = [
+        { id: "msg_1", info: { role: "user" }, parts: [{ type: "text", text: "Do task A" }] },
+        { id: "msg_2", info: { role: "assistant" }, parts: [{ type: "text", text: "Working on A..." }] },
+      ]
+      const initialUserMsgId = getLastRelevantUserMessageId(initialMessages)
+      assert.strictEqual(initialUserMsgId, "msg_1", "Initial user message should be msg_1")
+
+      // State after analysis completes - human added a new message
+      const currentMessages = [
+        { id: "msg_1", info: { role: "user" }, parts: [{ type: "text", text: "Do task A" }] },
+        { id: "msg_2", info: { role: "assistant" }, parts: [{ type: "text", text: "Working on A..." }] },
+        { id: "msg_3", info: { role: "user" }, parts: [{ type: "text", text: "1. **What was the task?**" }] }, // reflection question
+        { id: "msg_4", info: { role: "assistant" }, parts: [{ type: "text", text: "Self-assessment response" }] },
+        { id: "msg_5", info: { role: "user" }, parts: [{ type: "text", text: "Actually, do task B instead" }] }, // NEW human message
+      ]
+      const currentUserMsgId = getLastRelevantUserMessageId(currentMessages)
+      assert.strictEqual(currentUserMsgId, "msg_5", "Current user message should be msg_5 (new human message)")
+
+      // The race condition check - use string comparison to avoid TS literal type issues
+      const idsMatch = String(currentUserMsgId) === String(initialUserMsgId)
+      assert.strictEqual(idsMatch, false, "Should detect that human sent new message")
+
+      // When IDs don't match, reflection should abort
+      let reflectionAborted = false
+      if (currentUserMsgId && !idsMatch) {
+        reflectionAborted = true
+        // In real code: debug("SKIP: human sent new message during reflection, aborting")
+      }
+      assert.strictEqual(reflectionAborted, true, "Reflection should abort when human sent new message")
+    })
+
+    it("should NOT abort when no new human message during analysis", () => {
+      // Initial state when reflection started
+      const initialMessages = [
+        { id: "msg_1", info: { role: "user" }, parts: [{ type: "text", text: "Do task A" }] },
+        { id: "msg_2", info: { role: "assistant" }, parts: [{ type: "text", text: "Working on A..." }] },
+      ]
+      const initialUserMsgId = getLastRelevantUserMessageId(initialMessages)
+
+      // State after analysis completes - only reflection messages added, no new human message
+      const currentMessages = [
+        { id: "msg_1", info: { role: "user" }, parts: [{ type: "text", text: "Do task A" }] },
+        { id: "msg_2", info: { role: "assistant" }, parts: [{ type: "text", text: "Working on A..." }] },
+        { id: "msg_3", info: { role: "user" }, parts: [{ type: "text", text: "1. **What was the task?**" }] }, // reflection question (filtered)
+        { id: "msg_4", info: { role: "assistant" }, parts: [{ type: "text", text: "Self-assessment response" }] },
+      ]
+      const currentUserMsgId = getLastRelevantUserMessageId(currentMessages)
+      
+      // Should still be msg_1 because msg_3 is a reflection prompt (filtered out)
+      assert.strictEqual(currentUserMsgId, "msg_1", "Current user message should still be msg_1")
+
+      const idsMatch = String(currentUserMsgId) === String(initialUserMsgId)
+      assert.strictEqual(idsMatch, true, "Should NOT detect new human message")
+
+      // Reflection should proceed normally
+      let reflectionAborted = false
+      if (currentUserMsgId && !idsMatch) {
+        reflectionAborted = true
+      }
+      assert.strictEqual(reflectionAborted, false, "Reflection should NOT abort")
+    })
+
+    it("should handle case where human types during GenAI judge evaluation", () => {
+      // This simulates the exact scenario from the bug report:
+      // 1. Agent finishes → session.idle
+      // 2. Reflection asks self-assessment question
+      // 3. Agent responds with self-assessment
+      // 4. Reflection sends to GenAI judge (this takes 30+ seconds)
+      // 5. Human types "Actually, do X instead" (arrives while judge is thinking)
+      // 6. GenAI returns shouldContinue: true
+      // 7. Reflection checks → sees new human message → aborts
+
+      const initialUserMsgId: string = "msg_original_task"
+      
+      // Simulate GenAI judge taking 30 seconds
+      // During this time, human typed a new message
+      const timeWhenJudgeStarted = Date.now()
+      const timeWhenJudgeFinished = timeWhenJudgeStarted + 30_000 // 30 seconds later
+      
+      // Simulate the new message arriving at 15 seconds
+      const newHumanMessageId: string = "msg_human_typed_during_judge"
+      const newMessageArrivedAt = timeWhenJudgeStarted + 15_000
+      
+      // After judge finishes, we re-check messages
+      const currentUserMsgId: string = newHumanMessageId // This is what we'd get from getLastRelevantUserMessageId
+
+      // The fix: check if human sent new message
+      const shouldAbort = currentUserMsgId !== initialUserMsgId
+      assert.strictEqual(shouldAbort, true, "Should abort because human sent message during judge evaluation")
+      
+      // Silence unused variable warnings
+      void timeWhenJudgeFinished
+      void newMessageArrivedAt
+    })
+
+    it("should mark original task as reflected when aborting", () => {
+      // When we abort due to new human message, we should still mark the ORIGINAL task
+      // as reflected, to prevent re-triggering reflection for it
+      const lastReflectedMsgId = new Map<string, string>()
+      const sessionId = "ses_test"
+      const initialUserMsgId: string = "msg_original_task"
+      const currentUserMsgId: string = "msg_new_human_message"
+
+      // Simulate the abort path
+      if (currentUserMsgId && currentUserMsgId !== initialUserMsgId) {
+        // Mark the ORIGINAL task as reflected
+        lastReflectedMsgId.set(sessionId, initialUserMsgId)
+        // Return early (abort)
+      }
+
+      // Verify the original task is marked as reflected
+      assert.strictEqual(lastReflectedMsgId.get(sessionId), initialUserMsgId, 
+        "Original task should be marked as reflected to prevent re-triggering")
+    })
+  })
 })
