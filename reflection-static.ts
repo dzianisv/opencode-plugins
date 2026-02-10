@@ -283,9 +283,6 @@ Rules:
   async function runReflection(sessionId: string): Promise<void> {
     debug("runReflection called for session:", sessionId.slice(0, 8))
     
-    // Capture when this reflection started - used to detect aborts during judge evaluation
-    const reflectionStartTime = Date.now()
-    
     if (activeReflections.has(sessionId)) {
       debug("SKIP: active reflection in progress")
       return
@@ -331,6 +328,10 @@ Rules:
         debug("SKIP: no relevant human messages")
         return
       }
+      
+      // Capture the initial user message ID at the START of reflection
+      // We'll check if this changes during long operations (judge evaluation)
+      const initialUserMsgId = lastUserMsgId
 
       // Skip if already reflected for this message ID
       const lastReflectedId = lastReflectedMsgId.get(sessionId)
@@ -376,6 +377,19 @@ Rules:
       debug("Analyzing self-assessment with GenAI...")
       const analysis = await analyzeResponse(selfAssessment)
       debug("Analysis result:", JSON.stringify(analysis))
+      
+      // CRITICAL: Check if human sent a new message while we were analyzing
+      // This prevents stale reflection prompts from being injected after human already responded
+      const { data: currentMessages } = await client.session.messages({ path: { id: sessionId } })
+      const currentUserMsgId = getLastRelevantUserMessageId(currentMessages || [])
+      
+      if (currentUserMsgId && currentUserMsgId !== initialUserMsgId) {
+        debug("SKIP: human sent new message during reflection, aborting to avoid stale injection")
+        debug("  initial:", initialUserMsgId, "current:", currentUserMsgId)
+        // Mark as reflected for the ORIGINAL task to prevent re-triggering
+        lastReflectedMsgId.set(sessionId, initialUserMsgId)
+        return
+      }
 
       // Step 3: Act on the analysis
       if (analysis.complete) {
