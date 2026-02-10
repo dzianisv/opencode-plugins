@@ -991,6 +991,10 @@ Guidelines for nudgeMessage:
         debug("SKIP: no relevant human messages")
         return
       }
+      
+      // Capture the initial user message ID at the START of reflection
+      // We'll check if this changes after the judge evaluation (which can take 30+ seconds)
+      const initialUserMsgId = humanMsgId
 
       // Skip if current task was aborted/cancelled by user (Esc key)
       // This only skips the specific aborted task, not future tasks in the same session
@@ -1215,6 +1219,19 @@ Reply with JSON only (no other text):
 
         const verdict = JSON.parse(jsonMatch[0])
         debug("verdict:", JSON.stringify(verdict))
+
+        // CRITICAL: Check if human sent a new message while judge was running
+        // This prevents stale feedback injection when user typed during the 30+ second evaluation
+        const { data: currentMessages } = await client.session.messages({ path: { id: sessionId } })
+        const currentUserMsgId = getLastRelevantUserMessageId(currentMessages || [])
+        
+        if (currentUserMsgId && currentUserMsgId !== initialUserMsgId) {
+          debug("SKIP: human sent new message during judge evaluation, aborting stale injection")
+          debug("  initial:", initialUserMsgId, "current:", currentUserMsgId)
+          // Mark original task as reflected to prevent re-triggering
+          lastReflectedMsgId.set(sessionId, initialUserMsgId)
+          return
+        }
 
         // Save reflection data to .reflection/ directory
         await saveReflectionData(sessionId, {
