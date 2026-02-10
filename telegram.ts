@@ -51,6 +51,10 @@ interface TelegramConfig {
   receiveReplies?: boolean
   supabaseUrl?: string
   supabaseAnonKey?: string
+  reflection?: {
+    waitForVerdict?: boolean
+    maxWaitMs?: number
+  }
   whisper?: {
     enabled?: boolean
     serverUrl?: string
@@ -67,6 +71,9 @@ const DEFAULT_UPDATE_REACTION_URL = "https://slqxwymujuoipyiqscrl.supabase.co/fu
 const DEFAULT_SUPABASE_URL = "https://slqxwymujuoipyiqscrl.supabase.co"
 const DEFAULT_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNscXh3eW11anVvaXB5aXFzY3JsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxMTgwNDUsImV4cCI6MjA4MTY5NDA0NX0.cW79nLOdKsUhZaXIvgY4gGcO4Y4R0lDGNg7SE_zEfb8"
 const DEFAULT_WHISPER_URL = "http://127.0.0.1:8000"
+
+const REFLECTION_VERDICT_WAIT_MS = 10_000
+const REFLECTION_POLL_INTERVAL_MS = 250
 
 // Debug logging
 const DEBUG = process.env.TELEGRAM_DEBUG === "1"
@@ -107,6 +114,13 @@ interface TelegramReply {
   audio_base64?: string | null
   voice_file_type?: string | null
   voice_duration_seconds?: number | null
+}
+
+interface ReflectionVerdict {
+  sessionId: string
+  complete: boolean
+  severity: string
+  timestamp: number
 }
 
 // ==================== UTILITY FUNCTIONS ====================
@@ -270,6 +284,40 @@ async function updateMessageReaction(
   } catch (err) {
     return { success: false, error: String(err) }
   }
+}
+
+async function waitForReflectionVerdict(
+  directory: string,
+  sessionId: string,
+  maxWaitMs: number
+): Promise<ReflectionVerdict | null> {
+  const reflectionDir = join(directory, ".reflection")
+  const signalPath = join(reflectionDir, `verdict_${sessionId.slice(0, 8)}.json`)
+  const startTime = Date.now()
+
+  await debug(`Waiting for reflection verdict: ${signalPath}`)
+
+  while (Date.now() - startTime < maxWaitMs) {
+    try {
+      const content = await readFile(signalPath, "utf-8")
+      const verdict = JSON.parse(content) as ReflectionVerdict
+
+      const age = Date.now() - verdict.timestamp
+      if (age < 30_000) {
+        await debug(`Found verdict: complete=${verdict.complete}, severity=${verdict.severity}, age=${age}ms`)
+        return verdict
+      }
+
+      await debug(`Found stale verdict (age=${age}ms), ignoring`)
+    } catch {
+      // Wait for verdict file
+    }
+
+    await new Promise(resolve => setTimeout(resolve, REFLECTION_POLL_INTERVAL_MS))
+  }
+
+  await debug(`No reflection verdict found within ${maxWaitMs}ms`)
+  return null
 }
 
 // ==================== WHISPER STT ====================
@@ -729,15 +777,34 @@ function isSessionComplete(messages: any[]): boolean {
   return !!(lastAssistant.info?.time as any)?.completed
 }
 
-function extractLastResponse(messages: any[]): string {
-  const lastAssistant = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
-  if (!lastAssistant) return ""
-  
-  const textParts = (lastAssistant.parts || [])
-    .filter((p: any) => p.type === "text")
-    .map((p: any) => p.text || "")
-  
-  return textParts.join("\n").trim()
+function findStaticReflectionPromptIndex(messages: any[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.info?.role !== "user") continue
+    for (const part of msg.parts || []) {
+      if (part.type === "text" && part.text?.includes("1. **What was the task?**")) {
+        return i
+      }
+    }
+  }
+  return -1
+}
+
+function extractFinalResponse(messages: any[]): string {
+  const cutoffIndex = findStaticReflectionPromptIndex(messages)
+  const startIndex = cutoffIndex > -1 ? cutoffIndex - 1 : messages.length - 1
+
+  for (let i = startIndex; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.info?.role !== "assistant") continue
+    const textParts = (msg.parts || [])
+      .filter((p: any) => p.type === "text")
+      .map((p: any) => p.text || "")
+    const text = textParts.join("\n").trim()
+    if (text) return text
+  }
+
+  return ""
 }
 
 // ==================== PLUGIN ====================
@@ -958,11 +1025,33 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
             return
           }
 
-          const responseText = extractLastResponse(messages)
-          if (!responseText) return
+          const config = await loadConfig()
+          const waitForVerdict = config.reflection?.waitForVerdict !== false
+          if (waitForVerdict) {
+            const maxWaitMs = config.reflection?.maxWaitMs || REFLECTION_VERDICT_WAIT_MS
+            const verdictDir = sessionDirectory || directory
+            const verdict = await waitForReflectionVerdict(verdictDir, sessionId, maxWaitMs)
+
+            if (verdict) {
+              if (!verdict.complete) {
+                await debug(`Reflection verdict: INCOMPLETE (${verdict.severity}), skipping Telegram`) 
+                spokenSessions.delete(sessionId)
+                return
+              }
+              await debug(`Reflection verdict: COMPLETE (${verdict.severity}), proceeding with Telegram`)
+            } else {
+              await debug(`No reflection verdict found, proceeding with Telegram`)
+            }
+          }
+
+          const responseText = extractFinalResponse(messages)
+          if (!responseText) {
+            await debug(`No final response found, skipping`)
+            spokenSessions.delete(sessionId)
+            return
+          }
 
           // Send notification
-          const config = await loadConfig()
           const result = await sendNotification(
             responseText.slice(0, 1000),
             null, // No voice for now - TTS plugin can add it
