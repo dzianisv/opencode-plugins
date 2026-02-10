@@ -11,11 +11,14 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { readFile, writeFile, mkdir } from "fs/promises"
 import { join } from "path"
+import { homedir } from "os"
 
 const DEBUG = process.env.REFLECTION_DEBUG === "1"
 const JUDGE_RESPONSE_TIMEOUT = 120_000
 const POLL_INTERVAL = 2_000
 const ABORT_COOLDOWN = 10_000 // 10 second cooldown after Esc before allowing reflection
+
+const REFLECTION_CONFIG_PATH = join(homedir(), ".config", "opencode", "reflection.yaml")
 
 function debug(...args: any[]) {
   if (DEBUG) console.error("[ReflectionStatic]", ...args)
@@ -159,6 +162,57 @@ export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
     } catch {}
   }
 
+  function parseModelListFromYaml(content: string): string[] {
+    const models: string[] = []
+    const lines = content.split(/\r?\n/)
+    let inModels = false
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim()
+      if (!line || line.startsWith("#")) continue
+
+      if (/^models\s*:/i.test(line)) {
+        inModels = true
+        const inline = line.replace(/^models\s*:/i, "").trim()
+        if (inline.startsWith("[") && inline.endsWith("]")) {
+          const items = inline.slice(1, -1).split(",")
+          for (const item of items) {
+            const value = item.trim().replace(/^['"]|['"]$/g, "")
+            if (value) models.push(value)
+          }
+          inModels = false
+        }
+        continue
+      }
+
+      if (inModels) {
+        if (/^[\w-]+\s*:/.test(line)) {
+          inModels = false
+          continue
+        }
+        if (line.startsWith("-")) {
+          const value = line.replace(/^-\s*/, "").trim().replace(/^['"]|['"]$/g, "")
+          if (value) models.push(value)
+        }
+      }
+    }
+
+    return models
+  }
+
+  async function loadReflectionModelList(): Promise<string[]> {
+    try {
+      const content = await readFile(REFLECTION_CONFIG_PATH, "utf-8")
+      const models = parseModelListFromYaml(content)
+      if (models.length) {
+        debug("Loaded reflection model list:", JSON.stringify(models))
+      }
+      return models
+    } catch {
+      return []
+    }
+  }
+
   // Directory for storing reflection verdicts (used by TTS/Telegram coordination)
   const reflectionDir = join(directory, ".reflection")
 
@@ -222,17 +276,7 @@ export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
     shouldContinue: boolean
     reason: string
   }> {
-    const { data: judgeSession } = await client.session.create({
-      query: { directory }
-    })
-    if (!judgeSession?.id) {
-      return { complete: false, shouldContinue: false, reason: "Failed to create judge session" }
-    }
-
-    judgeSessionIds.add(judgeSession.id)
-
-    try {
-      const analyzePrompt = `ANALYZE AGENT RESPONSE
+    const analyzePrompt = `ANALYZE AGENT RESPONSE
 
 You are analyzing an agent's self-assessment of task completion.
 
@@ -260,50 +304,78 @@ Rules:
 - If agent lists "next steps" or "improvements" -> shouldContinue: true
 - If agent explicitly says they need user input to proceed -> complete: false, shouldContinue: false
 - When in doubt, shouldContinue: true (push agent to finish)`
+    const modelList = await loadReflectionModelList()
+    const attempts = modelList.length ? modelList : [""]
 
-      debug("Sending analysis prompt to judge session:", judgeSession.id.slice(0, 8))
-      await client.session.promptAsync({
-        path: { id: judgeSession.id },
-        body: { parts: [{ type: "text", text: analyzePrompt }] }
+    for (const modelSpec of attempts) {
+      const { data: judgeSession } = await client.session.create({
+        query: { directory }
       })
-
-      debug("Waiting for judge response...")
-      const response = await waitForResponse(judgeSession.id)
-      
-      if (!response) {
-        debug("Judge timeout - no response received")
-        return { complete: false, shouldContinue: false, reason: "Judge timeout" }
+      if (!judgeSession?.id) {
+        return { complete: false, shouldContinue: false, reason: "Failed to create judge session" }
       }
 
-      debug("Judge response received, length:", response.length)
-      const jsonMatch = response.match(/\{[\s\S]*\}/)
-      if (!jsonMatch) {
-        debug("No JSON found in response:", response.slice(0, 200))
-        return { complete: false, shouldContinue: false, reason: "No JSON in response" }
-      }
+      judgeSessionIds.add(judgeSession.id)
 
       try {
-        const result = JSON.parse(jsonMatch[0])
-        debug("Parsed analysis result:", JSON.stringify(result))
-        return {
-          complete: !!result.complete,
-          shouldContinue: !!result.shouldContinue,
-          reason: result.reason || "No reason provided"
+        const modelParts = modelSpec ? modelSpec.split("/") : []
+        const providerID = modelParts[0] || ""
+        const modelID = modelParts.slice(1).join("/") || ""
+
+        const body: any = { parts: [{ type: "text", text: analyzePrompt }] }
+        if (providerID && modelID) {
+          body.model = { providerID, modelID }
+          debug("Using reflection model:", `${providerID}/${modelID}`)
+        } else if (modelSpec) {
+          debug("Invalid model format, skipping:", modelSpec)
+          continue
         }
-      } catch (parseError) {
-        debug("JSON parse error:", parseError, "text:", jsonMatch[0].slice(0, 100))
-        return { complete: false, shouldContinue: false, reason: "JSON parse error" }
-      }
-    } finally {
-      // Cleanup judge session
-      try {
-        await client.session.delete({ 
+
+        debug("Sending analysis prompt to judge session:", judgeSession.id.slice(0, 8))
+        await client.session.promptAsync({
           path: { id: judgeSession.id },
-          query: { directory }
+          body
         })
-      } catch {}
-      judgeSessionIds.delete(judgeSession.id)
+
+        debug("Waiting for judge response...")
+        const response = await waitForResponse(judgeSession.id)
+        
+        if (!response) {
+          debug("Judge timeout - no response received")
+          continue
+        }
+
+        debug("Judge response received, length:", response.length)
+        const jsonMatch = response.match(/\{[\s\S]*\}/)
+        if (!jsonMatch) {
+          debug("No JSON found in response:", response.slice(0, 200))
+          continue
+        }
+
+        try {
+          const result = JSON.parse(jsonMatch[0])
+          debug("Parsed analysis result:", JSON.stringify(result))
+          return {
+            complete: !!result.complete,
+            shouldContinue: !!result.shouldContinue,
+            reason: result.reason || "No reason provided"
+          }
+        } catch (parseError) {
+          debug("JSON parse error:", parseError, "text:", jsonMatch[0].slice(0, 100))
+          continue
+        }
+      } finally {
+        try {
+          await client.session.delete({
+            path: { id: judgeSession.id },
+            query: { directory }
+          })
+        } catch {}
+        judgeSessionIds.delete(judgeSession.id)
+      }
     }
+
+    return { complete: false, shouldContinue: false, reason: "Judge failed on all models" }
   }
 
   async function runReflection(sessionId: string): Promise<void> {
