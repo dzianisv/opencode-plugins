@@ -2,10 +2,39 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin/tool";
 import { spawnSync } from "child_process";
 import { join, resolve } from "path";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
+import { homedir } from "os";
+
+// Configuration for worktree plugin
+interface WorktreeConfig {
+  serverUrl?: string;  // Default: auto-detect or http://localhost:4096
+  serverPassword?: string;  // For authenticated servers
+}
+
+const CONFIG_PATH = join(homedir(), ".config", "opencode", "worktree.json");
+
+function loadConfig(): WorktreeConfig {
+  try {
+    return JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+// Try to detect the server URL from environment or config
+function getServerUrl(config: WorktreeConfig): string {
+  // Priority: config > env > default
+  if (config.serverUrl) return config.serverUrl;
+  if (process.env.OPENCODE_SERVER_URL) return process.env.OPENCODE_SERVER_URL;
+  
+  // Default port - opencode serve uses 4096 by default when port=0 is not specified
+  // But when running via TUI, the server is embedded. We need to check common ports.
+  return "http://127.0.0.1:4096";
+}
 
 export const WorktreePlugin: Plugin = async (ctx) => {
   const { directory, client } = ctx;
+  const config = loadConfig();
 
   // Helper to execute git commands
   const git = async (args: string[], cwd = directory) => {
@@ -15,10 +44,56 @@ export const WorktreePlugin: Plugin = async (ctx) => {
     return result.stdout.trim();
   };
 
+  // Helper to escape strings for shell
+  const escapeShell = (s: string) => s.replace(/'/g, "'\\''");
+  
+  // Helper to escape strings for AppleScript
+  const escapeAppleScript = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+
+  // Launch a new terminal with opencode attach
+  const launchTerminal = (worktreePath: string, sessionId?: string) => {
+    if (process.platform !== "darwin") {
+      return false;
+    }
+
+    const serverUrl = getServerUrl(config);
+    const shellPath = escapeShell(worktreePath);
+    
+    // Build the opencode attach command
+    let shellCmd = `cd '${shellPath}' && opencode attach '${serverUrl}' --dir '${shellPath}'`;
+    
+    if (sessionId) {
+      shellCmd += ` --session '${escapeShell(sessionId)}'`;
+    }
+    
+    if (config.serverPassword) {
+      shellCmd += ` --password '${escapeShell(config.serverPassword)}'`;
+    }
+
+    const appleScriptCmd = escapeAppleScript(shellCmd);
+
+    const script = `
+      tell application "Terminal"
+        do script "${appleScriptCmd}"
+        activate
+      end tell
+    `;
+    
+    const result = spawnSync("osascript", [], { input: script, encoding: "utf-8" });
+    return result.status === 0;
+  };
+
   return {
     tool: {
       worktree_create: tool({
-        description: "Create a new git worktree for a feature branch and open it in a new terminal with OpenCode.",
+        description: `Create a new git worktree for a feature branch. Opens a new terminal with OpenCode attached to the server, allowing persistent multi-session development.
+
+The new terminal will:
+1. Connect to the existing OpenCode server (shared sessions)
+2. Create a new session for the worktree directory
+3. Optionally start with an initial task
+
+This enables parallel development on multiple branches with separate TUI windows, all managed by a single server.`,
         args: {
           branch: tool.schema.string().describe("Name of the new feature branch (e.g. 'feat/new-ui')"),
           base: tool.schema.string().optional().describe("Base branch to start from (default: 'main' or 'master')"),
@@ -28,6 +103,7 @@ export const WorktreePlugin: Plugin = async (ctx) => {
           const { branch, task } = args;
           let base = args.base;
           
+          // Auto-detect default branch
           if (!base) {
             try {
               const branches = await git(["branch", "-r"]);
@@ -37,44 +113,58 @@ export const WorktreePlugin: Plugin = async (ctx) => {
             }
           }
 
-          // Determine sibling path
+          // Determine sibling path (worktrees go next to the main repo)
           const parentDir = resolve(directory, "..");
           const worktreePath = join(parentDir, branch.replace(/\//g, "-"));
           
           if (existsSync(worktreePath)) {
-            return `Worktree directory already exists at ${worktreePath}`;
+            return `Worktree directory already exists at ${worktreePath}. Use worktree_list to see existing worktrees.`;
           }
 
           try {
-            // Create worktree
+            // 1. Create the git worktree
             await git(["worktree", "add", "-b", branch, worktreePath, base]);
             
-            // Launch new OpenCode session (macOS only)
-            if (process.platform === "darwin") {
-              const escapeShell = (s: string) => s.replace(/'/g, "'\\''");
-              const escapeAppleScript = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-
-              const shellPath = escapeShell(worktreePath);
-              let shellCmd = `cd '${shellPath}' && opencode`;
+            // 2. Create a new session for this worktree directory
+            let sessionId: string | undefined;
+            try {
+              const { data: session } = await client.session.create({
+                body: { directory: worktreePath } as any
+              });
+              sessionId = session?.id;
               
-              if (task) {
-                shellCmd += ` run '${escapeShell(task)}'`;
+              // 3. If task provided, send it to the session
+              if (sessionId && task) {
+                await client.session.promptAsync({
+                  path: { id: sessionId },
+                  body: { parts: [{ type: "text", text: task }] }
+                });
               }
-
-              const appleScriptCmd = escapeAppleScript(shellCmd);
-
-              const script = `
-                tell application "Terminal"
-                  do script "${appleScriptCmd}"
-                  activate
-                end tell
-              `;
+            } catch (e: any) {
+              // Session creation failed - might not be running as server
+              // Still create worktree, just won't have pre-created session
+              console.error(`[Worktree] Could not create session: ${e.message}`);
+            }
+            
+            // 4. Launch terminal with opencode attach (macOS only)
+            if (process.platform === "darwin") {
+              const launched = launchTerminal(worktreePath, sessionId);
               
-              spawnSync("osascript", [], { input: script, encoding: "utf-8" });
-              
-              return `Created worktree at ${worktreePath} and launched OpenCode in new terminal.${task ? ` Task: "${task}"` : ""}`;
+              if (launched) {
+                let msg = `Created worktree at ${worktreePath} on branch '${branch}' (from ${base}).`;
+                msg += `\n\nLaunched OpenCode TUI attached to server.`;
+                if (sessionId) {
+                  msg += `\nSession ID: ${sessionId}`;
+                }
+                if (task) {
+                  msg += `\nInitial task: "${task}"`;
+                }
+                return msg;
+              } else {
+                return `Created worktree at ${worktreePath} but failed to launch terminal. Run manually:\n\ncd '${worktreePath}' && opencode`;
+              }
             } else {
-              return `Created worktree at ${worktreePath}. (Auto-launch not supported on ${process.platform}, please cd there manually)`;
+              return `Created worktree at ${worktreePath}. Auto-launch not supported on ${process.platform}.\n\nRun manually:\ncd '${worktreePath}' && opencode`;
             }
           } catch (e: any) {
             return `Failed to create worktree: ${e.message}`;
@@ -83,12 +173,41 @@ export const WorktreePlugin: Plugin = async (ctx) => {
       }),
 
       worktree_list: tool({
-        description: "List all active git worktrees.",
+        description: "List all active git worktrees with their branches and paths.",
         args: {},
         async execute() {
           try {
-            const output = await git(["worktree", "list"]);
-            return output;
+            const output = await git(["worktree", "list", "--porcelain"]);
+            
+            // Parse porcelain output into structured data
+            const worktrees: Array<{path: string, branch: string, head: string}> = [];
+            let current: any = {};
+            
+            for (const line of output.split("\n")) {
+              if (line.startsWith("worktree ")) {
+                if (current.path) worktrees.push(current);
+                current = { path: line.replace("worktree ", "") };
+              } else if (line.startsWith("HEAD ")) {
+                current.head = line.replace("HEAD ", "").slice(0, 8);
+              } else if (line.startsWith("branch ")) {
+                current.branch = line.replace("branch refs/heads/", "");
+              }
+            }
+            if (current.path) worktrees.push(current);
+            
+            if (worktrees.length === 0) {
+              return "No worktrees found.";
+            }
+            
+            // Format output
+            let result = "Active worktrees:\n\n";
+            for (const wt of worktrees) {
+              result += `  ${wt.path}\n`;
+              result += `    Branch: ${wt.branch || "(detached)"}\n`;
+              result += `    HEAD: ${wt.head}\n\n`;
+            }
+            
+            return result;
           } catch (e: any) {
             return `Error listing worktrees: ${e.message}`;
           }
@@ -96,19 +215,65 @@ export const WorktreePlugin: Plugin = async (ctx) => {
       }),
 
       worktree_delete: tool({
-        description: "Delete a worktree and clean up.",
+        description: "Delete a worktree and optionally its branch. Warns if there are uncommitted changes.",
         args: {
-          path: tool.schema.string().describe("Path to the worktree to remove (or branch name if directory matches)"),
-          force: tool.schema.boolean().optional().describe("Force remove even if dirty (git worktree remove --force)")
+          path: tool.schema.string().describe("Path to the worktree to remove"),
+          force: tool.schema.boolean().optional().describe("Force remove even with uncommitted changes"),
+          deleteBranch: tool.schema.boolean().optional().describe("Also delete the associated branch")
         },
         async execute(args) {
-          const { path, force } = args;
+          const { path, force, deleteBranch } = args;
+          
           try {
+            // Check for uncommitted changes first
+            if (!force) {
+              try {
+                const status = spawnSync("git", ["status", "--porcelain"], { 
+                  cwd: path, 
+                  encoding: "utf-8" 
+                });
+                if (status.stdout && status.stdout.trim().length > 0) {
+                  return `Worktree at ${path} has uncommitted changes. Use force=true to remove anyway, or commit/stash changes first.\n\nChanges:\n${status.stdout}`;
+                }
+              } catch {
+                // Can't check status, proceed with caution
+              }
+            }
+            
+            // Get branch name before removing (for optional branch deletion)
+            let branchName: string | undefined;
+            if (deleteBranch) {
+              try {
+                const result = spawnSync("git", ["branch", "--show-current"], {
+                  cwd: path,
+                  encoding: "utf-8"
+                });
+                branchName = result.stdout?.trim();
+              } catch {
+                // Can't get branch name
+              }
+            }
+            
+            // Remove the worktree
             const gitArgs = ["worktree", "remove", path];
             if (force) gitArgs.push("--force");
             
             await git(gitArgs);
-            return `Removed worktree at ${path}`;
+            
+            let result = `Removed worktree at ${path}`;
+            
+            // Optionally delete the branch
+            if (deleteBranch && branchName) {
+              try {
+                await git(["branch", "-d", branchName]);
+                result += `\nDeleted branch '${branchName}'`;
+              } catch (e: any) {
+                result += `\nNote: Could not delete branch '${branchName}': ${e.message}`;
+                result += `\nYou may need to use: git branch -D ${branchName}`;
+              }
+            }
+            
+            return result;
           } catch (e: any) {
             return `Failed to remove worktree: ${e.message}`;
           }
@@ -116,21 +281,105 @@ export const WorktreePlugin: Plugin = async (ctx) => {
       }),
 
       worktree_status: tool({
-        description: "Check current worktree state (dirty, branch, sessions).",
-        args: {},
-        async execute() {
+        description: "Get detailed status of a worktree including uncommitted changes, branch info, and active sessions.",
+        args: {
+          path: tool.schema.string().optional().describe("Path to worktree (default: current directory)")
+        },
+        async execute(args) {
+          const targetPath = args.path || directory;
+          
           try {
-            const status = await git(["status", "--porcelain"]);
-            const branch = await git(["branch", "--show-current"]);
-            const sessions = await client.session.list({ query: { directory } });
+            const status = spawnSync("git", ["status", "--porcelain"], {
+              cwd: targetPath,
+              encoding: "utf-8"
+            });
             
-            return JSON.stringify({
-              dirty: status.length > 0,
-              currentBranch: branch,
-              activeSessions: (sessions.data || []).filter((s: any) => s.directory === directory).length
-            }, null, 2);
+            const branch = spawnSync("git", ["branch", "--show-current"], {
+              cwd: targetPath,
+              encoding: "utf-8"
+            });
+            
+            const ahead = spawnSync("git", ["rev-list", "--count", "@{u}..HEAD"], {
+              cwd: targetPath,
+              encoding: "utf-8"
+            });
+            
+            const behind = spawnSync("git", ["rev-list", "--count", "HEAD..@{u}"], {
+              cwd: targetPath,
+              encoding: "utf-8"
+            });
+            
+            // Get sessions for this directory
+            let sessionCount = 0;
+            try {
+              const sessions = await client.session.list({});
+              sessionCount = (sessions.data || []).filter(
+                (s: any) => s.directory === targetPath
+              ).length;
+            } catch {
+              // Session listing failed
+            }
+            
+            const changes = status.stdout?.trim() || "";
+            const result = {
+              path: targetPath,
+              branch: branch.stdout?.trim() || "(detached)",
+              dirty: changes.length > 0,
+              uncommittedFiles: changes ? changes.split("\n").length : 0,
+              aheadOfRemote: parseInt(ahead.stdout?.trim() || "0", 10),
+              behindRemote: parseInt(behind.stdout?.trim() || "0", 10),
+              activeSessions: sessionCount
+            };
+            
+            // Format as readable output
+            let output = `Worktree Status: ${result.path}\n`;
+            output += `─────────────────────────────────────\n`;
+            output += `Branch: ${result.branch}\n`;
+            output += `Status: ${result.dirty ? `${result.uncommittedFiles} uncommitted file(s)` : "Clean"}\n`;
+            
+            if (result.aheadOfRemote > 0 || result.behindRemote > 0) {
+              output += `Remote: `;
+              if (result.aheadOfRemote > 0) output += `${result.aheadOfRemote} ahead `;
+              if (result.behindRemote > 0) output += `${result.behindRemote} behind`;
+              output += `\n`;
+            }
+            
+            output += `Sessions: ${result.activeSessions} active\n`;
+            
+            if (changes) {
+              output += `\nChanges:\n${changes}`;
+            }
+            
+            return output;
           } catch (e: any) {
             return `Error getting status: ${e.message}`;
+          }
+        }
+      }),
+
+      worktree_attach: tool({
+        description: "Open a new terminal attached to an existing worktree. Useful for resuming work on a worktree.",
+        args: {
+          path: tool.schema.string().describe("Path to the worktree"),
+          session: tool.schema.string().optional().describe("Session ID to resume (optional)")
+        },
+        async execute(args) {
+          const { path, session } = args;
+          
+          if (!existsSync(path)) {
+            return `Worktree path does not exist: ${path}`;
+          }
+          
+          if (process.platform !== "darwin") {
+            return `Auto-launch not supported on ${process.platform}. Run manually:\ncd '${path}' && opencode`;
+          }
+          
+          const launched = launchTerminal(path, session);
+          
+          if (launched) {
+            return `Launched OpenCode TUI for worktree at ${path}${session ? ` (session: ${session})` : ""}`;
+          } else {
+            return `Failed to launch terminal. Run manually:\ncd '${path}' && opencode`;
           }
         }
       })
