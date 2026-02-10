@@ -9,7 +9,7 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
-import { readFile } from "fs/promises"
+import { readFile, writeFile, mkdir } from "fs/promises"
 import { join } from "path"
 
 const DEBUG = process.env.REFLECTION_DEBUG === "1"
@@ -157,6 +157,32 @@ export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
         }
       })
     } catch {}
+  }
+
+  // Directory for storing reflection verdicts (used by TTS/Telegram coordination)
+  const reflectionDir = join(directory, ".reflection")
+
+  async function ensureReflectionDir(): Promise<void> {
+    try {
+      await mkdir(reflectionDir, { recursive: true })
+    } catch {}
+  }
+
+  async function writeVerdictSignal(sessionId: string, complete: boolean, severity: string): Promise<void> {
+    await ensureReflectionDir()
+    const signalPath = join(reflectionDir, `verdict_${sessionId.slice(0, 8)}.json`)
+    const signal = {
+      sessionId: sessionId.slice(0, 8),
+      complete,
+      severity,
+      timestamp: Date.now()
+    }
+    try {
+      await writeFile(signalPath, JSON.stringify(signal))
+      debug("Wrote verdict signal:", signalPath, JSON.stringify(signal))
+    } catch (e) {
+      debug("Failed to write verdict signal:", String(e))
+    }
   }
 
   async function waitForResponse(sessionId: string): Promise<string | null> {
@@ -394,11 +420,13 @@ Rules:
       // Step 3: Act on the analysis
       if (analysis.complete) {
         // Agent says task is complete - stop here
+        await writeVerdictSignal(sessionId, true, "NONE")
         lastReflectedMsgId.set(sessionId, lastUserMsgId)
         confirmedComplete.add(sessionId)
         await showToast("Task confirmed complete", "success")
         debug("Agent confirmed task complete, stopping")
       } else if (analysis.shouldContinue) {
+        await writeVerdictSignal(sessionId, false, "LOW")
         // Agent identified improvements - push them to continue
         // NOTE: We do NOT update lastReflectedMsgId here.
         // This ensures that when the agent finishes the pushed work (and idles),
@@ -441,6 +469,7 @@ Rules:
         })
       } else {
         // Agent stopped for valid reason (needs user input, etc.)
+        await writeVerdictSignal(sessionId, false, "LOW")
         lastReflectedMsgId.set(sessionId, lastUserMsgId)
         await showToast(`Stopped: ${analysis.reason}`, "warning")
         debug("Agent stopped for valid reason:", analysis.reason)

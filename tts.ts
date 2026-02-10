@@ -243,6 +243,7 @@ interface TTSConfig {
   reflection?: {
     waitForVerdict?: boolean             // Wait for reflection verdict before speaking (default: true)
     maxWaitMs?: number                   // Max wait time for verdict (default: 10000ms)
+    requireVerdict?: boolean             // Require verdict before speaking (default: true)
   }
 }
 
@@ -283,6 +284,34 @@ interface ReflectionVerdict {
   complete: boolean
   severity: string
   timestamp: number
+}
+
+interface ReflectionMetrics {
+  missingVerdictCount: number
+  lastMissingAt?: number
+}
+
+async function updateReflectionMetrics(directory: string): Promise<ReflectionMetrics> {
+  const reflectionDir = join(directory, ".reflection")
+  const metricsPath = join(reflectionDir, "reflection_metrics.json")
+  let metrics: ReflectionMetrics = { missingVerdictCount: 0 }
+
+  try {
+    const content = await readFile(metricsPath, "utf-8")
+    metrics = JSON.parse(content) as ReflectionMetrics
+  } catch {
+    // No existing metrics
+  }
+
+  metrics.missingVerdictCount = (metrics.missingVerdictCount || 0) + 1
+  metrics.lastMissingAt = Date.now()
+
+  try {
+    await mkdir(reflectionDir, { recursive: true })
+    await writeFile(metricsPath, JSON.stringify(metrics, null, 2))
+  } catch {}
+
+  return metrics
 }
 
 /**
@@ -1738,26 +1767,50 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
       ? cleaned.slice(0, MAX_SPEECH_LENGTH) + "... message truncated."
       : cleaned
 
-    // Create a ticket and wait for our turn in the speech queue
-    const ticketId = await createSpeechTicket(sessionId)
-    const gotTurn = await waitForSpeechTurn(ticketId, 180000) // 3 min timeout
-    if (!gotTurn) {
-      await debugLog(`Failed to acquire speech turn for ${sessionId}`)
-      return
-    }
-
-    // Check if TTS is still enabled after waiting in queue
+    // Check if TTS is still enabled before waiting in queue
     if (!(await isEnabled())) {
-      await debugLog(`TTS disabled while waiting in queue, skipping`)
-      await releaseSpeechLock(ticketId)
-      await removeSpeechTicket(ticketId)
+      await debugLog(`TTS disabled before queue, skipping`)
       return
     }
 
     let generatedAudioPath: string | null = null
+    let ticketId: string | null = null
 
     try {
       const config = await loadConfig()
+      const requireVerdict = config.reflection?.requireVerdict !== false
+
+      if (requireVerdict) {
+        const verdictDir = sessionDirectory || directory
+        const maxWaitMs = config.reflection?.maxWaitMs || REFLECTION_VERDICT_WAIT_MS
+        const verdict = await waitForReflectionVerdict(verdictDir, sessionId, maxWaitMs, async (msg) => debugLog(msg))
+        if (!verdict) {
+          const metrics = await updateReflectionMetrics(verdictDir)
+          await debugLog(`Speak blocked: missing reflection verdict (count=${metrics.missingVerdictCount})`)
+          return
+        }
+        if (!verdict.complete) {
+          await debugLog(`Speak blocked: reflection verdict incomplete (${verdict.severity})`)
+          return
+        }
+      }
+
+      // Create a ticket and wait for our turn in the speech queue
+      ticketId = await createSpeechTicket(sessionId)
+      const gotTurn = await waitForSpeechTurn(ticketId, 180000) // 3 min timeout
+      if (!gotTurn) {
+        await debugLog(`Failed to acquire speech turn for ${sessionId}`)
+        return
+      }
+
+      // Check if TTS is still enabled after waiting in queue
+      if (!(await isEnabled())) {
+        await debugLog(`TTS disabled while waiting in queue, skipping`)
+        await releaseSpeechLock(ticketId)
+        await removeSpeechTicket(ticketId)
+        return
+      }
+
       const engine = await getEngine()
       
       // Save TTS data to .tts/ directory
@@ -1800,8 +1853,10 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
       if (generatedAudioPath) {
         await unlink(generatedAudioPath).catch(() => {})
       }
-      await releaseSpeechLock(ticketId)
-      await removeSpeechTicket(ticketId)
+      if (ticketId) {
+        await releaseSpeechLock(ticketId)
+        await removeSpeechTicket(ticketId)
+      }
     }
   }
 
@@ -1989,6 +2044,7 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
           // This prevents TTS from firing on incomplete tasks that reflection will push feedback for
           const config = await loadConfig()
           const waitForVerdict = config.reflection?.waitForVerdict !== false  // Default: true
+          const requireVerdict = config.reflection?.requireVerdict !== false  // Default: true
           
           if (waitForVerdict) {
             const maxWaitMs = config.reflection?.maxWaitMs || REFLECTION_VERDICT_WAIT_MS
@@ -2007,8 +2063,13 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
               }
               await debugLog(`Reflection verdict: COMPLETE (${verdict.severity}), proceeding with TTS`)
             } else {
-              // No verdict found - reflection may not be running, proceed anyway
-              await debugLog(`No reflection verdict found, proceeding with TTS`)
+              // No verdict found - reflection may not be running
+              const metrics = await updateReflectionMetrics(sessionDirectory || directory)
+              await debugLog(`No reflection verdict found (count=${metrics.missingVerdictCount}), requireVerdict=${requireVerdict}`)
+              if (requireVerdict) {
+                shouldKeepInSet = false
+                return
+              }
             }
           }
 
