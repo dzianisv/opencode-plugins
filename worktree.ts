@@ -1,17 +1,20 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin/tool";
-import { spawnSync } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { join, resolve } from "path";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
 
 // Configuration for worktree plugin
 interface WorktreeConfig {
   serverUrl?: string;  // Default: auto-detect or http://localhost:4096
   serverPassword?: string;  // For authenticated servers
+  serverPort?: number;  // Port for auto-started server (default: 4096)
 }
 
 const CONFIG_PATH = join(homedir(), ".config", "opencode", "worktree.json");
+const SERVER_PID_PATH = join(homedir(), ".config", "opencode", "worktree-server.pid");
+const DEFAULT_PORT = 4096;
 
 function loadConfig(): WorktreeConfig {
   try {
@@ -27,9 +30,87 @@ function getServerUrl(config: WorktreeConfig): string {
   if (config.serverUrl) return config.serverUrl;
   if (process.env.OPENCODE_SERVER_URL) return process.env.OPENCODE_SERVER_URL;
   
-  // Default port - opencode serve uses 4096 by default when port=0 is not specified
-  // But when running via TUI, the server is embedded. We need to check common ports.
-  return "http://127.0.0.1:4096";
+  const port = config.serverPort || DEFAULT_PORT;
+  return `http://127.0.0.1:${port}`;
+}
+
+// Check if the server is running by hitting its health endpoint
+async function isServerRunning(serverUrl: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    
+    const response = await fetch(`${serverUrl}/health`, {
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Start opencode serve in the background
+async function startServer(config: WorktreeConfig): Promise<{ url: string; started: boolean }> {
+  const port = config.serverPort || DEFAULT_PORT;
+  const serverUrl = `http://127.0.0.1:${port}`;
+  
+  // Check if already running
+  if (await isServerRunning(serverUrl)) {
+    return { url: serverUrl, started: false };
+  }
+  
+  // Start the server in background
+  const args = ["serve", "--port", String(port)];
+  
+  // Note: We don't set password here - user should set OPENCODE_SERVER_PASSWORD env var
+  // or configure it in their shell profile for security
+  
+  const child = spawn("opencode", args, {
+    detached: true,
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      // Pass through password if configured
+      ...(config.serverPassword ? { OPENCODE_SERVER_PASSWORD: config.serverPassword } : {})
+    }
+  });
+  
+  // Save PID for potential cleanup
+  try {
+    mkdirSync(join(homedir(), ".config", "opencode"), { recursive: true });
+    writeFileSync(SERVER_PID_PATH, String(child.pid));
+  } catch {
+    // Ignore PID save errors
+  }
+  
+  // Detach from parent process
+  child.unref();
+  
+  // Wait for server to be ready (up to 10 seconds)
+  const maxAttempts = 20;
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    if (await isServerRunning(serverUrl)) {
+      return { url: serverUrl, started: true };
+    }
+  }
+  
+  throw new Error(`Server failed to start on port ${port} after 10 seconds`);
+}
+
+// Ensure server is running, starting it if necessary
+async function ensureServer(config: WorktreeConfig): Promise<string> {
+  const serverUrl = getServerUrl(config);
+  
+  if (await isServerRunning(serverUrl)) {
+    return serverUrl;
+  }
+  
+  // Server not running, start it
+  const result = await startServer(config);
+  return result.url;
 }
 
 export const WorktreePlugin: Plugin = async (ctx) => {
@@ -51,12 +132,22 @@ export const WorktreePlugin: Plugin = async (ctx) => {
   const escapeAppleScript = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
   // Launch a new terminal with opencode attach
-  const launchTerminal = (worktreePath: string, sessionId?: string) => {
+  const launchTerminal = async (worktreePath: string, sessionId?: string): Promise<{ success: boolean; serverStarted?: boolean; error?: string }> => {
     if (process.platform !== "darwin") {
-      return false;
+      return { success: false, error: `Auto-launch not supported on ${process.platform}` };
     }
 
-    const serverUrl = getServerUrl(config);
+    // Ensure server is running (starts it if needed)
+    let serverUrl: string;
+    let serverStarted = false;
+    try {
+      const wasRunning = await isServerRunning(getServerUrl(config));
+      serverUrl = await ensureServer(config);
+      serverStarted = !wasRunning;
+    } catch (e: any) {
+      return { success: false, error: `Failed to start server: ${e.message}` };
+    }
+
     const shellPath = escapeShell(worktreePath);
     
     // Build the opencode attach command
@@ -80,7 +171,7 @@ export const WorktreePlugin: Plugin = async (ctx) => {
     `;
     
     const result = spawnSync("osascript", [], { input: script, encoding: "utf-8" });
-    return result.status === 0;
+    return { success: result.status === 0, serverStarted };
   };
 
   return {
@@ -148,11 +239,14 @@ This enables parallel development on multiple branches with separate TUI windows
             
             // 4. Launch terminal with opencode attach (macOS only)
             if (process.platform === "darwin") {
-              const launched = launchTerminal(worktreePath, sessionId);
+              const result = await launchTerminal(worktreePath, sessionId);
               
-              if (launched) {
+              if (result.success) {
                 let msg = `Created worktree at ${worktreePath} on branch '${branch}' (from ${base}).`;
-                msg += `\n\nLaunched OpenCode TUI attached to server.`;
+                if (result.serverStarted) {
+                  msg += `\n\nStarted OpenCode server automatically.`;
+                }
+                msg += `\nLaunched OpenCode TUI attached to server.`;
                 if (sessionId) {
                   msg += `\nSession ID: ${sessionId}`;
                 }
@@ -161,7 +255,7 @@ This enables parallel development on multiple branches with separate TUI windows
                 }
                 return msg;
               } else {
-                return `Created worktree at ${worktreePath} but failed to launch terminal. Run manually:\n\ncd '${worktreePath}' && opencode`;
+                return `Created worktree at ${worktreePath} but failed to launch terminal: ${result.error}\n\nRun manually:\ncd '${worktreePath}' && opencode`;
               }
             } else {
               return `Created worktree at ${worktreePath}. Auto-launch not supported on ${process.platform}.\n\nRun manually:\ncd '${worktreePath}' && opencode`;
@@ -374,12 +468,19 @@ This enables parallel development on multiple branches with separate TUI windows
             return `Auto-launch not supported on ${process.platform}. Run manually:\ncd '${path}' && opencode`;
           }
           
-          const launched = launchTerminal(path, session);
+          const result = await launchTerminal(path, session);
           
-          if (launched) {
-            return `Launched OpenCode TUI for worktree at ${path}${session ? ` (session: ${session})` : ""}`;
+          if (result.success) {
+            let msg = `Launched OpenCode TUI for worktree at ${path}`;
+            if (session) {
+              msg += ` (session: ${session})`;
+            }
+            if (result.serverStarted) {
+              msg += `\nStarted OpenCode server automatically.`;
+            }
+            return msg;
           } else {
-            return `Failed to launch terminal. Run manually:\ncd '${path}' && opencode`;
+            return `Failed to launch terminal: ${result.error}\n\nRun manually:\ncd '${path}' && opencode`;
           }
         }
       })
