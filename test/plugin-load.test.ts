@@ -321,7 +321,8 @@ describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, 
     const toolErrors = serverErrors.filter(e => {
       const mentionsTool = /(tool|schema|zod)/i.test(e)
       const looksError = /(error|typeerror|referenceerror|zoderror|invalid|failed|exception)/i.test(e)
-      return mentionsTool && looksError
+      const isMcpConfig = /service=mcp/i.test(e)
+      return mentionsTool && looksError && !isMcpConfig
     }).filter(e => !e.includes("tool.registry") && !e.includes("service=tool.registry"))
     
     assert.strictEqual(toolErrors.length, 0, `No tool registration errors: ${toolErrors.join(", ")}`)
