@@ -219,7 +219,7 @@ describe("Reflection Plugin - Unit Tests", () => {
         next_actions: []
       }
       
-      // This simulates the logic in reflection.ts
+      // This simulates the logic in reflection-3.ts
       let sentToAgent = false
       let shownToast = false
       

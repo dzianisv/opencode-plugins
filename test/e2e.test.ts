@@ -13,7 +13,7 @@ import { fileURLToPath } from "url"
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/client"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const PLUGIN_PATH = join(__dirname, "../reflection.ts")
+const PLUGIN_PATH = join(__dirname, "../reflection-3.ts")
 
 // Model for E2E tests - override with OPENCODE_MODEL env var
 // OpenCode does NOT auto-select models in temp directories without config

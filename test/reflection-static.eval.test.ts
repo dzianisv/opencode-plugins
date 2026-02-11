@@ -1,8 +1,8 @@
 /**
- * E2E Evaluation Test for reflection-static.ts Plugin
+ * E2E Evaluation Test for reflection-3.ts Plugin
  *
  * This test:
- * 1. Starts OpenCode with the reflection-static plugin
+ * 1. Starts OpenCode with the reflection-3 plugin
  * 2. Asks it to create a Python hello world with unit tests
  * 3. Verifies the plugin triggered and provided feedback
  * 4. Uses Azure OpenAI to evaluate the plugin's effectiveness
@@ -28,7 +28,7 @@ import { config } from "dotenv"
 config({ path: join(dirname(fileURLToPath(import.meta.url)), "../.env"), override: true })
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const PLUGIN_PATH = join(__dirname, "../reflection-static.ts")
+const PLUGIN_PATH = join(__dirname, "../reflection-3.ts")
 
 // Model for the agent under test
 const AGENT_MODEL = process.env.OPENCODE_MODEL || "github-copilot/gpt-4o"
@@ -67,7 +67,7 @@ async function setupProject(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true })
   const pluginDir = join(dir, ".opencode", "plugin")
   await mkdir(pluginDir, { recursive: true })
-  await cp(PLUGIN_PATH, join(pluginDir, "reflection-static.ts"))
+  await cp(PLUGIN_PATH, join(pluginDir, "reflection.ts"))
   
   // Create opencode.json with explicit model
   const config = {
@@ -90,7 +90,7 @@ async function waitForServer(port: number, timeout: number): Promise<boolean> {
 }
 
 /**
- * Call Azure to evaluate the reflection-static plugin's performance
+  * Call Azure to evaluate the reflection-3 plugin's performance
  * Uses Azure OpenAI endpoint with deployment from AZURE_OPENAI_DEPLOYMENT env var
  */
 async function evaluateWithAzure(testResult: TestResult): Promise<EvaluationResult> {
@@ -119,10 +119,10 @@ async function evaluateWithAzure(testResult: TestResult): Promise<EvaluationResu
 "Write a simple hello world application in Python. Cover with unit tests. Run unit tests and make sure they pass."
 
 ## What the Reflection Plugin Should Do
-1. When the agent stops, ask: "What was the task? Are you sure you completed it? If not, why did you stop?"
-2. Analyze the agent's self-assessment
-3. If agent says complete → stop
-4. If agent identifies improvements → push to continue
+1. Ask a self-assessment with workflow requirements
+2. Analyze the agent's self-assessment against required tests/build/PR/CI
+3. If agent says complete with evidence → stop
+4. If missing steps → push to continue
 5. If agent needs user input → stop with explanation
 
 ## Test Results
@@ -145,7 +145,7 @@ ${testResult.serverLogs.slice(-20).join("\n")}
 ${conversationSummary.slice(0, 3000)}
 
 ## Evaluation Instructions
-Rate the reflection-static plugin's performance on a 0-5 scale:
+Rate the reflection-3 plugin's performance on a 0-5 scale:
 - 5: Plugin triggered correctly, asked self-assessment, analyzed response, took appropriate action, task completed
 - 4: Plugin mostly worked, minor issues
 - 3: Plugin partially worked
@@ -209,8 +209,8 @@ Return JSON only:
   return result
 }
 
-describe("reflection-static.ts Plugin E2E Evaluation", { timeout: TIMEOUT + 60_000 }, () => {
-  const testDir = "/tmp/opencode-reflection-static-eval"
+describe("reflection-3.ts Plugin E2E Evaluation", { timeout: TIMEOUT + 60_000 }, () => {
+  const testDir = "/tmp/opencode-reflection-3-eval"
   const port = 3300
   let server: ChildProcess | null = null
   let client: OpencodeClient
@@ -220,7 +220,7 @@ describe("reflection-static.ts Plugin E2E Evaluation", { timeout: TIMEOUT + 60_0
 
   before(async () => {
     console.log("\n" + "=".repeat(60))
-    console.log("=== reflection-static.ts Plugin E2E Evaluation ===")
+    console.log("=== reflection-3.ts Plugin E2E Evaluation ===")
     console.log("=".repeat(60) + "\n")
 
     // Cleanup and setup
@@ -229,7 +229,7 @@ describe("reflection-static.ts Plugin E2E Evaluation", { timeout: TIMEOUT + 60_0
 
     console.log(`[Setup] Test directory: ${testDir}`)
     console.log(`[Setup] Agent model: ${AGENT_MODEL}`)
-    console.log(`[Setup] Plugin: reflection-static.ts`)
+    console.log(`[Setup] Plugin: reflection-3.ts (deployed as reflection.ts)`)
 
     // Start server with debug logging
     console.log("\n[Setup] Starting OpenCode server...")
@@ -246,7 +246,7 @@ describe("reflection-static.ts Plugin E2E Evaluation", { timeout: TIMEOUT + 60_0
       const lines = d.toString().split("\n").filter((l: string) => l.trim())
       for (const line of lines) {
         console.log(`[server] ${line}`)
-        if (line.includes("[ReflectionStatic]")) {
+        if (line.includes("[Reflection3]")) {
           serverLogs.push(line)
         }
       }
@@ -256,7 +256,7 @@ describe("reflection-static.ts Plugin E2E Evaluation", { timeout: TIMEOUT + 60_0
       const lines = d.toString().split("\n").filter((l: string) => l.trim())
       for (const line of lines) {
         console.error(`[server:err] ${line}`)
-        if (line.includes("[ReflectionStatic]")) {
+        if (line.includes("[Reflection3]")) {
           serverLogs.push(line)
         }
       }
@@ -302,7 +302,7 @@ describe("reflection-static.ts Plugin E2E Evaluation", { timeout: TIMEOUT + 60_0
       console.log(`  - Feedback: ${evaluationResult.feedback}`)
     }
 
-    console.log(`\n[Summary] Server logs with [ReflectionStatic]: ${serverLogs.length}`)
+    console.log(`\n[Summary] Server logs with [Reflection3]: ${serverLogs.length}`)
   })
 
   it("runs Python hello world task and plugin provides feedback", async () => {
@@ -364,21 +364,21 @@ Requirements:
         for (const part of msg.parts || []) {
           if (part.type === "text" && part.text) {
             // Plugin's self-assessment question
-            if (part.text.includes("## Self-Assessment Required") || 
+            if (part.text.includes("Reflection-3 Self-Assessment") || 
                 part.text.includes("What was the task?")) {
               testResult.selfAssessmentQuestion = true
               console.log("[Task] Plugin asked self-assessment question")
             }
             
-            // Agent's response to self-assessment
-            if (msg.info?.role === "assistant" && testResult.selfAssessmentQuestion) {
-              if (part.text.includes("1.") && part.text.includes("task")) {
-                testResult.selfAssessmentResponse = part.text
-              }
-            }
+             // Agent's response to self-assessment
+             if (msg.info?.role === "assistant" && testResult.selfAssessmentQuestion) {
+               if (part.text.includes("{") && part.text.includes("status")) {
+                 testResult.selfAssessmentResponse = part.text
+               }
+             }
 
-            // Plugin's "continue" action
-            if (part.text.includes("Please continue with the improvements")) {
+             // Plugin's "continue" action
+             if (part.text.includes("Reflection-3:")) {
               testResult.pluginAction = "continue"
               console.log("[Task] Plugin pushed agent to continue")
             }
@@ -395,19 +395,21 @@ Requirements:
       }
 
       // Check for plugin analysis in server logs
-      const recentLogs = serverLogs.slice(-10).join(" ")
-      if (recentLogs.includes("Analyzing self-assessment") || 
-          recentLogs.includes("Analysis result:")) {
-        testResult.pluginAnalysis = true
-      }
-      if (recentLogs.includes("confirmed task complete")) {
-        testResult.pluginAction = "complete"
-        console.log("[Task] Plugin confirmed task complete")
-      }
-      if (recentLogs.includes("stopped for valid reason")) {
-        testResult.pluginAction = "stopped"
-        console.log("[Task] Plugin noted agent stopped for valid reason")
-      }
+    const recentLogs = serverLogs.slice(-30).join(" ")
+    if (recentLogs.includes("Reflection analysis failed")) {
+      testResult.pluginAnalysis = false
+    }
+    if (recentLogs.includes("Reflection analysis completed") || recentLogs.includes("Reflection pushed continuation") || recentLogs.includes("Reflection complete") || recentLogs.includes("Reflection requires human action")) {
+      testResult.pluginAnalysis = true
+    }
+    if (recentLogs.includes("Reflection complete") || recentLogs.includes("Task complete ✓")) {
+      testResult.pluginAction = "complete"
+      console.log("[Task] Plugin confirmed task complete")
+    }
+    if (recentLogs.includes("Reflection requires human action")) {
+      testResult.pluginAction = "stopped"
+      console.log("[Task] Plugin noted agent stopped for valid reason")
+    }
 
       // Stability check
       const currentContent = JSON.stringify(testResult.messages)
@@ -507,17 +509,17 @@ Requirements:
     console.log("-".repeat(60) + "\n")
 
     // Check server logs for plugin activity
-    const pluginLogs = serverLogs.filter(l => l.includes("[ReflectionStatic]"))
+    const pluginLogs = serverLogs.filter(l => l.includes("[Reflection3]"))
     console.log(`[Verify] Plugin log entries: ${pluginLogs.length}`)
 
     // Verify key events
     const eventReceived = pluginLogs.some(l => l.includes("event received"))
     const sessionIdle = pluginLogs.some(l => l.includes("session.idle"))
     const reflectionCalled = pluginLogs.some(l => l.includes("runReflection called"))
-    const askedQuestion = pluginLogs.some(l => l.includes("Asking static self-assessment"))
-    const gotAssessment = pluginLogs.some(l => l.includes("Got self-assessment"))
-    const analyzed = pluginLogs.some(l => l.includes("Analyzing self-assessment"))
-    const analysisResult = pluginLogs.some(l => l.includes("Analysis result:"))
+    const askedQuestion = pluginLogs.some(l => l.includes("Requesting reflection self-assessment"))
+    const gotAssessment = pluginLogs.some(l => l.includes("Self-assessment received") || l.includes("Self-assessment"))
+    const analyzed = pluginLogs.some(l => l.includes("Reflection analysis completed"))
+    const analysisResult = pluginLogs.some(l => l.includes("Reflection complete") || l.includes("Reflection requires human action") || l.includes("Reflection pushed continuation"))
 
     console.log(`[Verify] Event received: ${eventReceived}`)
     console.log(`[Verify] Session idle detected: ${sessionIdle}`)

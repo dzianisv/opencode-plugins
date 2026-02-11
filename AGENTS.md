@@ -29,7 +29,7 @@ npm run typecheck  # MUST show no errors
 npm test  # MUST show all tests passing
 
 # 4. Plugin is deployed (CRITICAL - most forgotten step!)
-cp reflection.ts ~/.config/opencode/plugin/
+cp reflection-3.ts ~/.config/opencode/plugin/reflection.ts
 cp tts.ts ~/.config/opencode/plugin/
 ls -la ~/.config/opencode/plugin/  # Verify files are there
 
@@ -94,7 +94,7 @@ lsof -ti:3333 | xargs kill 2>/dev/null  # Kill only port 3333
 
 ## Available Plugins
 
-1. **reflection.ts** - Judge layer that evaluates task completion and provides feedback
+1. **reflection-3.ts** - Judge layer that evaluates task completion and provides feedback
 2. **tts.ts** - Text-to-speech that reads agent responses aloud (macOS)
 3. **telegram.ts** - Sends notifications to Telegram when agent completes tasks
 4. **github.ts** - Posts agent messages to associated GitHub issues as comments
@@ -114,7 +114,7 @@ All plugin `.ts` files must be directly in `~/.config/opencode/plugin/` director
 When deploying changes:
 1. Update source files in `/Users/engineer/workspace/opencode-plugins/`
 2. **MUST COPY** all plugins to `~/.config/opencode/plugin/`:
-   - `reflection.ts` → `~/.config/opencode/plugin/`
+  - `reflection-3.ts` → `~/.config/opencode/plugin/reflection.ts`
    - `tts.ts` → `~/.config/opencode/plugin/`
    - `telegram.ts` → `~/.config/opencode/plugin/`
    - `github.ts` → `~/.config/opencode/plugin/`
@@ -125,7 +125,7 @@ When deploying changes:
 cd /Users/engineer/workspace/opencode-plugins
 
 # Copy all plugins
-cp reflection.ts tts.ts telegram.ts github.ts ~/.config/opencode/plugin/
+cp reflection-3.ts tts.ts telegram.ts github.ts ~/.config/opencode/plugin/
 
 # Then restart opencode
 ```
@@ -725,7 +725,7 @@ if (event.type === "session.idle") {
 npm run typecheck                           # 1. Type checking
 npm test                                    # 2. Unit tests (132+)
 npm run test:load                           # 3. Plugin load test (5)
-OPENCODE_E2E=1 npm run test:e2e             # 4. E2E tests (4) - for reflection.ts
+OPENCODE_E2E=1 npm run test:e2e             # 4. E2E tests (4) - for reflection-3.ts
 npm run test:telegram                       # 5. Telegram E2E - for telegram.ts
 npx tsx test/test-telegram-whisper.ts       # 6. Whisper integration - for telegram.ts
 npm run install:global                      # 7. Deploy
@@ -767,7 +767,7 @@ npm run test:load
   - Runtime errors during startup
 - If this test fails, the plugin WILL crash OpenCode
 
-#### 4. E2E Tests (REQUIRED for reflection.ts changes)
+#### 4. E2E Tests (REQUIRED for reflection-3.ts changes)
 ```bash
 OPENCODE_E2E=1 npm run test:e2e
 ```
@@ -817,7 +817,7 @@ opencode -c
 # Check for errors in terminal output
 # No "TypeError", "ReferenceError", "Cannot read property" errors allowed
 
-# 6. For reflection.ts changes: Verify reflection triggers
+# 6. For reflection-3.ts changes: Verify reflection triggers
 # Wait for agent to complete
 # Check for reflection feedback or toast notification
 # Verify .reflection/ directory has new JSON files
@@ -927,7 +927,7 @@ function convert(path: string) {
 
 ### Test Coverage Requirements
 
-Before committing changes to reflection.ts:
+Before committing changes to reflection-3.ts:
 
 - [ ] `npm run typecheck` passes
 - [ ] Unit tests pass: `npm test` (132 tests)

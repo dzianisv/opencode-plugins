@@ -455,6 +455,9 @@ ${content}
 // ==================== PLUGIN ====================
 
 export const GitHubPlugin: Plugin = async ({ client, directory }) => {
+  if (!client) {
+    return {}
+  }
   debug("GitHub plugin initializing for directory:", directory)
 
   // Session state
