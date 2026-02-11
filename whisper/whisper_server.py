@@ -171,6 +171,7 @@ async def list_models():
 
 
 @app.post("/transcribe")
+@app.post("/transcribe-base64")
 async def transcribe(request: dict):
     """
     Transcribe audio from base64-encoded data.

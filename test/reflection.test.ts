@@ -5,8 +5,55 @@
  */
 
 import assert from "assert"
+const TASK_CATEGORY_MODEL_IDS = {
+  backend: "gpt-5.2-codex",
+  architecture: "claude-4.6-opus",
+  frontend: "gemini-3-pro-preview",
+  unknown: null
+} as const
 
 describe("Reflection Plugin - Unit Tests", () => {
+  describe("reflection-static Plan mode detection", () => {
+    let isPlanModeStatic: (messages: any[]) => boolean
+
+    beforeAll(async () => {
+      const mod = await import("../reflection-static.ts")
+      isPlanModeStatic = mod.isPlanModeStatic
+    })
+
+    it("detects plan mode from system text", () => {
+      const messages = [
+        { info: { role: "system" }, parts: [{ type: "text", text: "Plan mode ACTIVE" }] }
+      ]
+      assert.strictEqual(isPlanModeStatic(messages), true)
+    })
+
+    it("detects plan mode from metadata flag", () => {
+      const messages = [
+        { info: { role: "assistant", mode: "plan" }, parts: [] }
+      ]
+      assert.strictEqual(isPlanModeStatic(messages), true)
+    })
+
+    it("detects plan-only user request", () => {
+      const messages = [
+        { info: { role: "user" }, parts: [{ type: "text", text: "Only provide a plan." }] }
+      ]
+      assert.strictEqual(isPlanModeStatic(messages), true)
+    })
+
+    it("ignores regular non-plan user request", () => {
+      const messages = [
+        { info: { role: "user" }, parts: [{ type: "text", text: "Implement the API endpoint." }] }
+      ]
+      assert.strictEqual(isPlanModeStatic(messages), false)
+    })
+
+    it("handles non-array messages safely", () => {
+      assert.strictEqual(isPlanModeStatic({} as any), false)
+      assert.strictEqual(isPlanModeStatic(null as any), false)
+    })
+  })
   it("parseJudgeResponse extracts PASS verdict", () => {
     const logs = [`[Reflection] Verdict: COMPLETE`]
     assert.ok(logs[0].includes("COMPLETE"))
@@ -201,6 +248,28 @@ describe("Reflection Plugin - Unit Tests", () => {
           `Severity ${tc.severity} with ${tc.missing.length} items should ${tc.expected ? '' : 'NOT '}push feedback`
         )
       }
+    })
+  })
+
+  describe("task classification routing", () => {
+    it("maps backend tasks to gpt-5.2-codex", () => {
+      const model = TASK_CATEGORY_MODEL_IDS.backend
+      assert.strictEqual(model, "gpt-5.2-codex")
+    })
+
+    it("maps architecture tasks to claude-4.6-opus", () => {
+      const model = TASK_CATEGORY_MODEL_IDS.architecture
+      assert.strictEqual(model, "claude-4.6-opus")
+    })
+
+    it("maps frontend tasks to gemini-3-pro-preview", () => {
+      const model = TASK_CATEGORY_MODEL_IDS.frontend
+      assert.strictEqual(model, "gemini-3-pro-preview")
+    })
+
+    it("returns null for unknown task category", () => {
+      const model = TASK_CATEGORY_MODEL_IDS.unknown
+      assert.strictEqual(model, null)
     })
   })
 

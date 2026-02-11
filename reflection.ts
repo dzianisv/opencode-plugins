@@ -22,6 +22,8 @@ const COMPRESSION_RETRY_INTERVAL = 15_000 // Retry compression nudge every 15 se
 const GENAI_STUCK_CHECK_THRESHOLD = 30_000 // Only use GenAI after 30 seconds of apparent stuck
 const GENAI_STUCK_CACHE_TTL = 60_000 // Cache GenAI stuck evaluations for 1 minute
 const GENAI_STUCK_TIMEOUT = 30_000 // Timeout for GenAI stuck evaluation (30 seconds)
+const TASK_CLASSIFICATION_TIMEOUT = 30_000
+const TASK_CLASSIFICATION_CACHE_TTL = 300_000
 
 // Types for GenAI stuck detection
 type StuckReason = "genuinely_stuck" | "waiting_for_user" | "working" | "complete" | "error"
@@ -40,6 +42,25 @@ interface CompressionEvaluation {
   hasActiveGitWork: boolean
   confidence: number
   nudgeMessage: string
+}
+
+// Types for task classification routing
+type TaskCategory = "backend" | "architecture" | "frontend" | "unknown"
+interface TaskClassification {
+  category: TaskCategory
+  confidence: number
+  reason?: string
+}
+
+const TASK_CATEGORY_MODEL_IDS: Record<TaskCategory, string | null> = {
+  backend: "gpt-5.2-codex",
+  architecture: "claude-4.6-opus",
+  frontend: "gemini-3-pro-preview",
+  unknown: null
+}
+
+function mapTaskCategoryToModel(category: TaskCategory): string | null {
+  return TASK_CATEGORY_MODEL_IDS[category] || null
 }
 
 // Debug logging (only when REFLECTION_DEBUG=1)
@@ -71,11 +92,16 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   
   // Cache for GenAI stuck evaluations (to avoid repeated calls)
   const stuckEvaluationCache = new Map<string, { result: StuckEvaluation; timestamp: number }>()
+  const taskClassificationCache = new Map<string, { result: TaskClassification; timestamp: number }>()
   
   // Cache for fast model selection (provider -> model)
   let fastModelCache: { providerID: string; modelID: string } | null = null
   let fastModelCacheTime = 0
   const FAST_MODEL_CACHE_TTL = 300_000 // Cache fast model for 5 minutes
+
+  // Cache for provider model availability (provider -> model IDs)
+  let providerModelsCache: { modelsByProvider: Map<string, Set<string>>; timestamp: number } | null = null
+  const PROVIDER_MODELS_CACHE_TTL = 120_000
   
   // Known fast models per provider (prioritized for quick evaluations)
   const FAST_MODELS: Record<string, string[]> = {
@@ -87,6 +113,7 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     "bedrock": ["anthropic.claude-3-haiku-20240307-v1:0"],
     "groq": ["llama-3.1-8b-instant", "mixtral-8x7b-32768"],
   }
+
   
   /**
    * Get a fast model for quick evaluations.
@@ -155,6 +182,144 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
       debug("Error getting fast model:", e)
       return null
     }
+  }
+
+  async function getProviderModels(): Promise<Map<string, Set<string>>> {
+    if (providerModelsCache && Date.now() - providerModelsCache.timestamp < PROVIDER_MODELS_CACHE_TTL) {
+      return providerModelsCache.modelsByProvider
+    }
+    const modelsByProvider = new Map<string, Set<string>>()
+    try {
+      const { data } = await client.config.providers({})
+      const providers = data?.providers || []
+      for (const provider of providers) {
+        const providerID = provider.id
+        if (!providerID) continue
+        const modelsData = provider.models
+        const modelIds: string[] = modelsData
+          ? (Array.isArray(modelsData)
+              ? modelsData.map((m: any) => m.id || m)
+              : Object.keys(modelsData))
+          : []
+        modelsByProvider.set(providerID, new Set(modelIds.filter(Boolean)))
+      }
+    } catch (e) {
+      debug("Error getting provider models:", e)
+    }
+    providerModelsCache = { modelsByProvider, timestamp: Date.now() }
+    return modelsByProvider
+  }
+
+  async function resolveGithubModel(modelID: string): Promise<{ providerID: string; modelID: string } | null> {
+    const providerID = "github-copilot"
+    const modelsByProvider = await getProviderModels()
+    const available = modelsByProvider.get(providerID)
+    if (!available || !available.has(modelID)) {
+      debug("Model not available on github-copilot:", modelID)
+      return null
+    }
+    return { providerID, modelID }
+  }
+
+  function getTaskClassificationCacheKey(task: string, humanMsgId: string): string {
+    return `${humanMsgId}:${task.slice(0, 200)}`
+  }
+
+  async function classifyTaskWithGenAI(task: string, humanMsgId: string): Promise<TaskClassification> {
+    const cacheKey = getTaskClassificationCacheKey(task, humanMsgId)
+    const cached = taskClassificationCache.get(cacheKey)
+    if (cached && Date.now() - cached.timestamp < TASK_CLASSIFICATION_CACHE_TTL) {
+      return cached.result
+    }
+
+    const defaultResult: TaskClassification = { category: "unknown", confidence: 0.2 }
+    try {
+      const fastModel = await getFastModel()
+      if (!fastModel) {
+        debug("No fast model available for task classification")
+        return defaultResult
+      }
+
+      const prompt = `Classify the user's task into ONE category. Return JSON only.
+
+Categories:
+- backend: server-side code, APIs, databases, infra, DevOps, performance
+- architecture: system design, architecture decisions, high-level design, tradeoffs
+- frontend: UI/UX, web frontend, game UI, design systems, visual polish
+- unknown: cannot determine
+
+User Task:
+${task.slice(0, 2000)}
+
+Return JSON only:
+{
+  "category": "backend" | "architecture" | "frontend" | "unknown",
+  "confidence": 0.0-1.0,
+  "reason": "brief reason"
+}`
+
+      const { data: evalSession } = await client.session.create({ query: { directory } })
+      if (!evalSession?.id) {
+        return defaultResult
+      }
+
+      judgeSessionIds.add(evalSession.id)
+
+      try {
+        await client.session.promptAsync({
+          path: { id: evalSession.id },
+          body: {
+            model: { providerID: fastModel.providerID, modelID: fastModel.modelID },
+            parts: [{ type: "text", text: prompt }]
+          }
+        })
+
+        const start = Date.now()
+        while (Date.now() - start < TASK_CLASSIFICATION_TIMEOUT) {
+          await new Promise(r => setTimeout(r, 1000))
+          const { data: evalMessages } = await client.session.messages({ path: { id: evalSession.id } })
+          const assistantMsg = [...(evalMessages || [])].reverse().find((m: any) => m.info?.role === "assistant")
+          if (!(assistantMsg?.info?.time as any)?.completed) continue
+          for (const part of assistantMsg?.parts || []) {
+            if (part.type === "text" && part.text) {
+              const jsonMatch = part.text.match(/\{[\s\S]*\}/)
+              if (jsonMatch) {
+                const parsed = JSON.parse(jsonMatch[0]) as TaskClassification
+                const result: TaskClassification = {
+                  category: (parsed.category as TaskCategory) || "unknown",
+                  confidence: parsed.confidence ?? 0.5,
+                  reason: parsed.reason
+                }
+                taskClassificationCache.set(cacheKey, { result, timestamp: Date.now() })
+                debug("Task classification:", cacheKey.slice(0, 24), result)
+                return result
+              }
+            }
+          }
+        }
+
+        debug("Task classification timed out:", cacheKey.slice(0, 24))
+        return defaultResult
+      } finally {
+        try {
+          await client.session.delete({ path: { id: evalSession.id }, query: { directory } })
+        } catch {}
+        judgeSessionIds.delete(evalSession.id)
+      }
+    } catch (e) {
+      debug("Error in task classification:", e)
+      return defaultResult
+    }
+  }
+
+  async function getRoutedModelForFeedback(task: string, humanMsgId: string, attemptCount: number): Promise<{ providerID: string; modelID: string } | null> {
+    if (attemptCount < 1) {
+      return null
+    }
+    const classification = await classifyTaskWithGenAI(task, humanMsgId)
+    const modelID = mapTaskCategoryToModel(classification.category)
+    if (!modelID) return null
+    return await resolveGithubModel(modelID)
   }
   
   // Periodic cleanup of old session data to prevent memory leaks
@@ -1302,8 +1467,9 @@ Reply with JSON only (no other text):
           
           // INCOMPLETE: increment attempts and send feedback
           attempts.set(attemptKey, attemptCount + 1)
+          const nextAttemptCount = attemptCount + 1
           const toastVariant = isBlocker ? "error" : "warning"
-          await showToast(`${severity}: Incomplete (${attemptCount + 1}/${MAX_ATTEMPTS})`, toastVariant)
+          await showToast(`${severity}: Incomplete (${nextAttemptCount}/${MAX_ATTEMPTS})`, toastVariant)
           
           // Build structured feedback message
           const missing = verdict.missing?.length 
@@ -1313,19 +1479,25 @@ Reply with JSON only (no other text):
             ? `\n### Next Actions\n${verdict.next_actions.map((a: string) => `- ${a}`).join("\n")}`
             : ""
           
-          await client.session.promptAsync({
-            path: { id: sessionId },
-            body: {
-              parts: [{
-                type: "text",
-                text: `## Reflection: Task Incomplete (${severity})
+          const routedModel = await getRoutedModelForFeedback(extracted.task, humanMsgId, nextAttemptCount)
+          const feedbackBody: any = {
+            parts: [{
+              type: "text",
+              text: `## Reflection: Task Incomplete (${severity})
 ${verdict.feedback}
 ${missing}
 ${nextActions}
 
 Please address these issues and continue.`
-              }]
-            }
+            }]
+          }
+          if (routedModel) {
+            feedbackBody.model = routedModel
+            debug("Routing feedback to model:", `${routedModel.providerID}/${routedModel.modelID}`)
+          }
+          await client.session.promptAsync({
+            path: { id: sessionId },
+            body: feedbackBody
           })
 
           // Schedule a nudge to ensure the agent continues if it gets stuck after feedback

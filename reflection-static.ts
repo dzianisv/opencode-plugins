@@ -47,6 +47,83 @@ async function loadReflectionPrompt(directory: string): Promise<string> {
   }
 }
 
+export function isPlanModeStatic(messages: any[]): boolean {
+  if (!Array.isArray(messages)) return false
+  const PLAN_MODE_PATTERNS = [
+    /\bplan mode\b/i,
+    /\bplanning mode\b/i,
+    /\bplan[- ]only\b/i,
+    /\bread[- ]only\b/i,
+    /\btools?\s+disabled\b/i,
+    /\bno\s+tools?\b/i,
+    /\bdo not use tools\b/i,
+    /\bdon't use tools\b/i,
+    /\bdo not edit\b/i,
+    /\bdon't edit\b/i,
+    /\bdo not modify\b/i,
+    /\bdon't modify\b/i,
+    /\bonly (provide|return|output)\s+(a\s+)?plan\b/i,
+    /\bonly produce\s+(a\s+)?plan\b/i
+  ]
+
+  function hasPlanModeFlag(msg: any): boolean {
+    const info = msg?.info || {}
+    const rawMode = info.mode || info.session?.mode || info.meta?.mode || info.metadata?.mode
+    return typeof rawMode === "string" && rawMode.toLowerCase() === "plan"
+  }
+
+  function textIndicatesPlanMode(text: string): boolean {
+    return PLAN_MODE_PATTERNS.some(pattern => pattern.test(text))
+  }
+
+  // 1. Check for explicit plan mode flags in message metadata
+  for (const msg of messages) {
+    if (hasPlanModeFlag(msg)) {
+      debug("Plan Mode detected from message metadata flag")
+      return true
+    }
+  }
+
+  // 2. Check for System/Developer messages indicating Plan Mode
+  const hasSystemPlanMode = messages.some((m: any) =>
+    (m.info?.role === "system" || m.info?.role === "developer") &&
+    m.parts?.some((p: any) =>
+      p.type === "text" &&
+      p.text &&
+      textIndicatesPlanMode(p.text)
+    )
+  )
+  if (hasSystemPlanMode) {
+    debug("Plan Mode detected from system/developer message")
+    return true
+  }
+
+  // 3. Check user intent for plan-related queries
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.info?.role === "user") {
+      let isReflection = false
+      let text = ""
+      for (const part of msg.parts || []) {
+        if (part.type === "text" && part.text) {
+          text = part.text
+          if (part.text.includes("1. **What was the task?**")) {
+            isReflection = true
+            break
+          }
+        }
+      }
+      if (!isReflection && text) {
+        if (textIndicatesPlanMode(text)) return true
+        if (/\b(create|make|draft|generate|propose|write|update)\b.{1,30}\bplan\b/i.test(text)) return true
+        if (/^plan\b/i.test(text.trim())) return true
+        return false
+      }
+    }
+  }
+  return false
+}
+
 export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
   // Track sessions to prevent duplicate reflection
   const reflectedSessions = new Set<string>()
@@ -84,8 +161,8 @@ export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
                break
              }
              // Check for other internal prompts if any (e.g. analysis prompts are usually in judge session, not here)
-          }
-        }
+           }
+         }
         if (!isReflection) {
           return getMessageSignature(msg)
         }
@@ -101,49 +178,6 @@ export const ReflectionStaticPlugin: Plugin = async ({ client, directory }) => {
       for (const part of msg.parts || []) {
         if (part.type === "text" && part.text?.includes("ANALYZE AGENT RESPONSE")) {
           return true
-        }
-      }
-    }
-    return false
-  }
-
-  function isPlanMode(messages: any[]): boolean {
-    // 1. Check for System/Developer messages indicating Plan Mode
-    const hasSystemPlanMode = messages.some((m: any) => 
-      (m.info?.role === "system" || m.info?.role === "developer") && 
-      m.parts?.some((p: any) => 
-        p.type === "text" && 
-        p.text && 
-        (p.text.includes("Plan Mode") || 
-         p.text.includes("plan mode ACTIVE") ||
-         p.text.includes("read-only mode"))
-      )
-    )
-    if (hasSystemPlanMode) {
-      debug("Plan Mode detected from system/developer message")
-      return true
-    }
-
-    // 2. Check user intent for plan-related queries
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i]
-      if (msg.info?.role === "user") {
-        let isReflection = false
-        let text = ""
-        for (const part of msg.parts || []) {
-          if (part.type === "text" && part.text) {
-             text = part.text
-             if (part.text.includes("1. **What was the task?**")) {
-               isReflection = true
-               break
-             }
-          }
-        }
-        if (!isReflection && text) {
-          if (/plan mode/i.test(text)) return true
-          if (/\b(create|make|draft|generate|propose|write|update)\b.{1,30}\bplan\b/i.test(text)) return true
-          if (/^plan\b/i.test(text.trim())) return true
-          return false
         }
       }
     }
@@ -416,7 +450,7 @@ Rules:
         return
       }
 
-      if (isPlanMode(messages)) {
+      if (isPlanModeStatic(messages)) {
         debug("SKIP: plan mode detected")
         return
       }
@@ -559,6 +593,7 @@ Rules:
       reflection: {
         name: 'reflection-static',
         description: 'Simple static question reflection - asks agent to self-assess completion',
+        args: {},
         execute: async () => 'Reflection-static plugin active - triggers on session idle'
       }
     },

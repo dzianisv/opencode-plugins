@@ -337,6 +337,7 @@ describe("Text Reply Routing: Telegram -> Correct Session", () => {
     await fetch(WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(10000),
       body: JSON.stringify({
         update_id: directMessageId,
         message: {
@@ -360,7 +361,7 @@ describe("Text Reply Routing: Telegram -> Correct Session", () => {
       .limit(1)
 
     expect(replies!.length).toBe(0)
-  })
+  }, 15000)
 })
 
 // ============================================================================
@@ -419,6 +420,7 @@ describe("Voice Reply Handling", () => {
     const response = await fetch(WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(10000),
       body: JSON.stringify({
         update_id: voiceMessageId,
         message: {
@@ -447,7 +449,7 @@ describe("Voice Reply Handling", () => {
 
     // Cleanup
     await supabase.from("telegram_reply_contexts").delete().eq("session_id", sessionId)
-  })
+  }, 15000)
 
   it("Whisper server is accessible for transcription", async () => {
     // Check if Whisper server is running
