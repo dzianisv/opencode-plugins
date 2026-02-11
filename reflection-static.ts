@@ -66,21 +66,22 @@ export function isPlanModeStatic(messages: any[]): boolean {
     /\bonly produce\s+(a\s+)?plan\b/i
   ]
 
-  function hasPlanModeFlag(msg: any): boolean {
+  function getExplicitMode(msg: any): string | null {
     const info = msg?.info || {}
     const rawMode = info.mode || info.session?.mode || info.meta?.mode || info.metadata?.mode
-    return typeof rawMode === "string" && rawMode.toLowerCase() === "plan"
+    return typeof rawMode === "string" ? rawMode.toLowerCase() : null
   }
 
   function textIndicatesPlanMode(text: string): boolean {
     return PLAN_MODE_PATTERNS.some(pattern => pattern.test(text))
   }
 
-  // 1. Check for explicit plan mode flags in message metadata
-  for (const msg of messages) {
-    if (hasPlanModeFlag(msg)) {
-      debug("Plan Mode detected from message metadata flag")
-      return true
+  // 1. Prefer explicit mode from latest message metadata
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const mode = getExplicitMode(messages[i])
+    if (mode) {
+      debug("Plan Mode detected from message mode:", mode)
+      return mode === "plan"
     }
   }
 

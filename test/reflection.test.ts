@@ -35,6 +35,14 @@ describe("Reflection Plugin - Unit Tests", () => {
       assert.strictEqual(isPlanModeStatic(messages), true)
     })
 
+    it("prefers explicit mode over text patterns", () => {
+      const messages = [
+        { info: { role: "assistant", mode: "build" }, parts: [] },
+        { info: { role: "system" }, parts: [{ type: "text", text: "Plan mode ACTIVE" }] }
+      ]
+      assert.strictEqual(isPlanModeStatic(messages), false)
+    })
+
     it("detects plan-only user request", () => {
       const messages = [
         { info: { role: "user" }, parts: [{ type: "text", text: "Only provide a plan." }] }
