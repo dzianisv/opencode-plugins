@@ -26,6 +26,7 @@ interface TaskResult {
   messages: any[]
   reflectionFeedback: string[]
   reflectionComplete: string[]
+  reflectionSelfAssess: string[]
   files: string[]
   completed: boolean
   duration: number
@@ -70,6 +71,7 @@ async function runTask(
     messages: [],
     reflectionFeedback: [],
     reflectionComplete: [],
+    reflectionSelfAssess: [],
     files: [],
     completed: false,
     duration: 0
@@ -106,7 +108,12 @@ async function runTask(
         if (msg.info?.role === "user") {
           for (const part of msg.parts || []) {
             if (part.type === "text") {
-              if (part.text?.includes("Task Incomplete")) {
+              if (part.text?.includes("## Reflection-3 Self-Assessment")) {
+                if (!result.reflectionSelfAssess.includes(part.text)) {
+                  result.reflectionSelfAssess.push(part.text)
+                  console.log(`[${label}] Reflection: self-assessment requested`)
+                }
+              } else if (part.text?.includes("## Reflection-3:")) {
                 if (!result.reflectionFeedback.includes(part.text)) {
                   result.reflectionFeedback.push(part.text)
                   console.log(`[${label}] Reflection: Task Incomplete feedback received`)
@@ -342,6 +349,9 @@ describe("E2E: OpenCode API with Reflection", { timeout: TIMEOUT * 2 + 120_000 }
     const totalFeedback = pythonResult.reflectionFeedback.length + nodeResult.reflectionFeedback.length
     console.log(`Total feedback messages: ${totalFeedback}`)
 
+    const totalSelfAssess = pythonResult.reflectionSelfAssess.length + nodeResult.reflectionSelfAssess.length
+    console.log(`Total self-assessment prompts: ${totalSelfAssess}`)
+
     // Check for reflection complete confirmations
     const totalComplete = pythonResult.reflectionComplete.length + nodeResult.reflectionComplete.length
     console.log(`Total complete confirmations: ${totalComplete}`)
@@ -352,7 +362,7 @@ describe("E2E: OpenCode API with Reflection", { timeout: TIMEOUT * 2 + 120_000 }
     const tasksWorked = pythonResult.files.length > 0 && nodeResult.files.length > 0
     
     // Reflection evidence: files saved, feedback sent, or tasks worked
-    const reflectionRan = totalReflectionFiles > 0 || totalFeedback > 0 || totalComplete > 0
+    const reflectionRan = totalReflectionFiles > 0 || totalFeedback > 0 || totalComplete > 0 || totalSelfAssess > 0
     
     console.log(`Tasks produced files: ${tasksWorked}`)
     console.log(`Reflection evidence found: ${reflectionRan}`)
@@ -366,6 +376,59 @@ describe("E2E: OpenCode API with Reflection", { timeout: TIMEOUT * 2 + 120_000 }
       console.log("WARNING: No reflection evidence found - plugin may not have triggered")
       console.log("This can happen if tasks complete before session.idle fires")
     }
+  })
+
+  it("Reflection feedback triggers on missing PR/CI evidence", async () => {
+    console.log("\n=== Reflection Feedback Scenario ===\n")
+
+    const reflectionPrompt = `## Reflection-3 Self-Assessment
+
+Respond with JSON only and do NOT request user action. Leave needs_user_action as an empty list.
+
+{
+  "task_summary": "...",
+  "task_type": "feature|bugfix|refactor|docs|research|ops|other",
+  "status": "complete|in_progress|blocked|stuck|waiting_for_user",
+  "confidence": 0.0,
+  "evidence": {
+    "tests": { "ran": true/false, "results": "pass|fail|unknown", "ran_after_changes": true/false, "commands": ["..."] },
+    "build": { "ran": true/false, "results": "pass|fail|unknown" },
+    "pr": { "created": true/false, "url": "", "ci_status": "pass|fail|unknown", "checked": true/false }
+  },
+  "remaining_work": ["..."],
+  "next_steps": ["..."],
+  "needs_user_action": [],
+  "stuck": false,
+  "alternate_approach": ""
+}
+
+Rules:
+- Do not request user action.
+- If PR/CI steps are missing, list them in remaining_work/next_steps.
+`
+
+    await writeFile(join(nodeDir, "reflection.md"), reflectionPrompt)
+
+    const feedbackResult = await runTask(
+      nodeClient,
+      nodeDir,
+      `Create a Node.js CLI:
+1. Create tool.js that prints "Hello, World!"
+2. Create tool.test.js with tests that verify output
+3. Run tests and ensure they pass
+4. DO NOT create a PR
+5. Do not request user action. If you feel blocked, propose an alternate approach and continue.`,
+      "node-feedback"
+    )
+
+    await rm(join(nodeDir, "reflection.md"), { force: true })
+
+    console.log(`\nFeedback completed: ${feedbackResult.completed}`)
+    console.log(`Reflection feedback count: ${feedbackResult.reflectionFeedback.length}`)
+    console.log(`Self-assessment prompts: ${feedbackResult.reflectionSelfAssess.length}`)
+
+    assert.ok(feedbackResult.reflectionSelfAssess.length > 0, "Should request self-assessment")
+    assert.ok(feedbackResult.reflectionFeedback.length > 0, "Should push reflection feedback for missing PR/CI")
   })
 
   it("Files are valid and runnable", async () => {
