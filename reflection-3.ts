@@ -484,41 +484,57 @@ function buildSelfAssessmentPrompt(context: TaskContext, agents: string): string
 
   return `${SELF_ASSESSMENT_MARKER}
 
-Task summary:
-${safeContext.taskSummary}
+I'm verifying the task completion and quality standards. Please provide a self-assessment of your work.
 
-Agent mode: ${safeContext.agentMode}
-Detected task type: ${safeContext.taskType}
-Workflow gates: ${requirements.join("; ")}
-Signals: ${signalSummary}
+**Task Context:**
+- Summary: ${safeContext.taskSummary}
+- Type: ${safeContext.taskType}
+- Mode: ${safeContext.agentMode}
+- Required checks: ${requirements.join("; ")}
+- Detected signals: ${signalSummary}
 
-${agents ? `Project instructions (follow them):\n${agents.slice(0, 800)}\n\n` : ""}Respond with JSON only:
+${agents ? `**Project Instructions:**\n${agents.slice(0, 800)}\n\n` : ""}**Respond with JSON only** - provide a structured self-assessment using this exact format:
+
+\`\`\`json
 {
-  "task_summary": "...",
+  "task_summary": "brief description of what was done",
   "task_type": "feature|bugfix|refactor|docs|research|ops|other",
   "status": "complete|in_progress|blocked|stuck|waiting_for_user",
-  "confidence": 0.0,
+  "confidence": 0.95,
   "evidence": {
-    "tests": { "ran": true/false, "results": "pass|fail|unknown", "ran_after_changes": true/false, "commands": ["..."] },
-    "build": { "ran": true/false, "results": "pass|fail|unknown" },
-    "pr": { "created": true/false, "url": "", "ci_status": "pass|fail|unknown", "checked": true/false }
+    "tests": { 
+      "ran": true,
+      "results": "pass|fail|unknown",
+      "ran_after_changes": true,
+      "commands": ["npm test", "pytest"]
+    },
+    "build": { 
+      "ran": true,
+      "results": "pass|fail|unknown"
+    },
+    "pr": { 
+      "created": true,
+      "url": "https://github.com/...",
+      "ci_status": "pass|fail|unknown",
+      "checked": true
+    }
   },
-  "remaining_work": ["..."],
-  "next_steps": ["..."],
-  "needs_user_action": ["..."],
-  "stuck": true/false,
-  "alternate_approach": ""
+  "remaining_work": ["list any incomplete items"],
+  "next_steps": ["list next actions needed"],
+  "needs_user_action": ["list any actions requiring user input"],
+  "stuck": false,
+  "alternate_approach": "describe if needed"
 }
+\`\`\`
 
-Rules:
-- If coding work is complete, confirm tests ran after the latest changes and passed.
-- If local tests are required, provide the exact commands run in this session.
-- If PR exists, verify CI checks and report status.
-- If tests were skipped or marked flaky/not important, the task is incomplete.
-- Direct pushes to main/master are not allowed; require a PR instead.
-- Provide a PR URL and CI status when a PR is required.
-- If stuck, propose an alternate approach.
-- If you need user action (auth, 2FA, credentials), list it in needs_user_action.`
+**Verification Rules:**
+- If coding work is complete, confirm tests ran after the latest changes and passed
+- If local tests are required, provide the exact commands run in this session
+- If PR exists, verify CI checks and report status
+- Tests cannot be skipped or marked as flaky/not important
+- Direct pushes to main/master are not allowed; require a PR instead
+- If stuck, propose an alternate approach
+- If you need user action (auth, 2FA, credentials), list it in needs_user_action`
 }
 
 function parseSelfAssessmentJson(text: string | null | undefined): SelfAssessment | null {
