@@ -800,10 +800,16 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
 
         await showToast(client, directory, "Requesting reflection self-assessment...", "info")
 
-        await client.session.promptAsync({
-          path: { id: sessionId },
-          body: { parts: [{ type: "text", text: reflectionPrompt }] }
-        })
+        try {
+          await client.session.promptAsync({
+            path: { id: sessionId },
+            body: { parts: [{ type: "text", text: reflectionPrompt }] }
+          })
+        } catch (e: any) {
+          debug("promptAsync failed (self-assessment):", e?.message || e)
+          lastReflectedMsgId.set(sessionId, lastUserMsgId)
+          return
+        }
 
         const selfAssessment = await waitForResponse(client, sessionId)
         if (!selfAssessment) {
@@ -866,16 +872,43 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           return
         }
 
+        // Re-check for new user messages or abort before feedback injection
+        // (analysis/judge phase can take significant time)
+        const { data: preFeedbackMessages } = await client.session.messages({ path: { id: sessionId } })
+        const preFeedbackUserMsgId = getLastRelevantUserMessageId(preFeedbackMessages || [])
+        if (preFeedbackUserMsgId && preFeedbackUserMsgId !== initialUserMsgId) {
+          lastReflectedMsgId.set(sessionId, initialUserMsgId)
+          debug("User sent new message during analysis, skipping feedback")
+          return
+        }
+        const preFeedbackAbort = recentlyAbortedSessions.get(sessionId)
+        if (preFeedbackAbort) {
+          lastReflectedMsgId.set(sessionId, lastUserMsgId)
+          debug("Session aborted during analysis, skipping feedback")
+          return
+        }
+
         const feedbackLines: string[] = []
         feedbackLines.push(`${FEEDBACK_MARKER} Task incomplete.`)
         if (analysis.reason) feedbackLines.push(`Reason: ${analysis.reason}`)
         if (analysis.missing.length) feedbackLines.push(`Missing: ${analysis.missing.join("; ")}`)
         if (analysis.nextActions.length) feedbackLines.push(`Next actions: ${analysis.nextActions.join("; ")}`)
 
-        await client.session.promptAsync({
-          path: { id: sessionId },
-          body: { parts: [{ type: "text", text: feedbackLines.join("\n") }] }
-        })
+        try {
+          await client.session.promptAsync({
+            path: { id: sessionId },
+            body: { parts: [{ type: "text", text: feedbackLines.join("\n") }] }
+          })
+        } catch (e: any) {
+          debug("promptAsync failed (feedback):", e?.message || e)
+          lastReflectedMsgId.set(sessionId, lastUserMsgId)
+          return
+        }
+
+        // Prevent reflection loop: mark this task as reflected so the next
+        // session.idle (triggered by the agent responding to feedback) does not
+        // start another reflection cycle for the same user message.
+        lastReflectedMsgId.set(sessionId, lastUserMsgId)
 
         debug("Reflection pushed continuation")
 
@@ -911,7 +944,11 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           recentlyAbortedSessions.delete(sessionId)
         }
 
-        await runReflection(sessionId)
+        try {
+          await runReflection(sessionId)
+        } catch (e: any) {
+          debug("runReflection error:", e?.message || e)
+        }
       }
     }
   }
