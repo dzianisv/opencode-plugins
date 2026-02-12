@@ -78,15 +78,13 @@ interface ReflectionAnalysis {
   severity: "NONE" | "LOW" | "MEDIUM" | "HIGH" | "BLOCKER"
 }
 
-const DEBUG = process.env.REFLECTION_DEBUG === "1"
 const JUDGE_RESPONSE_TIMEOUT = 120_000
 const POLL_INTERVAL = 2_000
 const ABORT_COOLDOWN = 10_000
 const REFLECTION_CONFIG_PATH = join(homedir(), ".config", "opencode", "reflection.yaml")
 
-function debug(...args: any[]) {
-  if (DEBUG) console.error("[Reflection3]", ...args)
-}
+// Debug logging (silenced — console.error corrupts the OpenCode TUI)
+function debug(..._args: any[]) {}
 
 async function loadReflectionPrompt(directory: string): Promise<string | null> {
   const candidates = ["reflection.md", "reflection.MD"]

@@ -75,11 +75,8 @@ const DEFAULT_WHISPER_URL = "http://127.0.0.1:8000"
 const REFLECTION_VERDICT_WAIT_MS = 10_000
 const REFLECTION_POLL_INTERVAL_MS = 250
 
-// Debug logging
-const DEBUG = process.env.TELEGRAM_DEBUG === "1"
-async function debug(msg: string) {
-  if (DEBUG) console.error(`[Telegram] ${msg}`)
-}
+// Debug logging (silenced — console.error corrupts the OpenCode TUI)
+async function debug(_msg: string) {}
 
 // ==================== CONFIG LOADING ====================
 
@@ -136,7 +133,7 @@ async function isFfmpegAvailable(): Promise<boolean> {
 
 async function convertWavToOgg(wavPath: string): Promise<string | null> {
   if (!wavPath || typeof wavPath !== 'string') {
-    console.error('[Telegram] convertWavToOgg called with invalid wavPath:', typeof wavPath, wavPath)
+    // silent — console.error corrupts the OpenCode TUI
     return null
   }
   
@@ -217,7 +214,7 @@ async function sendNotification(
 
         if (oggPath) await unlink(oggPath).catch(() => {})
       } catch (err) {
-        console.error("[Telegram] Failed to read voice file:", err)
+        // silent — console.error corrupts the OpenCode TUI
       }
     }
 
@@ -833,7 +830,7 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
       supabaseClient = createClient(supabaseUrl, supabaseKey, {})
       return supabaseClient
     } catch {
-      console.error('[Telegram] Install @supabase/supabase-js to enable reply subscription')
+      // silent — console.error corrupts the OpenCode TUI
       return null
     }
   }

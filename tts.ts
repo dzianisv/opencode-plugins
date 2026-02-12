@@ -76,7 +76,7 @@ async function triggerGlobalStop(): Promise<void> {
     });
     await writeFile(TTS_STOP_SIGNAL_PATH, content);
   } catch (e) {
-    console.error("[TTS] Failed to create stop signal:", e);
+    // silent — console.error corrupts the OpenCode TUI
   }
 }
 
@@ -161,7 +161,7 @@ async function execAndTrack(command: string): Promise<void> {
         currentPlaybackProcess = null;
       }
       // Log error but resolve to prevent crashing the plugin
-      console.error("[TTS] Audio playback error:", err);
+      // silent — console.error corrupts the OpenCode TUI
       resolve();
     });
   });
@@ -395,7 +395,7 @@ async function saveConfig(config: TTSConfig): Promise<void> {
     await mkdir(configDir, { recursive: true })
     await writeFile(TTS_CONFIG_PATH, JSON.stringify(config, null, 2))
   } catch (e) {
-    console.error("[TTS] Failed to save config:", e)
+    // silent — console.error corrupts the OpenCode TUI
   }
 }
 

@@ -49,11 +49,8 @@ const CONFIG_PATH = join(homedir(), ".config", "opencode", "github.json")
 const ISSUE_FILE = ".github-issue.md"
 const MAX_COMMENT_LENGTH = 65000 // GitHub's limit is 65536
 
-// Debug logging
-const DEBUG = process.env.GITHUB_DEBUG === "1"
-function debug(...args: any[]) {
-  if (DEBUG) console.error("[GitHub]", ...args)
-}
+// Debug logging (silenced — console.error corrupts the OpenCode TUI)
+function debug(..._args: any[]) {}
 
 // ==================== CONFIG LOADING ====================
 
