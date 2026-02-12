@@ -1732,8 +1732,41 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
     } catch {}
   }
 
+  // Markers injected by the Reflection-3 plugin into the session conversation.
+  // Messages containing these markers (and their assistant responses) are internal
+  // reflection artifacts — not the real user-facing answer.
+  const REFLECTION_SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
+  const REFLECTION_FEEDBACK_MARKER = "## Reflection-3:"
+
+  /**
+   * Find the index of the earliest reflection-injected user message (self-assessment prompt).
+   * Everything at or after this index is reflection overhead, not the real answer.
+   * Scans forward so that when reflection sends multiple messages (assessment + feedback),
+   * we cut off at the first one.
+   */
+  function findReflectionCutoffIndex(messages: any[]): number {
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]
+      if (msg.info?.role !== "user") continue
+      for (const part of msg.parts || []) {
+        if (
+          part.type === "text" &&
+          (part.text?.includes(REFLECTION_SELF_ASSESSMENT_MARKER) ||
+            part.text?.includes(REFLECTION_FEEDBACK_MARKER))
+        ) {
+          return i
+        }
+      }
+    }
+    return -1
+  }
+
   function extractFinalResponse(messages: any[]): string | null {
-    for (let i = messages.length - 1; i >= 0; i--) {
+    // Find where reflection messages start and search before them
+    const cutoff = findReflectionCutoffIndex(messages)
+    const searchEnd = cutoff > -1 ? cutoff - 1 : messages.length - 1
+
+    for (let i = searchEnd; i >= 0; i--) {
       const msg = messages[i]
       if (msg.info?.role === "assistant") {
         for (const part of msg.parts || []) {
