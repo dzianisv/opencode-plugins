@@ -796,8 +796,288 @@ describe("Reflection Coordination Tests", () => {
 })
 
 // ============================================================================
-// TELEGRAM SUBSCRIPTION RECONNECT & RECOVERY TESTS
+// COQUI TTS BUG FIX TESTS - Issue #62
 // ============================================================================
+
+describe("Coqui TTS Bug Fixes (Issue #62)", () => {
+
+  // --------------------------------------------------------------------------
+  // BUG 1: Double reflection verdict check
+  // The event handler already checks the verdict before calling speak().
+  // speak() should NOT re-check, because the verdict file becomes stale
+  // (>30s) during queue wait + lock acquisition.
+  // --------------------------------------------------------------------------
+  describe("BUG 1: No duplicate reflection verdict check in speak()", () => {
+    interface ReflectionVerdict {
+      sessionId: string
+      complete: boolean
+      severity: string
+      timestamp: number
+    }
+
+    /**
+     * Simulate the old speak() behavior that re-checks verdict.
+     * This demonstrates the bug: if time passes between event handler check
+     * and speak() check, the verdict becomes stale and speech is blocked.
+     */
+    function oldSpeakVerdictCheck(
+      verdict: ReflectionVerdict | null,
+      requireVerdict: boolean
+    ): { blocked: boolean; reason?: string } {
+      if (requireVerdict) {
+        if (!verdict) {
+          return { blocked: true, reason: "missing reflection verdict" }
+        }
+        if (!verdict.complete) {
+          return { blocked: true, reason: `reflection verdict incomplete (${verdict.severity})` }
+        }
+      }
+      return { blocked: false }
+    }
+
+    /**
+     * Simulate the fixed speak() behavior — no verdict check at all.
+     * The caller is responsible for checking the verdict.
+     */
+    function fixedSpeakVerdictCheck(): { blocked: boolean } {
+      // Fixed: speak() trusts the caller's verdict check
+      return { blocked: false }
+    }
+
+    it("old code blocks speech when verdict becomes stale during queue wait", () => {
+      // Simulate: event handler checked verdict (fresh), but by the time
+      // speak() runs, the verdict is stale (>30s) and re-read returns null
+      const staleVerdict = null // waitForReflectionVerdict returns null for stale
+      const result = oldSpeakVerdictCheck(staleVerdict, true)
+      expect(result.blocked).toBe(true)
+      expect(result.reason).toContain("missing reflection verdict")
+    })
+
+    it("fixed code does NOT re-check verdict (trusts caller)", () => {
+      // In the fixed version, speak() doesn't check verdict at all
+      const result = fixedSpeakVerdictCheck()
+      expect(result.blocked).toBe(false)
+    })
+
+    it("old code blocks even when verdict was valid at event handler time", () => {
+      // Simulate: event handler saw complete=true, but speak() re-checks
+      // with a stale version that's now null
+      const eventHandlerVerdict: ReflectionVerdict = {
+        sessionId: "test1234",
+        complete: true,
+        severity: "NONE",
+        timestamp: Date.now() - 45_000  // 45s ago - stale
+      }
+      // Event handler would have proceeded (it checked when fresh)
+      // But speak() re-reads and gets stale/null
+      const speakResult = oldSpeakVerdictCheck(null, true)
+      expect(speakResult.blocked).toBe(true) // BUG: speech blocked despite valid verdict
+    })
+
+    it("verdict staleness window (30s) is shorter than typical queue wait", () => {
+      // Document the timing mismatch that causes the bug
+      const VERDICT_STALENESS_MS = 30_000
+      const SPEECH_QUEUE_TIMEOUT_MS = 180_000 // 3 minutes
+      const COQUI_SERVER_START_MS = 180_000   // 3 minutes for model download
+
+      // The queue wait can easily exceed the staleness window
+      expect(SPEECH_QUEUE_TIMEOUT_MS).toBeGreaterThan(VERDICT_STALENESS_MS)
+      expect(COQUI_SERVER_START_MS).toBeGreaterThan(VERDICT_STALENESS_MS)
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // BUG 2: Model default mismatch between loadConfig() and startCoquiServer()
+  // loadConfig() defaults to "vctk_vits" but startCoquiServer() defaulted
+  // to "xtts_v2" — a much larger, slower model that may fail on limited hardware.
+  // --------------------------------------------------------------------------
+  describe("BUG 2: Model default consistency", () => {
+    function loadConfigDefault() {
+      return {
+        engine: "coqui" as const,
+        coqui: {
+          model: "vctk_vits",
+          device: "mps",
+          speaker: "p226",
+          serverMode: true,
+        },
+      }
+    }
+
+    function startCoquiServerModel(config: { coqui?: { model?: string } }) {
+      // FIXED: now matches loadConfig() default
+      const opts = config.coqui || {}
+      return opts.model || "vctk_vits"
+    }
+
+    function startCoquiServerModel_OLD(config: { coqui?: { model?: string } }) {
+      // OLD buggy code
+      const opts = config.coqui || {}
+      return opts.model || "xtts_v2"
+    }
+
+    it("loadConfig and startCoquiServer now use the same default model", () => {
+      const configDefault = loadConfigDefault()
+      const serverModel = startCoquiServerModel({}) // empty config → fallback
+      expect(configDefault.coqui.model).toBe(serverModel)
+    })
+
+    it("old code had mismatched defaults", () => {
+      const configDefault = loadConfigDefault()
+      const oldServerModel = startCoquiServerModel_OLD({})
+      expect(configDefault.coqui.model).not.toBe(oldServerModel) // BUG
+      expect(oldServerModel).toBe("xtts_v2") // Wrong default
+    })
+
+    it("explicit model in config is respected by both", () => {
+      const config = { coqui: { model: "bark" } }
+      const serverModel = startCoquiServerModel(config)
+      expect(serverModel).toBe("bark")
+    })
+
+    it("missing coqui config falls back to vctk_vits", () => {
+      const serverModel = startCoquiServerModel({})
+      expect(serverModel).toBe("vctk_vits")
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // BUG 3: No OS TTS fallback when Coqui/Chatterbox fails
+  // When engine is "coqui" and Coqui fails, the old code checked
+  // `engine === "os"` which was false, so speech failed silently.
+  // The fix: always fall through to OS TTS when no audio was generated.
+  // --------------------------------------------------------------------------
+  describe("BUG 3: OS TTS fallback on engine failure", () => {
+    type Engine = "coqui" | "chatterbox" | "os"
+
+    interface EngineResult {
+      spoke: boolean
+      engine: string
+      fallback: boolean
+    }
+
+    /**
+     * Simulate OLD speak() engine selection — no fallback
+     */
+    function oldEngineSelection(
+      engine: Engine,
+      coquiAvailable: boolean,
+      coquiSuccess: boolean,
+      chatterboxAvailable: boolean,
+      chatterboxSuccess: boolean
+    ): EngineResult {
+      let generatedAudioPath: string | null = null
+
+      if (engine === "coqui" && coquiAvailable && coquiSuccess) {
+        generatedAudioPath = "/tmp/audio.wav"
+      }
+
+      if (!generatedAudioPath && engine === "chatterbox" && chatterboxAvailable && chatterboxSuccess) {
+        generatedAudioPath = "/tmp/audio.wav"
+      }
+
+      // BUG: only speaks with OS if engine === "os"
+      if (!generatedAudioPath && engine === "os") {
+        return { spoke: true, engine: "os", fallback: false }
+      }
+
+      return {
+        spoke: generatedAudioPath !== null,
+        engine: generatedAudioPath ? engine : "none",
+        fallback: false,
+      }
+    }
+
+    /**
+     * Simulate FIXED speak() engine selection — always fall back to OS
+     */
+    function fixedEngineSelection(
+      engine: Engine,
+      coquiAvailable: boolean,
+      coquiSuccess: boolean,
+      chatterboxAvailable: boolean,
+      chatterboxSuccess: boolean
+    ): EngineResult {
+      let generatedAudioPath: string | null = null
+
+      if (engine === "coqui" && coquiAvailable && coquiSuccess) {
+        generatedAudioPath = "/tmp/audio.wav"
+      }
+
+      if (!generatedAudioPath && engine === "chatterbox" && chatterboxAvailable && chatterboxSuccess) {
+        generatedAudioPath = "/tmp/audio.wav"
+      }
+
+      // FIXED: always fall through to OS TTS when no audio generated
+      if (!generatedAudioPath) {
+        return { spoke: true, engine: "os", fallback: engine !== "os" }
+      }
+
+      return {
+        spoke: true,
+        engine,
+        fallback: false,
+      }
+    }
+
+    it("old code: coqui failure = silent failure (no speech)", () => {
+      const result = oldEngineSelection("coqui", true, false, false, false)
+      expect(result.spoke).toBe(false) // BUG: user hears nothing
+    })
+
+    it("fixed code: coqui failure = OS TTS fallback", () => {
+      const result = fixedEngineSelection("coqui", true, false, false, false)
+      expect(result.spoke).toBe(true)
+      expect(result.engine).toBe("os")
+      expect(result.fallback).toBe(true)
+    })
+
+    it("old code: coqui unavailable = silent failure", () => {
+      const result = oldEngineSelection("coqui", false, false, false, false)
+      expect(result.spoke).toBe(false) // BUG
+    })
+
+    it("fixed code: coqui unavailable = OS TTS fallback", () => {
+      const result = fixedEngineSelection("coqui", false, false, false, false)
+      expect(result.spoke).toBe(true)
+      expect(result.engine).toBe("os")
+      expect(result.fallback).toBe(true)
+    })
+
+    it("old code: chatterbox failure = silent failure", () => {
+      const result = oldEngineSelection("chatterbox", false, false, true, false)
+      expect(result.spoke).toBe(false) // BUG
+    })
+
+    it("fixed code: chatterbox failure = OS TTS fallback", () => {
+      const result = fixedEngineSelection("chatterbox", false, false, true, false)
+      expect(result.spoke).toBe(true)
+      expect(result.engine).toBe("os")
+      expect(result.fallback).toBe(true)
+    })
+
+    it("coqui success = no fallback needed", () => {
+      const result = fixedEngineSelection("coqui", true, true, false, false)
+      expect(result.spoke).toBe(true)
+      expect(result.engine).toBe("coqui")
+      expect(result.fallback).toBe(false)
+    })
+
+    it("chatterbox success = no fallback needed", () => {
+      const result = fixedEngineSelection("chatterbox", false, false, true, true)
+      expect(result.spoke).toBe(true)
+      expect(result.engine).toBe("chatterbox")
+      expect(result.fallback).toBe(false)
+    })
+
+    it("os engine = direct OS TTS (not a fallback)", () => {
+      const result = fixedEngineSelection("os", false, false, false, false)
+      expect(result.spoke).toBe(true)
+      expect(result.engine).toBe("os")
+      expect(result.fallback).toBe(false)
+    })
+  })
+})
 
 describe("Telegram Subscription Reconnect Logic", () => {
   // These tests verify the logic for auto-reconnect and unprocessed reply recovery

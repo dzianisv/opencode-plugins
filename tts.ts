@@ -1404,7 +1404,7 @@ async function startCoquiServer(config: TTSConfig): Promise<boolean> {
     const venvPython = join(COQUI_VENV, "bin", "python")
     const opts = config.coqui || {}
     const device = opts.device || "cuda"
-    const model = opts.model || "xtts_v2"
+    const model = opts.model || "vctk_vits"
     
     const args = [
       COQUI_SERVER_SCRIPT,
@@ -1814,22 +1814,12 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
 
     try {
       const config = await loadConfig()
-      const requireVerdict = config.reflection?.requireVerdict !== false
-
-      if (requireVerdict) {
-        const verdictDir = sessionDirectory || directory
-        const maxWaitMs = config.reflection?.maxWaitMs || REFLECTION_VERDICT_WAIT_MS
-        const verdict = await waitForReflectionVerdict(verdictDir, sessionId, maxWaitMs, async (msg) => debugLog(msg))
-        if (!verdict) {
-          const metrics = await updateReflectionMetrics(verdictDir)
-          await debugLog(`Speak blocked: missing reflection verdict (count=${metrics.missingVerdictCount})`)
-          return
-        }
-        if (!verdict.complete) {
-          await debugLog(`Speak blocked: reflection verdict incomplete (${verdict.severity})`)
-          return
-        }
-      }
+      // NOTE: Reflection verdict is already checked by the session.idle event handler
+      // before calling speak(). We intentionally do NOT re-check here because:
+      // 1. The verdict file uses a 30-second staleness window
+      // 2. After queuing + lock acquisition, the verdict may exceed that window
+      // 3. Re-checking would cause speak() to silently fail even though the caller
+      //    already confirmed the verdict was valid
 
       // Create a ticket and wait for our turn in the speech queue
       ticketId = await createSpeechTicket(sessionId)
@@ -1867,6 +1857,9 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
             generatedAudioPath = result.audioPath || null
           }
         }
+        if (!generatedAudioPath) {
+          await debugLog(`Coqui TTS failed or unavailable, falling back to OS TTS`)
+        }
       }
       
       if (!generatedAudioPath && engine === "chatterbox") {
@@ -1877,10 +1870,13 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
             generatedAudioPath = result.audioPath || null
           }
         }
+        if (!generatedAudioPath) {
+          await debugLog(`Chatterbox TTS failed or unavailable, falling back to OS TTS`)
+        }
       }
       
-      // OS TTS (fallback or explicit choice) - no audio file generated
-      if (!generatedAudioPath && engine === "os") {
+      // OS TTS - used as explicit choice OR as fallback when coqui/chatterbox fails
+      if (!generatedAudioPath) {
         await speakWithOS(toSpeak, config)
       }
 
