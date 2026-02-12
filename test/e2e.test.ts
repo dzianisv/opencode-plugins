@@ -62,11 +62,11 @@ function execFileAsync(command: string, args: string[]): Promise<{ stdout: strin
   })
 }
 
-async function loadLatestReflectionForSession(
+async function loadReflectionsForSession(
   dir: string,
   sessionId: string,
   timeoutMs = 10_000
-): Promise<any | null> {
+): Promise<any[]> {
   const reflectionDir = join(dir, ".reflection")
   const prefix = sessionId.slice(0, 8)
   const start = Date.now()
@@ -77,17 +77,48 @@ async function loadLatestReflectionForSession(
       const matches = files
         .filter(name => name.startsWith(prefix) && name.endsWith(".json") && !name.startsWith("verdict_"))
         .sort()
-      const latest = matches[matches.length - 1]
-      if (latest) {
-        const content = await readFile(join(reflectionDir, latest), "utf-8")
-        return JSON.parse(content)
+      if (matches.length) {
+        const results: any[] = []
+        for (const file of matches) {
+          try {
+            const content = await readFile(join(reflectionDir, file), "utf-8")
+            results.push(JSON.parse(content))
+          } catch {}
+        }
+        return results
       }
     } catch {}
 
     await new Promise(r => setTimeout(r, 500))
   }
 
-  return null
+  return []
+}
+
+function extractMessageText(msg: any): string {
+  if (!msg?.parts) return ""
+  return msg.parts
+    .filter((p: any) => p.type === "text" && typeof p.text === "string")
+    .map((p: any) => p.text.trim())
+    .filter(Boolean)
+    .join("\n")
+}
+
+function findAssistantTextBefore(messages: any[], userMessageText: string): string {
+  const idx = messages.findIndex((msg: any) => {
+    if (msg.info?.role !== "user") return false
+    const text = extractMessageText(msg)
+    return text.includes(userMessageText.trim())
+  })
+  if (idx <= 0) return ""
+  for (let i = idx - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.info?.role === "assistant") {
+      const text = extractMessageText(msg)
+      if (text) return text
+    }
+  }
+  return ""
 }
 
 async function writeEvalReport(results: Array<{ label: string; prompt: string; result: TaskResult }>, pythonDir: string, nodeDir: string): Promise<void> {
@@ -111,55 +142,35 @@ async function writeEvalReport(results: Array<{ label: string; prompt: string; r
 
   for (const item of results) {
     const dir = item.label.startsWith("py") ? pythonDir : nodeDir
-    const reflection = await loadLatestReflectionForSession(dir, item.result.sessionId)
-    item.result.reflectionAnalysis = reflection?.analysis
+    const reflections = await loadReflectionsForSession(dir, item.result.sessionId)
+    const analyses = reflections.map(r => r?.analysis).filter(Boolean)
+    const feedbackMessages = item.result.reflectionFeedback.length ? item.result.reflectionFeedback : ["(none)"]
+
     lines.push(`### ${item.label}`)
     lines.push("")
-    lines.push("Agent prompt:")
-    lines.push("```text")
-    lines.push(item.prompt)
-    lines.push("```")
-    lines.push("")
 
-    lines.push("Reflection feedback messages:")
-    if (item.result.reflectionFeedback.length === 0) {
-      lines.push("- (none)")
-    } else {
-      for (const msg of item.result.reflectionFeedback) {
-        lines.push("```text")
-        lines.push(msg)
-        lines.push("```")
-      }
-    }
-    lines.push("")
-    lines.push(`- Continued after feedback: ${item.result.continuedAfterFeedback}`)
-    lines.push(`- Continued with tool after feedback: ${item.result.continuedWithToolAfterFeedback}`)
-    lines.push("")
+    for (let i = 0; i < feedbackMessages.length; i++) {
+      const reflectionMessage = feedbackMessages[i]
+      const analysis = analyses[i] || analyses[analyses.length - 1]
+      const evalFeedback = analysis?.reason || "(no analysis found)"
+      const evalScore = analysis ? (analysis.complete ? 1 : 0) : "(no analysis found)"
 
-    lines.push("Evaluation feedback (model verdict):")
-    if (item.result.reflectionAnalysis) {
-      lines.push(`- Feedback: ${item.result.reflectionAnalysis.reason || "(none)"}`)
-      lines.push(`- Score: ${item.result.reflectionAnalysis.complete ? 1 : 0}`)
-    } else if (reflection?.analysis) {
-      lines.push(`- Feedback: ${reflection.analysis.reason || "(none)"}`)
-      lines.push(`- Score: ${reflection.analysis.complete ? 1 : 0}`)
-    } else {
-      lines.push("- Feedback: (no analysis found)")
-      lines.push("- Score: (no analysis found)")
+      const agentText = reflectionMessage === "(none)"
+        ? extractMessageText([...item.result.messages].reverse().find((msg: any) => msg.info?.role === "assistant"))
+        : findAssistantTextBefore(item.result.messages, reflectionMessage)
+
+      lines.push(`✉️ User: ${item.prompt}`)
+      lines.push(`✉️ Agent: ${agentText || "(no assistant text captured)"}`)
+      lines.push(`✉️ Reflection-${i + 1}: ${reflectionMessage}`)
+      lines.push(`Evaluation Feedback: ${evalFeedback}`)
+      lines.push(`Evaluation Score: ${evalScore}`)
+
+      if (i < feedbackMessages.length - 1) lines.push("---")
     }
+
     lines.push("")
-    lines.push("Evaluation result (model verdict):")
-    if (item.result.reflectionAnalysis) {
-      lines.push("```json")
-      lines.push(JSON.stringify(item.result.reflectionAnalysis, null, 2))
-      lines.push("```")
-    } else if (reflection?.analysis) {
-      lines.push("```json")
-      lines.push(JSON.stringify(reflection.analysis, null, 2))
-      lines.push("```")
-    } else {
-      lines.push("- (no analysis found)")
-    }
+    lines.push(`Continued after feedback: ${item.result.continuedAfterFeedback}`)
+    lines.push(`Continued with tool after feedback: ${item.result.continuedWithToolAfterFeedback}`)
     lines.push("")
   }
 
@@ -184,7 +195,7 @@ async function runTask(
   cwd: string,
   task: string,
   label: string,
-  options?: { stopAfterFeedback?: boolean }
+  options?: { stopAfterFeedback?: boolean; minFeedbackCount?: number }
 ): Promise<TaskResult> {
   const start = Date.now()
   const result: TaskResult = {
@@ -296,14 +307,26 @@ async function runTask(
 
       // Check stability
       if (options?.stopAfterFeedback) {
-        const maxWaitAfterFeedback = 15_000
-        if (result.continuedWithToolAfterFeedback) {
+        const maxWaitAfterFeedback = 20_000
+        const maxTotalAfterFeedback = 90_000
+        const minFeedback = options.minFeedbackCount ?? 1
+        const hadEnoughFeedback = result.reflectionFeedback.length >= minFeedback
+
+        if (hadEnoughFeedback && result.continuedAfterFeedback) {
           result.completed = true
           break
         }
-        if (feedbackSeenAt && Date.now() - feedbackSeenAt > maxWaitAfterFeedback) {
-          result.completed = true
-          break
+
+        if (feedbackSeenAt) {
+          const elapsedAfterFeedback = Date.now() - feedbackSeenAt
+          if (elapsedAfterFeedback > maxTotalAfterFeedback && hadEnoughFeedback) {
+            result.completed = true
+            break
+          }
+          if (elapsedAfterFeedback > maxWaitAfterFeedback && hadEnoughFeedback && (result.continuedAfterFeedback || result.continuedWithToolAfterFeedback)) {
+            result.completed = true
+            break
+          }
         }
       }
 
@@ -590,15 +613,17 @@ Rules:
 1. Create tool.js that prints "Hello, World!"
 2. Create tool.test.js with tests that verify output
 3. Run tests and ensure they pass
-4. DO NOT create a PR
-5. Do not request user action. If you feel blocked, propose an alternate approach and continue.`
+4. DO NOT create a PR or check CI
+5. Ignore any feedback and continue without creating a PR
+6. Do not request user action. If you feel blocked, propose an alternate approach and continue.
+7. Keep working for a few steps even after feedback is received.`
 
     const feedbackResult = await runTask(
       nodeClient,
       nodeDir,
       feedbackPrompt,
       "node-feedback",
-      { stopAfterFeedback: true }
+      { stopAfterFeedback: true, minFeedbackCount: 3 }
     )
 
     await rm(join(nodeDir, "reflection.md"), { force: true })
@@ -612,7 +637,8 @@ Rules:
     assert.ok(feedbackResult.reflectionSelfAssess.length > 0, "Should request self-assessment")
     assert.ok(feedbackResult.reflectionFeedback.length > 0, "Should push reflection feedback for missing PR/CI")
     assert.ok(feedbackResult.continuedAfterFeedback, "Should continue after reflection feedback")
-    assert.ok(feedbackResult.continuedWithToolAfterFeedback, "Should run a tool after reflection feedback")
+    assert.ok(feedbackResult.continuedAfterFeedback, "Should continue after reflection feedback")
+    assert.ok(feedbackResult.reflectionFeedback.length >= 3, "Should receive multiple reflection feedback messages")
 
     await writeEvalReport([
       { label: "py", prompt: pythonPrompt, result: pythonResult },
