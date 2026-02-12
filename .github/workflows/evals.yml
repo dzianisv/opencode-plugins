@@ -7,7 +7,7 @@ on:
       - main
       - master
     paths:
-      - 'reflection.ts'
+      - 'reflection-3.ts'
       - 'evals/**'
   # Manual trigger for full evaluation
   workflow_dispatch:

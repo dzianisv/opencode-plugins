@@ -8,7 +8,7 @@
  * 4. Human types a new message DURING the analysis
  * 5. Reflection should abort and NOT inject stale "Please continue..." prompt
  * 
- * This test uses a real OpenCode server with reflection-static.ts plugin.
+ * This test uses a real OpenCode server with reflection-3.ts plugin.
  * 
  * RUN: OPENCODE_E2E=1 npx tsx --test test/reflection-race-condition.test.ts
  */
@@ -52,10 +52,10 @@ describe("Reflection Race Condition - Integration Test", {
     await rm(TEST_DIR, { recursive: true, force: true })
     await mkdir(TEST_DIR, { recursive: true })
 
-    // Create plugin directory and deploy reflection-static
+    // Create plugin directory and deploy reflection-3
     const pluginDir = join(TEST_DIR, ".opencode", "plugin")
     await mkdir(pluginDir, { recursive: true })
-    await cp(join(ROOT, "reflection-static.ts"), join(pluginDir, "reflection-static.ts"))
+    await cp(join(ROOT, "reflection-3.ts"), join(pluginDir, "reflection.ts"))
 
     // List deployed files
     const deployed = await readdir(pluginDir)
@@ -102,7 +102,7 @@ describe("Reflection Race Condition - Integration Test", {
       const lines = d.toString().split("\n").filter((l: string) => l.trim())
       for (const line of lines) {
         console.log(`[server] ${line}`)
-        if (line.includes("[ReflectionStatic]")) {
+        if (line.includes("[Reflection3]")) {
           serverLogs.push(line)
         }
       }
@@ -112,7 +112,7 @@ describe("Reflection Race Condition - Integration Test", {
       const lines = d.toString().split("\n").filter((l: string) => l.trim())
       for (const line of lines) {
         console.error(`[server:err] ${line}`)
-        if (line.includes("[ReflectionStatic]")) {
+        if (line.includes("[Reflection3]")) {
           serverLogs.push(line)
         }
       }
@@ -196,7 +196,7 @@ describe("Reflection Race Condition - Integration Test", {
         console.log("[Test] Reflection started!")
       }
       
-      if (recentLogs.includes("Asking static self-assessment")) {
+       if (recentLogs.includes("Requesting reflection self-assessment")) {
         reflectionAskingQuestion = true
         console.log("[Test] Reflection is asking self-assessment question")
         
@@ -337,7 +337,7 @@ describe("Reflection Race Condition - Integration Test", {
     // 4. Verify reflection ran
     const allLogs = serverLogs.join("\n")
     const reflectionRan = allLogs.includes("runReflection called")
-    const askedQuestion = allLogs.includes("Asking static self-assessment")
+    const askedQuestion = allLogs.includes("Requesting reflection self-assessment")
     
     console.log("\n[Test] Results:")
     console.log(`  - Reflection ran: ${reflectionRan}`)

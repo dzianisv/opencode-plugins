@@ -1631,6 +1631,9 @@ async function speakWithOS(text: string, config: TTSConfig): Promise<boolean> {
 // ==================== PLUGIN ====================
 
 export const TTSPlugin: Plugin = async ({ client, directory }) => {
+  if (!client) {
+    return {}
+  }
   // Import zod dynamically since we can't import tool helper directly
   const { z } = await import("zod")
   

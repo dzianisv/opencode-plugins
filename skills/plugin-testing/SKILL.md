@@ -12,7 +12,7 @@ Verify plugin spec requirements with actionable test cases for the reflection an
 
 ## Plugin Specifications
 
-### Reflection Plugin (`reflection.ts`)
+### Reflection Plugin (`reflection-3.ts`)
 
 #### Purpose
 Evaluates task completion when the agent goes idle. If the task is incomplete, sends feedback to continue work.
@@ -102,7 +102,7 @@ Reads the agent's final response aloud when a session completes.
 - [ ] **Code review**: Lines 282-286 only call `showToast()`, no `promptAsync()`
 
 #### R4: No console.log
-- [ ] **Code search**: `grep -n "console.log\|log(" reflection.ts` returns no matches
+- [ ] **Code search**: `grep -n "console.log\|log(" reflection-3.ts` returns no matches
 
 #### R5: Stores in `.reflection/`
 - [ ] **Code review**: `saveReflectionData()` function exists (lines 35-49)
@@ -196,7 +196,7 @@ npm run test:tts:manual
 ls -la ~/.config/opencode/plugin/
 
 # Verify they match source
-diff reflection.ts ~/.config/opencode/plugin/reflection.ts
+diff reflection-3.ts ~/.config/opencode/plugin/reflection.ts
 diff tts.ts ~/.config/opencode/plugin/tts.ts
 
 # Check TTS config

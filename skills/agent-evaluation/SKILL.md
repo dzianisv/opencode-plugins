@@ -216,7 +216,7 @@ tests:
 The reflection plugin uses this evaluation pattern internally:
 
 ```typescript
-// reflection.ts - simplified evaluation flow
+// reflection-3.ts - simplified evaluation flow
 async function evaluateTask(sessionId: string): Promise<Evaluation> {
   const task = extractInitialTask(messages)
   const trace = formatExecutionTrace(messages)

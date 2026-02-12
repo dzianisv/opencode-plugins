@@ -35,7 +35,7 @@ describe("Esc Abort Race Condition - Issue #18", () => {
     debug("runReflection called for", sessionId)
   }
   
-  // Simulate the event handler from reflection.ts (updated for Map + cooldown)
+  // Simulate the event handler from reflection-3.ts (updated for Map + cooldown)
   async function handleEvent(event: { type: string; properties?: any }) {
     const sessionId = event.properties?.sessionID
     const error = event.properties?.error

@@ -17,7 +17,7 @@ import { fileURLToPath } from "url"
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/client"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const PLUGIN_PATH = join(__dirname, "reflection.ts")
+const PLUGIN_PATH = join(__dirname, "reflection-3.ts")
 
 // Config
 const MODEL = process.env.OPENCODE_MODEL || "github-copilot/gpt-4o"

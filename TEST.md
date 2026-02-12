@@ -20,12 +20,12 @@ After `setupProject()` but before sending tasks:
 /tmp/opencode-e2e-python/
 └── .opencode/
     └── plugin/
-        └── reflection.ts   # Copied from project root
+        └── reflection.ts   # Copied from project root (reflection-3.ts)
 
 /tmp/opencode-e2e-nodejs/
 └── .opencode/
     └── plugin/
-        └── reflection.ts   # Copied from project root
+        └── reflection.ts   # Copied from project root (reflection-3.ts)
 ```
 
 ## File Tree After Agent Runs
@@ -36,14 +36,14 @@ After agent completes tasks:
 /tmp/opencode-e2e-python/
 ├── .opencode/
 │   └── plugin/
-│       └── reflection.ts
+│       └── reflection.ts (reflection-3.ts)
 ├── hello.py
 └── test_hello.py
 
 /tmp/opencode-e2e-nodejs/
 ├── .opencode/
 │   └── plugin/
-│       └── reflection.ts
+│       └── reflection.ts (reflection-3.ts)
 ├── hello.js
 └── hello.test.js
 ```
@@ -56,7 +56,7 @@ npm run install:global
 
 # Or install to a specific project
 mkdir -p /path/to/project/.opencode/plugin
-cp reflection.ts /path/to/project/.opencode/plugin/
+cp reflection-3.ts /path/to/project/.opencode/plugin/reflection.ts
 ```
 
 ## How to Run Tests

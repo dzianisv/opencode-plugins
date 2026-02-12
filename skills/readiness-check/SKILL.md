@@ -125,13 +125,13 @@ ls -la ~/.config/opencode/plugin/
 ```
 
 **Expected Files**:
-- `reflection.ts` - Judge layer for task verification
+- `reflection-3.ts` - Judge layer for task verification
 - `tts.ts` - Text-to-speech with Telegram integration
 
 **Deploy from Source**:
 ```bash
 cp /path/to/opencode-reflection-plugin/tts.ts ~/.config/opencode/plugin/
-cp /path/to/opencode-reflection-plugin/reflection.ts ~/.config/opencode/plugin/
+cp /path/to/opencode-reflection-plugin/reflection-3.ts ~/.config/opencode/plugin/reflection.ts
 ```
 
 **Restart OpenCode** after deploying for changes to take effect.

@@ -1,6 +1,6 @@
 # OpenCode Plugins
 <img width="1428" height="926" alt="Screenshot 2026-02-08 at 09 13 26" src="https://github.com/user-attachments/assets/1f507538-be9e-43a4-a1da-cb328e8e1878" />
-@reflection-statis.ts - push opencode agent to reflect on the task, pretty usefull for continuous interrupted run
+@reflection-3.ts - push opencode agent to reflect on the task, useful for continuous interrupted runs
 
 
 @telegram.ts - integrates with Telegram over [t.me/OpencodeMgrBot](@OpenCodeMgrBot) bot
@@ -28,7 +28,7 @@ This plugin adds a **judge layer** that automatically evaluates task completion 
 
 | Plugin | Description |
 |--------|-------------|
-| **reflection.ts** | Judge layer that verifies task completion and forces agent to continue if incomplete |
+| **reflection-3.ts** | Judge layer that verifies task completion and forces agent to continue if incomplete |
 | **tts.ts** | Text-to-speech + Telegram notifications with two-way communication |
 | **worktree-status.ts** | Git worktree status tool for checking dirty state, branch, and active sessions |
 
@@ -46,7 +46,7 @@ This plugin adds a **judge layer** that automatically evaluates task completion 
 # Install plugins
 mkdir -p ~/.config/opencode/plugin && \
 curl -fsSL -o ~/.config/opencode/plugin/reflection.ts \
-  https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/reflection.ts && \
+  https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/reflection-3.ts && \
 curl -fsSL -o ~/.config/opencode/plugin/tts.ts \
   https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/tts.ts && \
 curl -fsSL -o ~/.config/opencode/plugin/telegram.ts \
@@ -78,7 +78,7 @@ Then restart OpenCode.
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────────┐   │
-│  │  reflection.ts   │    │     tts.ts       │    │  worktree-status.ts  │   │
+│  │  reflection-3.ts │    │     tts.ts       │    │  worktree-status.ts  │   │
 │  │                  │    │                  │    │                      │   │
 │  │ • Judge layer    │    │ • Local TTS      │    │ • Git dirty check    │   │
 │  │ • Task verify    │    │ • Whisper STT    │    │ • Branch status      │   │
@@ -126,7 +126,7 @@ Evaluates task completion after each agent response and provides feedback if wor
 
 ### Configuration
 
-Constants in `reflection.ts`:
+Constants in `reflection-3.ts`:
 ```typescript
 const MAX_ATTEMPTS = 16          // Max reflection attempts per task (auto-resets on new user feedback)
 const JUDGE_RESPONSE_TIMEOUT = 180_000  // 3 min timeout for judge
@@ -567,7 +567,7 @@ Auto-started on first voice message:
 ├── opencode.json             # OpenCode config
 ├── tts.json                  # TTS + Telegram config
 ├── plugin/
-│   ├── reflection.ts         # Reflection plugin (judge layer)
+│   ├── reflection-3.ts       # Reflection plugin (judge layer)
 │   ├── tts.ts                # TTS plugin (speech + Telegram)
 │   ├── lib/
 │   │   └── telegram.ts       # Telegram helper module (used by tts.ts)
