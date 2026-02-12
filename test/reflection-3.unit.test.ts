@@ -234,4 +234,108 @@ describe("reflection-3 unit", () => {
     assert.strictEqual(analysis.complete, false)
     assert.ok(analysis.missing.some((m: string) => m.toLowerCase().includes("this session")))
   })
+
+  it("detects ops task type for personal-assistant patterns", () => {
+    assert.strictEqual(inferTaskType("Create a filter to label and move emails to inbox"), "ops")
+    assert.strictEqual(inferTaskType("Clean up Gmail inbox"), "ops")
+    assert.strictEqual(inferTaskType("Reply to recruiter on LinkedIn"), "ops")
+    assert.strictEqual(inferTaskType("Set up calendar events"), "ops")
+    assert.strictEqual(inferTaskType("Configure MCP server"), "ops")
+    assert.strictEqual(inferTaskType("Install dependencies on the server"), "ops")
+    assert.strictEqual(inferTaskType("Organize email filters"), "ops")
+    assert.strictEqual(inferTaskType("Deploy the service to production"), "ops")
+  })
+
+  it("does not misclassify ops tasks as coding when text contains build/create", () => {
+    // This was the exact bug: "Create a filter" matched coding, "build entities" matched build-mention
+    assert.strictEqual(inferTaskType("Create a filter to label and move emails from recruiters"), "ops")
+    assert.strictEqual(inferTaskType("Builds entities and relationships in knowledge graph for email"), "ops")
+  })
+
+  it("shouldContinue is true when agent has actionable work alongside needs_user_action", () => {
+    const assessment = {
+      status: "in_progress" as const,
+      confidence: 0.5,
+      remaining_work: ["Commit and push uncommitted changes"],
+      needs_user_action: ["Merge the PR"],
+      evidence: { tests: { ran: false } }
+    }
+    const analysis = evaluateSelfAssessment(assessment, {
+      taskSummary: "Implement feature",
+      taskType: "coding",
+      agentMode: "build",
+      humanMessages: ["Implement feature"],
+      toolsSummary: "(none)",
+      detectedSignals: [],
+      recentCommands: [],
+      pushedToDefaultBranch: false,
+      requiresTests: true,
+      requiresBuild: false,
+      requiresPR: false,
+      requiresCI: false,
+      requiresLocalTests: false,
+      requiresLocalTestsEvidence: false
+    })
+
+    assert.strictEqual(analysis.requiresHumanAction, true)
+    // Agent should still continue because there's actionable work (run tests, commit changes)
+    assert.strictEqual(analysis.shouldContinue, true)
+    assert.ok(analysis.missing.length > 0)
+  })
+
+  it("shouldContinue is false when only user action remains", () => {
+    const assessment = {
+      status: "waiting_for_user" as const,
+      confidence: 0.9,
+      remaining_work: [],
+      needs_user_action: ["Provide API key"]
+    }
+    const analysis = evaluateSelfAssessment(assessment, {
+      taskSummary: "Implement feature",
+      taskType: "coding",
+      agentMode: "build",
+      humanMessages: ["Implement feature"],
+      toolsSummary: "(none)",
+      detectedSignals: [],
+      recentCommands: [],
+      pushedToDefaultBranch: false,
+      requiresTests: false,
+      requiresBuild: false,
+      requiresPR: false,
+      requiresCI: false,
+      requiresLocalTests: false,
+      requiresLocalTestsEvidence: false
+    })
+
+    assert.strictEqual(analysis.requiresHumanAction, true)
+    assert.strictEqual(analysis.shouldContinue, false)
+  })
+
+  it("ops tasks do not require PR or CI", () => {
+    // For ops tasks, PR and CI should not be enforced
+    const assessment = {
+      status: "complete" as const,
+      confidence: 0.9,
+      evidence: {}
+    }
+    const analysis = evaluateSelfAssessment(assessment, {
+      taskSummary: "Configure email filters",
+      taskType: "ops",
+      agentMode: "build",
+      humanMessages: ["Configure email filters"],
+      toolsSummary: "(none)",
+      detectedSignals: [],
+      recentCommands: [],
+      pushedToDefaultBranch: false,
+      requiresTests: false,
+      requiresBuild: false,
+      requiresPR: false,
+      requiresCI: false,
+      requiresLocalTests: false,
+      requiresLocalTestsEvidence: false
+    })
+
+    assert.strictEqual(analysis.complete, true)
+    assert.strictEqual(analysis.missing.length, 0)
+  })
 })
