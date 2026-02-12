@@ -815,6 +815,9 @@ let supabaseClient: any = null
 let replySubscription: any = null
 
 export const TelegramPlugin: Plugin = async ({ client, directory }) => {
+  if (!client) {
+    return {}
+  }
   
   // Initialize Supabase client for reply subscription
   async function initSupabase(config: TelegramConfig): Promise<any> {
