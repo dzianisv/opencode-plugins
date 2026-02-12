@@ -121,6 +121,23 @@ function findAssistantTextBefore(messages: any[], userMessageText: string): stri
   return ""
 }
 
+function findAssistantTextAfter(messages: any[], userMessageText: string): string {
+  const idx = messages.findIndex((msg: any) => {
+    if (msg.info?.role !== "user") return false
+    const text = extractMessageText(msg)
+    return text.includes(userMessageText.trim())
+  })
+  if (idx < 0) return ""
+  for (let i = idx + 1; i < messages.length; i++) {
+    const msg = messages[i]
+    if (msg.info?.role === "assistant") {
+      const text = extractMessageText(msg)
+      if (text) return text
+    }
+  }
+  return ""
+}
+
 async function writeEvalReport(results: Array<{ label: string; prompt: string; result: TaskResult }>, pythonDir: string, nodeDir: string): Promise<void> {
   const { stdout } = await execFileAsync("git", ["rev-parse", "--short", "HEAD"])
   const commitId = stdout.trim() || "unknown"
@@ -157,7 +174,7 @@ async function writeEvalReport(results: Array<{ label: string; prompt: string; r
 
       const agentText = reflectionMessage === "(none)"
         ? extractMessageText([...item.result.messages].reverse().find((msg: any) => msg.info?.role === "assistant"))
-        : findAssistantTextBefore(item.result.messages, reflectionMessage)
+        : findAssistantTextAfter(item.result.messages, reflectionMessage) || findAssistantTextBefore(item.result.messages, reflectionMessage)
 
       lines.push(`✉️ User: ${item.prompt}`)
       lines.push(`✉️ Agent: ${agentText || "(no assistant text captured)"}`)
