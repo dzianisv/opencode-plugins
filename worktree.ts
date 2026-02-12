@@ -234,7 +234,7 @@ This enables parallel development on multiple branches with separate TUI windows
             } catch (e: any) {
               // Session creation failed - might not be running as server
               // Still create worktree, just won't have pre-created session
-              console.error(`[Worktree] Could not create session: ${e.message}`);
+              // silent — console.error corrupts the OpenCode TUI
             }
             
             // 4. Launch terminal with opencode attach (macOS only)
