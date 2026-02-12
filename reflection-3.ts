@@ -300,7 +300,11 @@ async function waitForResponse(client: any, sessionId: string): Promise<string |
 function inferTaskType(text: string): TaskType {
   if (/research|investigate|analyze|compare|evaluate|study/i.test(text)) return "research"
   if (/docs?|readme|documentation/i.test(text)) return "docs"
+  // Ops detection: explicit ops terms and personal-assistant / browser-automation patterns
+  // Must be checked BEFORE coding to avoid "create filter" or "build entities" matching as coding
   if (/deploy|release|infra|ops|oncall|incident|runbook/i.test(text)) return "ops"
+  if (/\bgmail\b|\bemail\b|\bfilter\b|\binbox\b|\bcalendar\b|\blinkedin\b|\brecruiter\b|\bbrowser\b/i.test(text)) return "ops"
+  if (/\bclean\s*up\b|\borganize\b|\bconfigure\b|\bsetup\b|\bset\s*up\b|\binstall\b/i.test(text)) return "ops"
   if (/fix|bug|issue|error|regression/i.test(text)) return "coding"
   if (/implement|add|create|build|feature|refactor|improve|update/i.test(text)) return "coding"
   return "other"
@@ -441,8 +445,9 @@ async function buildTaskContext(messages: any[], directory: string): Promise<Tas
 
   const requiresTests = taskType === "coding" && (repoSignals.hasTestScript || repoSignals.hasTestsDir || detectedSignals.includes("test-mention"))
   const requiresBuild = taskType === "coding" && (repoSignals.hasBuildScript || detectedSignals.includes("build-mention"))
-  const requiresPR = true
-  const requiresCI = true
+  // PR and CI are only required for coding tasks; ops/personal-assistant tasks don't need them
+  const requiresPR = taskType === "coding"
+  const requiresCI = taskType === "coding"
   const requiresLocalTests = requiresTests
   const requiresLocalTestsEvidence = requiresTests && !hasLocalTests
 
@@ -640,7 +645,13 @@ function evaluateSelfAssessment(assessment: SelfAssessment, context: TaskContext
   }
 
   const requiresHumanAction = needsUserAction.length > 0
-  const shouldContinue = !requiresHumanAction && missing.length > 0
+  // Agent should continue if there are missing items beyond what only the user can do.
+  // Even when user action is needed (e.g. "merge PR"), the agent may still have
+  // actionable work (e.g. uncommitted changes, missing tests) it can complete first.
+  const agentActionableMissing = missing.filter(item =>
+    !needsUserAction.some(ua => item.toLowerCase().includes(ua.toLowerCase()) || ua.toLowerCase().includes(item.toLowerCase()))
+  )
+  const shouldContinue = agentActionableMissing.length > 0 || (!requiresHumanAction && missing.length > 0)
   const complete = status === "complete" && missing.length === 0 && confidence >= 0.8 && !requiresHumanAction
 
   let severity: ReflectionAnalysis["severity"] = "NONE"
@@ -864,11 +875,11 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           return
         }
 
-        if (analysis.requiresHumanAction) {
+        if (analysis.requiresHumanAction && !analysis.shouldContinue) {
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           const hint = analysis.missing[0] || "User action required"
           await showToast(client, directory, `Action needed: ${hint}`, "warning")
-          debug("Reflection requires human action")
+          debug("Reflection requires human action (no agent-actionable work remaining)")
           return
         }
 
