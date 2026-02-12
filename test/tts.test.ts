@@ -137,6 +137,155 @@ describe("TTS Plugin - Unit Tests", () => {
 })
 
 // ============================================================================
+// extractFinalResponse TESTS - Skips reflection-injected JSON messages
+// ============================================================================
+
+describe("extractFinalResponse - Reflection message filtering", () => {
+  const REFLECTION_SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
+  const REFLECTION_FEEDBACK_MARKER = "## Reflection-3:"
+
+  function findReflectionCutoffIndex(messages: any[]): number {
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]
+      if (msg.info?.role !== "user") continue
+      for (const part of msg.parts || []) {
+        if (
+          part.type === "text" &&
+          (part.text?.includes(REFLECTION_SELF_ASSESSMENT_MARKER) ||
+            part.text?.includes(REFLECTION_FEEDBACK_MARKER))
+        ) {
+          return i
+        }
+      }
+    }
+    return -1
+  }
+
+  function extractFinalResponse(messages: any[]): string | null {
+    const cutoff = findReflectionCutoffIndex(messages)
+    const searchEnd = cutoff > -1 ? cutoff - 1 : messages.length - 1
+
+    for (let i = searchEnd; i >= 0; i--) {
+      const msg = messages[i]
+      if (msg.info?.role === "assistant") {
+        for (const part of msg.parts || []) {
+          if (part.type === "text" && part.text) {
+            return part.text
+          }
+        }
+      }
+    }
+    return null
+  }
+
+  // Helper to build a fake message
+  function msg(role: string, text: string) {
+    return {
+      info: { role },
+      parts: [{ type: "text", text }],
+    }
+  }
+
+  it("returns last assistant message when no reflection messages exist", () => {
+    const messages = [
+      msg("user", "What is 2+2?"),
+      msg("assistant", "The answer is 4."),
+    ]
+    expect(extractFinalResponse(messages)).toBe("The answer is 4.")
+  })
+
+  it("skips reflection self-assessment JSON and returns the real response", () => {
+    const messages = [
+      msg("user", "Fix the bug in auth.ts"),
+      msg("assistant", "I've fixed the authentication bug by updating the token validation logic."),
+      msg("user", `${REFLECTION_SELF_ASSESSMENT_MARKER}\n\nTask summary: Fix auth bug\n\nRespond with JSON only:\n{}`),
+      msg("assistant", '{"task_summary":"Fix auth bug","status":"complete","confidence":0.95}'),
+    ]
+    expect(extractFinalResponse(messages)).toBe(
+      "I've fixed the authentication bug by updating the token validation logic."
+    )
+  })
+
+  it("skips reflection feedback messages and returns the real response", () => {
+    const messages = [
+      msg("user", "Add unit tests"),
+      msg("assistant", "I've added 5 unit tests for the auth module."),
+      msg("user", `${REFLECTION_SELF_ASSESSMENT_MARKER}\n\nRespond with JSON only:`),
+      msg("assistant", '{"status":"in_progress","remaining_work":["run tests"]}'),
+      msg("user", `${REFLECTION_FEEDBACK_MARKER} Task incomplete.\nMissing: run tests`),
+      msg("assistant", "Done, I ran the tests and they all pass."),
+    ]
+    // The cutoff should be at the first reflection prompt (index 2)
+    // So the real response is at index 1
+    expect(extractFinalResponse(messages)).toBe(
+      "I've added 5 unit tests for the auth module."
+    )
+  })
+
+  it("returns null when all messages are reflection artifacts", () => {
+    const messages = [
+      msg("user", `${REFLECTION_SELF_ASSESSMENT_MARKER}\n\nRespond with JSON only:`),
+      msg("assistant", '{"status":"complete"}'),
+    ]
+    expect(extractFinalResponse(messages)).toBeNull()
+  })
+
+  it("handles empty message list", () => {
+    expect(extractFinalResponse([])).toBeNull()
+  })
+
+  it("handles messages without text parts", () => {
+    const messages = [
+      { info: { role: "user" }, parts: [{ type: "image", url: "test.png" }] },
+      { info: { role: "assistant" }, parts: [] },
+    ]
+    expect(extractFinalResponse(messages)).toBeNull()
+  })
+
+  it("works with multiple user-assistant exchanges before reflection", () => {
+    const messages = [
+      msg("user", "Create a PR"),
+      msg("assistant", "I'll create a PR for you."),
+      msg("user", "Include the test changes too"),
+      msg("assistant", "PR created: https://github.com/example/repo/pull/42"),
+      msg("user", `${REFLECTION_SELF_ASSESSMENT_MARKER}\n\nRespond with JSON only:`),
+      msg("assistant", '{"status":"complete","evidence":{"pr":{"created":true}}}'),
+    ]
+    expect(extractFinalResponse(messages)).toBe(
+      "PR created: https://github.com/example/repo/pull/42"
+    )
+  })
+
+  it("findReflectionCutoffIndex returns -1 when no reflection messages", () => {
+    const messages = [
+      msg("user", "Hello"),
+      msg("assistant", "Hi there!"),
+    ]
+    expect(findReflectionCutoffIndex(messages)).toBe(-1)
+  })
+
+  it("findReflectionCutoffIndex finds self-assessment marker", () => {
+    const messages = [
+      msg("user", "Do something"),
+      msg("assistant", "Done."),
+      msg("user", `${REFLECTION_SELF_ASSESSMENT_MARKER}\n\nRespond with JSON:`),
+      msg("assistant", '{"status":"complete"}'),
+    ]
+    expect(findReflectionCutoffIndex(messages)).toBe(2)
+  })
+
+  it("findReflectionCutoffIndex finds feedback marker", () => {
+    const messages = [
+      msg("user", "Do something"),
+      msg("assistant", "Done."),
+      msg("user", `${REFLECTION_FEEDBACK_MARKER} Task incomplete.`),
+      msg("assistant", "Continuing..."),
+    ]
+    expect(findReflectionCutoffIndex(messages)).toBe(2)
+  })
+})
+
+// ============================================================================
 // WHISPER INTEGRATION TESTS - Requires Whisper server running
 // ============================================================================
 

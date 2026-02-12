@@ -774,12 +774,22 @@ function isSessionComplete(messages: any[]): boolean {
   return !!(lastAssistant.info?.time as any)?.completed
 }
 
+// Markers injected by the Reflection-3 plugin into the session conversation.
+// Messages containing these markers (and their assistant responses) are internal
+// reflection artifacts — not the real user-facing answer.
+const REFLECTION_SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
+const REFLECTION_FEEDBACK_MARKER = "## Reflection-3:"
+
 function findStaticReflectionPromptIndex(messages: any[]): number {
-  for (let i = messages.length - 1; i >= 0; i--) {
+  for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
     if (msg.info?.role !== "user") continue
     for (const part of msg.parts || []) {
-      if (part.type === "text" && part.text?.includes("1. **What was the task?**")) {
+      if (
+        part.type === "text" &&
+        (part.text?.includes(REFLECTION_SELF_ASSESSMENT_MARKER) ||
+          part.text?.includes(REFLECTION_FEEDBACK_MARKER))
+      ) {
         return i
       }
     }
