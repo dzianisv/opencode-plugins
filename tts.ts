@@ -1814,12 +1814,12 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
 
     try {
       const config = await loadConfig()
-      // NOTE: Reflection verdict is already checked by the session.idle event handler
-      // before calling speak(). We intentionally do NOT re-check here because:
-      // 1. The verdict file uses a 30-second staleness window
-      // 2. After queuing + lock acquisition, the verdict may exceed that window
-      // 3. Re-checking would cause speak() to silently fail even though the caller
-      //    already confirmed the verdict was valid
+      // NOTE: Reflection verdict gating is handled by the event handler (session.idle).
+      // The event handler checks waitForVerdict/requireVerdict and only calls speak()
+      // if the verdict check passed. We do NOT duplicate that check here — doing so
+      // caused a bug where waitForVerdict:false in config was bypassed by speak()'s
+      // own requireVerdict check (which defaults to true independently).
+      // See: https://github.com/user/opencode-plugins — dual gating root cause analysis
 
       // Create a ticket and wait for our turn in the speech queue
       ticketId = await createSpeechTicket(sessionId)
