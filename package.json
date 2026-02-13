@@ -16,6 +16,7 @@
     "test:tts:manual": "node --experimental-strip-types test/tts-manual.ts",
     "test:load": "node --import tsx --test test/plugin-load.test.ts",
     "test:reflection-3": "node --import tsx --test test/reflection-static.eval.test.ts",
+    "test:install": "jest test/install.test.ts --testTimeout=120000",
     "typecheck": "npx tsc --noEmit",
     "install:telegram": "mkdir -p ~/.config/opencode/plugin && cp telegram.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
     "install:tts": "mkdir -p ~/.config/opencode/plugin && cp tts.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && (cd ~/.config/opencode && bun install) && bash scripts/setup-coqui.sh",
