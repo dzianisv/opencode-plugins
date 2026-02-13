@@ -1925,11 +1925,22 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
     return false
   }
 
+  // Markers used by reflection plugins in internal evaluation sessions.
+  const INTERNAL_SESSION_MARKERS = [
+    "ANALYZE REFLECTION-3",   // reflection-3 judge sessions
+    "CLASSIFY TASK ROUTING",  // reflection-3 task routing classifier
+    "TASK VERIFICATION",      // legacy reflection judge sessions
+    "You are a judge",        // legacy judge sessions
+    "Task to evaluate",       // legacy judge sessions
+  ]
+
   function isJudgeSession(messages: any[]): boolean {
     for (const msg of messages) {
       for (const part of msg.parts || []) {
-        if (part.type === "text" && part.text?.includes("TASK VERIFICATION")) {
-          return true
+        if (part.type === "text" && part.text) {
+          for (const marker of INTERNAL_SESSION_MARKERS) {
+            if (part.text.includes(marker)) return true
+          }
         }
       }
     }
