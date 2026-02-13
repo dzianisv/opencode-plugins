@@ -4,8 +4,6 @@ import {
   parseSelfAssessmentJson,
   evaluateSelfAssessment,
   inferTaskType,
-  TaskContext,
-  classifyTaskForRouting,
   parseRoutingFromYaml,
   getRoutingModel,
   RoutingConfig
@@ -114,7 +112,7 @@ describe("reflection-3 unit", () => {
 
   it("detects PR requirement from text", () => {
     const signals = "Create a PR for this fix"
-    const context: TaskContext = {
+    const context = {
       taskSummary: "Create a PR for this fix",
       taskType: "coding",
       agentMode: "build",
@@ -345,73 +343,6 @@ describe("reflection-3 unit", () => {
 })
 
 describe("task-based model routing", () => {
-  const baseContext: TaskContext = {
-    taskSummary: "",
-    taskType: "coding",
-    agentMode: "build",
-    humanMessages: [],
-    toolsSummary: "(none)",
-    detectedSignals: [],
-    recentCommands: [],
-    pushedToDefaultBranch: false,
-    requiresTests: false,
-    requiresBuild: false,
-    requiresPR: false,
-    requiresCI: false,
-    requiresLocalTests: false,
-    requiresLocalTestsEvidence: false
-  }
-
-  describe("classifyTaskForRouting", () => {
-    it("classifies API/backend tasks as backend", () => {
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Add a REST API endpoint for user profiles" }), "backend")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Fix database connection pooling" }), "backend")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Set up Docker container for the service" }), "backend")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Implement GraphQL resolver" }), "backend")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Write a CLI tool in Golang" }), "backend")
-    })
-
-    it("classifies UI/frontend tasks as frontend", () => {
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Build a React component for the dashboard" }), "frontend")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Fix CSS layout issues on mobile" }), "frontend")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Add dark mode toggle to the UI" }), "frontend")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Create animation for the loading spinner" }), "frontend")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Implement a game sprite renderer" }), "frontend")
-    })
-
-    it("classifies debugging/architecture tasks as architecture", () => {
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Debug the memory leak in production" }), "architecture")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Refactor the authentication module" }), "architecture")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Investigate why the service is slow" }), "architecture")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Security audit of the payment system" }), "architecture")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Design pattern for event-driven architecture" }), "architecture")
-    })
-
-    it("defaults coding tasks without specific patterns to backend", () => {
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Implement the feature" }), "backend")
-    })
-
-    it("defaults non-coding tasks to default", () => {
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Update the README", taskType: "docs" }), "default")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Research best practices", taskType: "research" }), "default")
-    })
-
-    it("uses humanMessages for classification too", () => {
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Help me", humanMessages: ["Fix the React component layout"] }), "frontend")
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Help me", humanMessages: ["Debug the server crash"] }), "architecture")
-    })
-
-    it("frontend takes priority over backend keywords", () => {
-      // If both frontend and backend signals are present, frontend wins (checked first)
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Build a React component that calls the API endpoint" }), "frontend")
-    })
-
-    it("architecture takes priority over backend keywords", () => {
-      // If both architecture and backend signals are present, architecture wins
-      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Debug the API server memory leak" }), "architecture")
-    })
-  })
-
   describe("parseRoutingFromYaml", () => {
     it("parses a complete routing config", () => {
       const yaml = `models:
