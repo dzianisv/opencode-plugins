@@ -84,6 +84,50 @@ flowchart TD
 - `~/.config/opencode/reflection.yaml` (judge model list)
 - `reflection.md` in workspace (optional custom prompt)
 
+## Task-Based Model Routing
+
+When reflection determines a task is incomplete and pushes feedback, it can optionally route the retry to a model best suited for the task type. This is configured via a `routing:` section in `~/.config/opencode/reflection.yaml`.
+
+### Configuration
+
+```yaml
+models:
+  - github-copilot/claude-opus-4.6
+
+routing:
+  enabled: true
+  models:
+    backend: github-copilot/gpt-5.2-codex
+    architecture: github-copilot/claude-opus-4.6
+    frontend: github-copilot/gemini-3-pro-preview
+    default: ""  # empty = use session default model
+```
+
+### Task Categories
+
+| Category | Routing target | Matches |
+|---|---|---|
+| **backend** | `gpt-5.2-codex` | API, database, server, CLI, Docker, Kubernetes, cloud, infra |
+| **architecture** | `claude-opus-4.6` | debugging, refactoring, design patterns, security, performance |
+| **frontend** | `gemini-3-pro-preview` | UI/UX, CSS, React/Vue/Svelte, animations, game dev, visual |
+| **default** | session default | docs, research, ops, or anything that doesn't clearly fit |
+
+### How It Works
+
+1. After reflection analysis determines the task is incomplete, the plugin classifies the task using heuristic keyword matching on the task summary and human messages.
+2. The classification maps to one of four categories: `backend`, `architecture`, `frontend`, or `default`.
+3. If routing is enabled and a model is configured for the category, the feedback `promptAsync` call includes a `model` override to route the retry.
+4. If routing is disabled, the category model is empty, or no routing config exists, the session continues with its current model.
+5. The routing category and model are included in the reflection data artifact for observability.
+
+### Notes
+
+- Routing only applies to the **feedback injection** call (when the agent is pushed to continue). Self-assessment and judge calls are not routed.
+- Classification uses keyword matching (no additional LLM call), so it adds zero latency.
+- Generic coding tasks without specific frontend/architecture signals default to `backend`.
+- Non-coding tasks (docs, research, ops) default to `default`.
+- Each model entry must be in `providerID/modelID` format (e.g., `github-copilot/gpt-5.2-codex`).
+
 ## Operational Notes
 - Judge sessions are created via `promptAsync` and polled until completion.
 - The plugin avoids infinite loops by tracking last reflected user message id and active reflections.
