@@ -1,17 +1,16 @@
-import { describe, it, expect, jest, beforeAll, afterAll, beforeEach } from '@jest/globals';
-// Note: We can't import _test_internal anymore because OpenCode's plugin loader
-// treats all named exports as plugins, breaking loading.
-// This test file is now disabled - the functionality is covered by integration tests.
-// TODO: Refactor to use jest module mocking or move tests to integration tests
+// This file has been superseded by test/telegram.unit.test.ts which uses
+// the test-helpers extraction pattern (telegram.test-helpers.ts) to test
+// Telegram plugin internals without needing direct exports from telegram.ts.
+//
+// See: telegram.test-helpers.ts for the exported testable functions
+// See: test/telegram.unit.test.ts for the actual unit tests
+//
+// Kept as a placeholder to avoid breaking any references.
 
-describe.skip('Telegram Plugin Internals (SKIPPED - internal exports removed)', () => {
-  it('transcribeAudio calls the correct endpoint /transcribe-base64', async () => {
-    // Test disabled - see note above
-    expect(true).toBe(true);
-  });
+import { describe, it, expect } from '@jest/globals';
 
-  it('transcribeAudio handles missing configuration gracefully', async () => {
-    // Test disabled - see note above
+describe.skip('Telegram Plugin Internals (moved to telegram.unit.test.ts)', () => {
+  it('see test/telegram.unit.test.ts', () => {
     expect(true).toBe(true);
   });
 });
