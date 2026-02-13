@@ -494,6 +494,21 @@ Return JSON only:
     // Only the last message matters - previous aborts don't block new tasks
     const lastAssistant = [...messages].reverse().find(m => m.info?.role === "assistant")
     if (!lastAssistant) return false
+
+    // Check if session was NOT completed (Issue #82) — when user presses ESC,
+    // the last assistant message won't have time.completed set.  This catches
+    // aborts even when session.idle fires before session.error writes the abort
+    // error to the message data (race condition).  Same approach used by TTS
+    // and Telegram plugins (isSessionComplete).
+    if (!(lastAssistant.info?.time as any)?.completed) {
+      // No time.completed means the assistant response was interrupted
+      if (!abortedMsgIds.has(sessionId)) {
+        abortedMsgIds.set(sessionId, new Set())
+      }
+      abortedMsgIds.get(sessionId)!.add(humanMsgId)
+      debug("Marked task as aborted (incomplete - no time.completed):", sessionId.slice(0, 8), "msgId:", humanMsgId)
+      return true
+    }
     
     const error = lastAssistant.info?.error
     if (!error) return false

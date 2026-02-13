@@ -99,26 +99,24 @@ describe("Esc Abort Race Condition - Issue #18", () => {
       "Should log skip reason")
   })
   
-  it("blocks reflection when session.idle fires BEFORE session.error (reverse order)", async () => {
-    // This tests if events can arrive in opposite order
-    // In reality session.error should fire first, but let's be defensive
+  it("event handler allows runReflection when session.idle fires BEFORE session.error", async () => {
+    // This tests if events can arrive in opposite order.
+    // The EVENT HANDLER can't catch this case (it has no message data).
+    // However, runReflection() now checks time.completed on the last assistant
+    // message (Issue #82), so the abort IS caught inside runReflection.
+    // This test documents the event handler's limitation only.
     const sessionId = "ses_test_abort_2"
     
-    // If session.idle fires first (before we know about abort)
-    // This is the problematic case the old code had
-    
-    // With the fix: session.error must fire first to populate the set
-    // If session.idle fires first, we can't know about abort yet
-    
-    // This test documents the limitation: we rely on session.error firing first
     await handleEvent({
       type: "session.idle", 
       properties: { sessionID: sessionId }
     })
     
-    // Reflection would run because we didn't know about abort
+    // Event handler calls runReflection because it doesn't know about abort yet.
+    // In production, runReflection itself will detect the incomplete message
+    // via wasCurrentTaskAborted's time.completed check (Issue #82 fix).
     assert.strictEqual(reflectionRanCount, 1, 
-      "If session.idle fires before session.error, reflection runs (known limitation)")
+      "Event handler calls runReflection (abort caught inside runReflection via time.completed check)")
   })
   
   it("blocks reflection during cooldown period (multiple rapid Esc presses)", async () => {
