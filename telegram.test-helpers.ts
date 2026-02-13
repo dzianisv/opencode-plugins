@@ -64,15 +64,31 @@ export interface ReflectionVerdict {
 const REFLECTION_SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
 const REFLECTION_FEEDBACK_MARKER = "## Reflection-3:"
 
+// Markers used by reflection plugins in internal evaluation sessions.
+// Sessions containing these are NOT user-facing and must never be posted to Telegram.
+export const INTERNAL_SESSION_MARKERS = [
+  "ANALYZE REFLECTION-3",   // reflection-3 judge sessions
+  "CLASSIFY TASK ROUTING",  // reflection-3 task routing classifier
+  "TASK VERIFICATION",      // legacy reflection judge sessions
+  "You are a judge",        // legacy judge sessions
+  "Task to evaluate",       // legacy judge sessions
+]
+
 /**
- * Detect judge sessions by checking first user message.
+ * Detect internal reflection/judge sessions by scanning ALL messages for known markers.
  * Mirrors telegram.ts:isJudgeSession
  */
 export function isJudgeSession(messages: any[]): boolean {
-  const firstUser = messages.find((m: any) => m.info?.role === "user")
-  if (!firstUser) return false
-  const text = firstUser.parts?.find((p: any) => p.type === "text")?.text || ""
-  return text.includes("You are a judge") || text.includes("Task to evaluate")
+  for (const msg of messages) {
+    for (const part of msg.parts || []) {
+      if (part.type === "text" && part.text) {
+        for (const marker of INTERNAL_SESSION_MARKERS) {
+          if (part.text.includes(marker)) return true
+        }
+      }
+    }
+  }
+  return false
 }
 
 /**

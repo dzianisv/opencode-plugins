@@ -98,14 +98,30 @@ describe("telegram unit: session helpers", () => {
     assert.strictEqual(isJudgeSession([]), false)
   })
 
-  it("isJudgeSession: ignores judge text in later messages", () => {
+  it("isJudgeSession: detects judge text in later messages", () => {
     const msgs = [
       userMsg("Implement feature"),
       assistantMsg("Working on it..."),
-      userMsg("You are a judge — kidding! Just continue"),
+      userMsg("You are a judge — evaluate the work"),
     ]
-    // Only first user message matters
-    assert.strictEqual(isJudgeSession(msgs), false)
+    // All messages are scanned for internal session markers
+    assert.strictEqual(isJudgeSession(msgs), true)
+  })
+
+  it("isJudgeSession: detects ANALYZE REFLECTION-3 marker", () => {
+    const msgs = [
+      userMsg("ANALYZE REFLECTION-3\n\nEvaluate the agent's self-assessment..."),
+      assistantMsg('{"complete": true}'),
+    ]
+    assert.strictEqual(isJudgeSession(msgs), true)
+  })
+
+  it("isJudgeSession: detects CLASSIFY TASK ROUTING marker", () => {
+    const msgs = [
+      userMsg("CLASSIFY TASK ROUTING\n\nClassify into: backend, frontend, default"),
+      assistantMsg('{"category": "backend"}'),
+    ]
+    assert.strictEqual(isJudgeSession(msgs), true)
   })
 
   // -- isSessionComplete ------------------------------------------------------
