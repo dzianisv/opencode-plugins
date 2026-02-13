@@ -130,5 +130,6 @@ routing:
 
 ## Operational Notes
 - Judge sessions are created via `promptAsync` and polled until completion.
+- Any utility sessions created by `reflection-3.ts` (judge, routing classifier, etc.) must be deleted after use.
 - The plugin avoids infinite loops by tracking last reflected user message id and active reflections.
 - Abort handling uses `session.error` with a cooldown to skip reflection on canceled tasks.

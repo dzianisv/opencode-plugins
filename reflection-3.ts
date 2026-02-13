@@ -342,6 +342,7 @@ async function classifyTaskForRoutingWithLLM(
     if (!classifierSession?.id) return null
     judgeSessionIds.add(classifierSession.id)
 
+    let response: string | null = null
     try {
       const modelParts = modelSpec ? modelSpec.split("/") : []
       const providerID = modelParts[0] || ""
@@ -354,9 +355,7 @@ async function classifyTaskForRoutingWithLLM(
         body
       })
 
-      const response = await waitForResponse(client, classifierSession.id)
-      const category = parseRoutingCategory(response)
-      if (category) return category
+      response = await waitForResponse(client, classifierSession.id)
     } catch {
       continue
     } finally {
@@ -365,6 +364,9 @@ async function classifyTaskForRoutingWithLLM(
       } catch {}
       judgeSessionIds.delete(classifierSession.id)
     }
+
+    const category = parseRoutingCategory(response)
+    if (category) return category
   }
 
   return null
