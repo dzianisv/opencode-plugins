@@ -1,6 +1,7 @@
 .tts
 .reflection
 .opencode/
+!.opencode/swe-eval
 node_modules/
 __pycache__/
 *.log
@@ -23,6 +24,7 @@ evals/evals/
 
 # E2E eval reports
 .eval/
+.eval-tmp/
 
 # Working notes
 plan.md

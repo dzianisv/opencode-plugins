@@ -24,6 +24,7 @@ Key behavior:
 - Requires local tests when applicable and rejects skipped/flaky tests.
 - Requires PR and CI check evidence; no direct push to `main`/`master`.
 - If `needs_user_action` is set, it shows a toast and does not push feedback.
+- Any utility sessions created by `reflection-3.ts` (judge, routing classifier, etc.) must be deleted after use.
 
 Documentation:
 - `docs/reflection.md`
