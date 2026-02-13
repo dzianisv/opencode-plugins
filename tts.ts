@@ -1094,7 +1094,10 @@ async function setupCoqui(): Promise<boolean> {
   coquiSetupAttempted = true
   
   const python = await findPython3()
-  if (!python) return false
+  if (!python) {
+    console.error("[TTS] Coqui setup failed: no Python 3.10-3.12 found in PATH")
+    return false
+  }
   
   try {
     await mkdir(COQUI_DIR, { recursive: true })
@@ -1108,10 +1111,12 @@ async function setupCoqui(): Promise<boolean> {
         coquiInstalled = true
         return true
       }
-    } catch {
-      // Need to create/setup venv
+      console.error("[TTS] Coqui venv exists but TTS import failed — will attempt reinstall")
+    } catch (e: any) {
+      console.error(`[TTS] Coqui venv check failed: ${e.message || e} — will attempt install`)
     }
     
+    console.error("[TTS] Installing Coqui TTS (this may take a few minutes)...")
     await execAsync(`"${python}" -m venv "${COQUI_VENV}"`, { timeout: 60000 })
     
     const pip = join(COQUI_VENV, "bin", "pip")
@@ -1119,10 +1124,20 @@ async function setupCoqui(): Promise<boolean> {
     // Pin transformers<4.50 due to breaking API changes in 4.50+
     await execAsync(`"${pip}" install TTS "transformers<4.50"`, { timeout: 600000 })
     
+    // Verify installation actually worked
+    const { stdout: verifyOut } = await execAsync(`"${venvPython}" -c "from TTS.api import TTS; print('ok')"`, { timeout: 30000 })
+    if (!verifyOut.includes("ok")) {
+      console.error("[TTS] Coqui TTS installed but import verification failed. Run: npm run install:tts")
+      coquiInstalled = false
+      return false
+    }
+    
     await ensureCoquiScript()
     coquiInstalled = true
+    console.error("[TTS] Coqui TTS installed successfully")
     return true
-  } catch {
+  } catch (e: any) {
+    console.error(`[TTS] Coqui setup failed: ${e.message || e}. Run: npm run install:tts`)
     coquiInstalled = false
     return false
   }
@@ -1781,7 +1796,7 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
 
   function cleanTextForSpeech(text: string): string {
     return text
-      .replace(/```[\s\S]*?```/g, "code block omitted")
+      .replace(/```[\s\S]*?```/g, "")
       .replace(/`[^`]+`/g, "")
       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
       .replace(/[*_~#]+/g, "")
@@ -1814,12 +1829,12 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
 
     try {
       const config = await loadConfig()
-      // NOTE: Reflection verdict is already checked by the session.idle event handler
-      // before calling speak(). We intentionally do NOT re-check here because:
-      // 1. The verdict file uses a 30-second staleness window
-      // 2. After queuing + lock acquisition, the verdict may exceed that window
-      // 3. Re-checking would cause speak() to silently fail even though the caller
-      //    already confirmed the verdict was valid
+      // NOTE: Reflection verdict gating is handled by the event handler (session.idle).
+      // The event handler checks waitForVerdict/requireVerdict and only calls speak()
+      // if the verdict check passed. We do NOT duplicate that check here — doing so
+      // caused a bug where waitForVerdict:false in config was bypassed by speak()'s
+      // own requireVerdict check (which defaults to true independently).
+      // See: https://github.com/user/opencode-plugins — dual gating root cause analysis
 
       // Create a ticket and wait for our turn in the speech queue
       ticketId = await createSpeechTicket(sessionId)
@@ -1855,7 +1870,15 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
           const result = await speakWithCoquiAndGetPath(toSpeak, config)
           if (result.success) {
             generatedAudioPath = result.audioPath || null
+          } else {
+            await debugLog("Coqui TTS synthesis failed, falling back to OS TTS")
           }
+        } else {
+          await debugLog("Coqui TTS unavailable (check [TTS] logs), falling back to OS TTS")
+        }
+        // Fall back to OS TTS if Coqui failed
+        if (!generatedAudioPath) {
+          await speakWithOS(toSpeak, config)
         }
         if (!generatedAudioPath) {
           await debugLog(`Coqui TTS failed or unavailable, falling back to OS TTS`)
