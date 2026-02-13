@@ -15,6 +15,7 @@ const FEEDBACK_MARKER = "## Reflection-3:"
 
 type TaskType = "coding" | "docs" | "research" | "ops" | "other"
 type AgentMode = "plan" | "build" | "unknown"
+type RoutingCategory = "backend" | "architecture" | "frontend" | "default"
 
 interface WorkflowRequirements {
   requiresTests: boolean
@@ -76,6 +77,21 @@ interface ReflectionAnalysis {
   nextActions: string[]
   requiresHumanAction: boolean
   severity: "NONE" | "LOW" | "MEDIUM" | "HIGH" | "BLOCKER"
+}
+
+interface RoutingConfig {
+  enabled: boolean
+  models: Record<RoutingCategory, string>
+}
+
+const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
+  enabled: false,
+  models: {
+    backend: "",
+    architecture: "",
+    frontend: "",
+    default: ""
+  }
 }
 
 const JUDGE_RESPONSE_TIMEOUT = 120_000
@@ -234,6 +250,104 @@ function parseModelListFromYaml(content: string): string[] {
   }
 
   return models
+}
+
+function parseRoutingFromYaml(content: string): RoutingConfig {
+  const config: RoutingConfig = { ...DEFAULT_ROUTING_CONFIG, models: { ...DEFAULT_ROUTING_CONFIG.models } }
+  const lines = content.split(/\r?\n/)
+  let inRouting = false
+  let inRoutingModels = false
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith("#")) continue
+
+    if (/^routing\s*:/i.test(line)) {
+      inRouting = true
+      continue
+    }
+
+    if (inRouting) {
+      // Exit routing section when we hit a top-level key
+      if (/^[a-zA-Z][\w-]*\s*:/.test(rawLine) && !rawLine.startsWith(" ") && !rawLine.startsWith("\t")) {
+        inRouting = false
+        inRoutingModels = false
+        continue
+      }
+
+      if (/^\s*enabled\s*:\s*(true|false)/i.test(rawLine)) {
+        config.enabled = /true/i.test(rawLine)
+        continue
+      }
+
+      if (/^\s*models\s*:/i.test(rawLine)) {
+        inRoutingModels = true
+        continue
+      }
+
+      if (inRoutingModels) {
+        // Exit models sub-section on a non-indented or non-model key
+        if (/^\s{2,}[\w-]+\s*:/.test(rawLine) || /^\s+[\w-]+\s*:/.test(rawLine)) {
+          const match = rawLine.match(/^\s+([\w-]+)\s*:\s*(.*)/)
+          if (match) {
+            const key = match[1].toLowerCase() as RoutingCategory
+            const value = match[2].trim().replace(/^['"]|['"]$/g, "")
+            if (key === "backend" || key === "architecture" || key === "frontend" || key === "default") {
+              config.models[key] = value
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return config
+}
+
+function classifyTaskForRouting(context: TaskContext): RoutingCategory {
+  const text = `${context.taskSummary} ${context.humanMessages.join(" ")}`.toLowerCase()
+
+  // Frontend/UI/UX patterns
+  if (/\b(frontend|front-end|ui\b|ux\b|css|scss|tailwind|styled|animation|responsive|layout|component|react|vue|svelte|angular|next\.?js|nuxt|gatsby|html|dom|canvas|webgl|game|sprite|pixel|render|visual|theme|dark\s*mode|light\s*mode|style|button|form|modal|dialog|tooltip|dropdown|menu|sidebar|navbar|header|footer|carousel|gallery|icon)\b/i.test(text)) {
+    return "frontend"
+  }
+
+  // Architecture/troubleshooting patterns
+  if (/\b(debug|troubleshoot|diagnose|investigate|why\s+is|root\s*cause|race\s*condition|deadlock|memory\s*leak|performance|profil|architect|design\s*pattern|refactor|restructure|reorganize|migrate|abstraction|interface\s+design|system\s*design|trade-?off|scaling|complexity|review|audit|security|vulnerability)\b/i.test(text)) {
+    return "architecture"
+  }
+
+  // Backend/systems patterns
+  if (/\b(backend|back-end|server|api|endpoint|rest|graphql|grpc|database|sql|postgres|mysql|mongo|redis|queue|worker|cron|microservice|docker|kubernetes|k8s|ci\/cd|pipeline|deploy|infra|aws|gcp|azure|cloud|terraform|ansible|helm|nginx|load\s*balanc|cache|auth|jwt|oauth|webhook|websocket|cli|terminal|shell|script|bash|node\.?js|python|golang|rust|java|c\+\+|systems?\s*program)/i.test(text)) {
+    return "backend"
+  }
+
+  // Coding tasks that don't match specific categories default to backend
+  if (context.taskType === "coding") {
+    return "backend"
+  }
+
+  return "default"
+}
+
+async function loadRoutingConfig(): Promise<RoutingConfig> {
+  try {
+    const content = await readFile(REFLECTION_CONFIG_PATH, "utf-8")
+    return parseRoutingFromYaml(content)
+  } catch {
+    return { ...DEFAULT_ROUTING_CONFIG, models: { ...DEFAULT_ROUTING_CONFIG.models } }
+  }
+}
+
+function getRoutingModel(config: RoutingConfig, category: RoutingCategory): { providerID: string; modelID: string } | null {
+  if (!config.enabled) return null
+  const modelSpec = config.models[category] || config.models["default"] || ""
+  if (!modelSpec) return null
+  const parts = modelSpec.split("/")
+  const providerID = parts[0] || ""
+  const modelID = parts.slice(1).join("/") || ""
+  if (!providerID || !modelID) return null
+  return { providerID, modelID }
 }
 
 async function loadReflectionModelList(): Promise<string[]> {
@@ -875,10 +989,16 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
 
         debug("Reflection analysis completed")
 
+        // Compute routing early so it can be included in saved data
+        const routingConfig = await loadRoutingConfig()
+        const routingCategory = classifyTaskForRouting(context)
+        const routingModel = getRoutingModel(routingConfig, routingCategory)
+
         await saveReflectionData(directory, sessionId, {
           task: context.taskSummary,
           assessment: selfAssessment.slice(0, 4000),
           analysis,
+          routing: routingModel ? { category: routingCategory, model: routingModel } : null,
           timestamp: new Date().toISOString()
         })
 
@@ -921,10 +1041,17 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         if (analysis.missing.length) feedbackLines.push(`Missing: ${analysis.missing.join("; ")}`)
         if (analysis.nextActions.length) feedbackLines.push(`Next actions: ${analysis.nextActions.join("; ")}`)
 
+        // Apply task-based model routing to feedback injection
+        const feedbackBody: any = { parts: [{ type: "text", text: feedbackLines.join("\n") }] }
+        if (routingModel) {
+          feedbackBody.model = routingModel
+          debug("Routing feedback to", routingCategory, "model:", JSON.stringify(routingModel))
+        }
+
         try {
           await client.session.promptAsync({
             path: { id: sessionId },
-            body: { parts: [{ type: "text", text: feedbackLines.join("\n") }] }
+            body: feedbackBody
           })
         } catch (e: any) {
           debug("promptAsync failed (feedback):", e?.message || e)
@@ -939,7 +1066,8 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
 
         debug("Reflection pushed continuation")
 
-        await showToast(client, directory, "Pushed agent to continue", "info")
+        const routingInfo = routingModel ? ` [${routingCategory} → ${routingModel.modelID}]` : ""
+        await showToast(client, directory, `Pushed agent to continue${routingInfo}`, "info")
       } finally {
         activeReflections.delete(sessionId)
       }
