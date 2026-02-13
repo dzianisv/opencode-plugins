@@ -18,7 +18,7 @@
     "test:reflection-3": "node --import tsx --test test/reflection-static.eval.test.ts",
     "typecheck": "npx tsc --noEmit",
     "install:telegram": "mkdir -p ~/.config/opencode/plugin && cp telegram.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
-    "install:tts": "mkdir -p ~/.config/opencode/plugin && cp tts.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
+    "install:tts": "mkdir -p ~/.config/opencode/plugin && cp tts.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && (cd ~/.config/opencode && bun install) && bash scripts/setup-coqui.sh",
     "install:reflection-3": "mkdir -p ~/.config/opencode/plugin && cp reflection-3.ts ~/.config/opencode/plugin/reflection.ts && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
     "eval": "cd evals && npx promptfoo eval",
     "eval:judge": "cd evals && npx promptfoo eval -c promptfooconfig.yaml",
