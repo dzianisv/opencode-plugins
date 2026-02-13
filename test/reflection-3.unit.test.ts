@@ -4,7 +4,11 @@ import {
   parseSelfAssessmentJson,
   evaluateSelfAssessment,
   inferTaskType,
-  TaskContext
+  TaskContext,
+  classifyTaskForRouting,
+  parseRoutingFromYaml,
+  getRoutingModel,
+  RoutingConfig
 } from "../reflection-3.test-helpers.ts"
 
 describe("reflection-3 unit", () => {
@@ -337,5 +341,210 @@ describe("reflection-3 unit", () => {
 
     assert.strictEqual(analysis.complete, true)
     assert.strictEqual(analysis.missing.length, 0)
+  })
+})
+
+describe("task-based model routing", () => {
+  const baseContext: TaskContext = {
+    taskSummary: "",
+    taskType: "coding",
+    agentMode: "build",
+    humanMessages: [],
+    toolsSummary: "(none)",
+    detectedSignals: [],
+    recentCommands: [],
+    pushedToDefaultBranch: false,
+    requiresTests: false,
+    requiresBuild: false,
+    requiresPR: false,
+    requiresCI: false,
+    requiresLocalTests: false,
+    requiresLocalTestsEvidence: false
+  }
+
+  describe("classifyTaskForRouting", () => {
+    it("classifies API/backend tasks as backend", () => {
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Add a REST API endpoint for user profiles" }), "backend")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Fix database connection pooling" }), "backend")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Set up Docker container for the service" }), "backend")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Implement GraphQL resolver" }), "backend")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Write a CLI tool in Golang" }), "backend")
+    })
+
+    it("classifies UI/frontend tasks as frontend", () => {
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Build a React component for the dashboard" }), "frontend")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Fix CSS layout issues on mobile" }), "frontend")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Add dark mode toggle to the UI" }), "frontend")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Create animation for the loading spinner" }), "frontend")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Implement a game sprite renderer" }), "frontend")
+    })
+
+    it("classifies debugging/architecture tasks as architecture", () => {
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Debug the memory leak in production" }), "architecture")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Refactor the authentication module" }), "architecture")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Investigate why the service is slow" }), "architecture")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Security audit of the payment system" }), "architecture")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Design pattern for event-driven architecture" }), "architecture")
+    })
+
+    it("defaults coding tasks without specific patterns to backend", () => {
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Implement the feature" }), "backend")
+    })
+
+    it("defaults non-coding tasks to default", () => {
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Update the README", taskType: "docs" }), "default")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Research best practices", taskType: "research" }), "default")
+    })
+
+    it("uses humanMessages for classification too", () => {
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Help me", humanMessages: ["Fix the React component layout"] }), "frontend")
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Help me", humanMessages: ["Debug the server crash"] }), "architecture")
+    })
+
+    it("frontend takes priority over backend keywords", () => {
+      // If both frontend and backend signals are present, frontend wins (checked first)
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Build a React component that calls the API endpoint" }), "frontend")
+    })
+
+    it("architecture takes priority over backend keywords", () => {
+      // If both architecture and backend signals are present, architecture wins
+      assert.strictEqual(classifyTaskForRouting({ ...baseContext, taskSummary: "Debug the API server memory leak" }), "architecture")
+    })
+  })
+
+  describe("parseRoutingFromYaml", () => {
+    it("parses a complete routing config", () => {
+      const yaml = `models:
+  - github-copilot/claude-opus-4.6
+
+routing:
+  enabled: true
+  models:
+    backend: github-copilot/gpt-5.2-codex
+    architecture: github-copilot/claude-opus-4.6
+    frontend: github-copilot/gemini-3-pro-preview
+    default: github-copilot/claude-opus-4.6
+`
+      const config = parseRoutingFromYaml(yaml)
+      assert.strictEqual(config.enabled, true)
+      assert.strictEqual(config.models.backend, "github-copilot/gpt-5.2-codex")
+      assert.strictEqual(config.models.architecture, "github-copilot/claude-opus-4.6")
+      assert.strictEqual(config.models.frontend, "github-copilot/gemini-3-pro-preview")
+      assert.strictEqual(config.models.default, "github-copilot/claude-opus-4.6")
+    })
+
+    it("defaults to disabled when routing section is missing", () => {
+      const yaml = `models:
+  - github-copilot/claude-opus-4.6
+`
+      const config = parseRoutingFromYaml(yaml)
+      assert.strictEqual(config.enabled, false)
+      assert.strictEqual(config.models.backend, "")
+      assert.strictEqual(config.models.frontend, "")
+    })
+
+    it("handles enabled: false", () => {
+      const yaml = `routing:
+  enabled: false
+  models:
+    backend: github-copilot/gpt-5.2-codex
+`
+      const config = parseRoutingFromYaml(yaml)
+      assert.strictEqual(config.enabled, false)
+      assert.strictEqual(config.models.backend, "github-copilot/gpt-5.2-codex")
+    })
+
+    it("handles partial model config", () => {
+      const yaml = `routing:
+  enabled: true
+  models:
+    backend: github-copilot/gpt-5.2-codex
+`
+      const config = parseRoutingFromYaml(yaml)
+      assert.strictEqual(config.enabled, true)
+      assert.strictEqual(config.models.backend, "github-copilot/gpt-5.2-codex")
+      assert.strictEqual(config.models.frontend, "")
+      assert.strictEqual(config.models.architecture, "")
+    })
+
+    it("strips quotes from model values", () => {
+      const yaml = `routing:
+  enabled: true
+  models:
+    backend: "github-copilot/gpt-5.2-codex"
+    frontend: 'github-copilot/gemini-3-pro-preview'
+`
+      const config = parseRoutingFromYaml(yaml)
+      assert.strictEqual(config.models.backend, "github-copilot/gpt-5.2-codex")
+      assert.strictEqual(config.models.frontend, "github-copilot/gemini-3-pro-preview")
+    })
+
+    it("ignores unknown routing model keys", () => {
+      const yaml = `routing:
+  enabled: true
+  models:
+    backend: github-copilot/gpt-5.2-codex
+    unknown_category: github-copilot/some-model
+`
+      const config = parseRoutingFromYaml(yaml)
+      assert.strictEqual(config.models.backend, "github-copilot/gpt-5.2-codex")
+      assert.strictEqual((config.models as any).unknown_category, undefined)
+    })
+  })
+
+  describe("getRoutingModel", () => {
+    const enabledConfig: RoutingConfig = {
+      enabled: true,
+      models: {
+        backend: "github-copilot/gpt-5.2-codex",
+        architecture: "github-copilot/claude-opus-4.6",
+        frontend: "github-copilot/gemini-3-pro-preview",
+        default: "github-copilot/claude-opus-4.6"
+      }
+    }
+
+    it("returns correct provider/model split for each category", () => {
+      const backend = getRoutingModel(enabledConfig, "backend")
+      assert.deepStrictEqual(backend, { providerID: "github-copilot", modelID: "gpt-5.2-codex" })
+
+      const arch = getRoutingModel(enabledConfig, "architecture")
+      assert.deepStrictEqual(arch, { providerID: "github-copilot", modelID: "claude-opus-4.6" })
+
+      const frontend = getRoutingModel(enabledConfig, "frontend")
+      assert.deepStrictEqual(frontend, { providerID: "github-copilot", modelID: "gemini-3-pro-preview" })
+    })
+
+    it("falls back to default model when category has empty string", () => {
+      const config: RoutingConfig = {
+        enabled: true,
+        models: { backend: "", architecture: "", frontend: "", default: "github-copilot/claude-opus-4.6" }
+      }
+      const result = getRoutingModel(config, "backend")
+      assert.deepStrictEqual(result, { providerID: "github-copilot", modelID: "claude-opus-4.6" })
+    })
+
+    it("returns null when routing is disabled", () => {
+      const config: RoutingConfig = {
+        enabled: false,
+        models: { backend: "github-copilot/gpt-5.2-codex", architecture: "", frontend: "", default: "" }
+      }
+      assert.strictEqual(getRoutingModel(config, "backend"), null)
+    })
+
+    it("returns null when no model is configured for category or default", () => {
+      const config: RoutingConfig = {
+        enabled: true,
+        models: { backend: "", architecture: "", frontend: "", default: "" }
+      }
+      assert.strictEqual(getRoutingModel(config, "backend"), null)
+    })
+
+    it("returns null for malformed model spec (no slash)", () => {
+      const config: RoutingConfig = {
+        enabled: true,
+        models: { backend: "just-a-name", architecture: "", frontend: "", default: "" }
+      }
+      assert.strictEqual(getRoutingModel(config, "backend"), null)
+    })
   })
 })

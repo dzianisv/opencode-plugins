@@ -282,3 +282,101 @@ export function evaluateSelfAssessment(assessment: SelfAssessment, context: Task
 
   return { complete, shouldContinue, reason, missing, nextActions, requiresHumanAction, severity }
 }
+
+export type RoutingCategory = "backend" | "architecture" | "frontend" | "default"
+
+export interface RoutingConfig {
+  enabled: boolean
+  models: Record<RoutingCategory, string>
+}
+
+export function classifyTaskForRouting(context: TaskContext): RoutingCategory {
+  const text = `${context.taskSummary} ${context.humanMessages.join(" ")}`.toLowerCase()
+
+  // Frontend/UI/UX patterns
+  if (/\b(frontend|front-end|ui\b|ux\b|css|scss|tailwind|styled|animation|responsive|layout|component|react|vue|svelte|angular|next\.?js|nuxt|gatsby|html|dom|canvas|webgl|game|sprite|pixel|render|visual|theme|dark\s*mode|light\s*mode|style|button|form|modal|dialog|tooltip|dropdown|menu|sidebar|navbar|header|footer|carousel|gallery|icon)\b/i.test(text)) {
+    return "frontend"
+  }
+
+  // Architecture/troubleshooting patterns
+  if (/\b(debug|troubleshoot|diagnose|investigate|why\s+is|root\s*cause|race\s*condition|deadlock|memory\s*leak|performance|profil|architect|design\s*pattern|refactor|restructure|reorganize|migrate|abstraction|interface\s+design|system\s*design|trade-?off|scaling|complexity|review|audit|security|vulnerability)\b/i.test(text)) {
+    return "architecture"
+  }
+
+  // Backend/systems patterns
+  if (/\b(backend|back-end|server|api|endpoint|rest|graphql|grpc|database|sql|postgres|mysql|mongo|redis|queue|worker|cron|microservice|docker|kubernetes|k8s|ci\/cd|pipeline|deploy|infra|aws|gcp|azure|cloud|terraform|ansible|helm|nginx|load\s*balanc|cache|auth|jwt|oauth|webhook|websocket|cli|terminal|shell|script|bash|node\.?js|python|golang|rust|java|c\+\+|systems?\s*program)/i.test(text)) {
+    return "backend"
+  }
+
+  // Coding tasks that don't match specific categories default to backend
+  if (context.taskType === "coding") {
+    return "backend"
+  }
+
+  return "default"
+}
+
+export function parseRoutingFromYaml(content: string): RoutingConfig {
+  const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
+    enabled: false,
+    models: { backend: "", architecture: "", frontend: "", default: "" }
+  }
+  const config: RoutingConfig = { ...DEFAULT_ROUTING_CONFIG, models: { ...DEFAULT_ROUTING_CONFIG.models } }
+  const lines = content.split(/\r?\n/)
+  let inRouting = false
+  let inRoutingModels = false
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith("#")) continue
+
+    if (/^routing\s*:/i.test(line)) {
+      inRouting = true
+      continue
+    }
+
+    if (inRouting) {
+      if (/^[a-zA-Z][\w-]*\s*:/.test(rawLine) && !rawLine.startsWith(" ") && !rawLine.startsWith("\t")) {
+        inRouting = false
+        inRoutingModels = false
+        continue
+      }
+
+      if (/^\s*enabled\s*:\s*(true|false)/i.test(rawLine)) {
+        config.enabled = /true/i.test(rawLine)
+        continue
+      }
+
+      if (/^\s*models\s*:/i.test(rawLine)) {
+        inRoutingModels = true
+        continue
+      }
+
+      if (inRoutingModels) {
+        if (/^\s{2,}[\w-]+\s*:/.test(rawLine) || /^\s+[\w-]+\s*:/.test(rawLine)) {
+          const match = rawLine.match(/^\s+([\w-]+)\s*:\s*(.*)/)
+          if (match) {
+            const key = match[1].toLowerCase() as RoutingCategory
+            const value = match[2].trim().replace(/^['"]|['"]$/g, "")
+            if (key === "backend" || key === "architecture" || key === "frontend" || key === "default") {
+              config.models[key] = value
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return config
+}
+
+export function getRoutingModel(config: RoutingConfig, category: RoutingCategory): { providerID: string; modelID: string } | null {
+  if (!config.enabled) return null
+  const modelSpec = config.models[category] || config.models["default"] || ""
+  if (!modelSpec) return null
+  const parts = modelSpec.split("/")
+  const providerID = parts[0] || ""
+  const modelID = parts.slice(1).join("/") || ""
+  if (!providerID || !modelID) return null
+  return { providerID, modelID }
+}
