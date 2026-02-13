@@ -1,0 +1,17 @@
+Evaluation tests for this repo
+
+How to run
+- Primary end-to-end eval: `npm run eval:e2e`
+- Promptfoo eval suite: `npm run eval`
+- Judge-only promptfoo suite: `npm run eval:judge`
+- Stuck detection suite: `npm run eval:stuck`
+- Compression suite: `npm run eval:compression`
+- Agent eval suite: `npm run eval:agent`
+
+Outputs
+- E2E report: `evals/results/eval-report-<date>-<time>-<commit>.md`
+- Promptfoo results: `evals/results/latest.json` and `evals/results/*-latest.json`
+
+Cleanup requirements
+- Running evals can create stray PRs from test-run tasks (e.g., hello.js). Close these PRs after evals complete.
+- Search for open PRs created during eval runs and close them with a short note.

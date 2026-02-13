@@ -290,31 +290,6 @@ export interface RoutingConfig {
   models: Record<RoutingCategory, string>
 }
 
-export function classifyTaskForRouting(context: TaskContext): RoutingCategory {
-  const text = `${context.taskSummary} ${context.humanMessages.join(" ")}`.toLowerCase()
-
-  // Frontend/UI/UX patterns
-  if (/\b(frontend|front-end|ui\b|ux\b|css|scss|tailwind|styled|animation|responsive|layout|component|react|vue|svelte|angular|next\.?js|nuxt|gatsby|html|dom|canvas|webgl|game|sprite|pixel|render|visual|theme|dark\s*mode|light\s*mode|style|button|form|modal|dialog|tooltip|dropdown|menu|sidebar|navbar|header|footer|carousel|gallery|icon)\b/i.test(text)) {
-    return "frontend"
-  }
-
-  // Architecture/troubleshooting patterns
-  if (/\b(debug|troubleshoot|diagnose|investigate|why\s+is|root\s*cause|race\s*condition|deadlock|memory\s*leak|performance|profil|architect|design\s*pattern|refactor|restructure|reorganize|migrate|abstraction|interface\s+design|system\s*design|trade-?off|scaling|complexity|review|audit|security|vulnerability)\b/i.test(text)) {
-    return "architecture"
-  }
-
-  // Backend/systems patterns
-  if (/\b(backend|back-end|server|api|endpoint|rest|graphql|grpc|database|sql|postgres|mysql|mongo|redis|queue|worker|cron|microservice|docker|kubernetes|k8s|ci\/cd|pipeline|deploy|infra|aws|gcp|azure|cloud|terraform|ansible|helm|nginx|load\s*balanc|cache|auth|jwt|oauth|webhook|websocket|cli|terminal|shell|script|bash|node\.?js|python|golang|rust|java|c\+\+|systems?\s*program)/i.test(text)) {
-    return "backend"
-  }
-
-  // Coding tasks that don't match specific categories default to backend
-  if (context.taskType === "coding") {
-    return "backend"
-  }
-
-  return "default"
-}
 
 export function parseRoutingFromYaml(content: string): RoutingConfig {
   const DEFAULT_ROUTING_CONFIG: RoutingConfig = {

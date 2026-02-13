@@ -114,7 +114,7 @@ routing:
 
 ### How It Works
 
-1. After reflection analysis determines the task is incomplete, the plugin classifies the task using heuristic keyword matching on the task summary and human messages.
+1. After reflection analysis determines the task is incomplete, the plugin classifies the task by running a lightweight LLM classifier over the task summary and recent user messages.
 2. The classification maps to one of four categories: `backend`, `architecture`, `frontend`, or `default`.
 3. If routing is enabled and a model is configured for the category, the feedback `promptAsync` call includes a `model` override to route the retry.
 4. If routing is disabled, the category model is empty, or no routing config exists, the session continues with its current model.
@@ -123,7 +123,7 @@ routing:
 ### Notes
 
 - Routing only applies to the **feedback injection** call (when the agent is pushed to continue). Self-assessment and judge calls are not routed.
-- Classification uses keyword matching (no additional LLM call), so it adds zero latency.
+- Classification uses an LLM classifier (no heuristic fallback).
 - Generic coding tasks without specific frontend/architecture signals default to `backend`.
 - Non-coding tasks (docs, research, ops) default to `default`.
 - Each model entry must be in `providerID/modelID` format (e.g., `github-copilot/gpt-5.2-codex`).
