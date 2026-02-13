@@ -43,30 +43,33 @@ This plugin adds a **judge layer** that automatically evaluates task completion 
 ## Quick Install
 
 ```bash
-# Install plugins
+curl -fsSL https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/install.sh | bash
+```
+
+This downloads all plugins to `~/.config/opencode/plugin/`, installs dependencies, and you're ready to go. Restart OpenCode to activate.
+
+**Prerequisites:** [bun](https://bun.sh) (install with `curl -fsSL https://bun.sh/install | bash`)
+
+<details>
+<summary>Manual install</summary>
+
+```bash
 mkdir -p ~/.config/opencode/plugin && \
-curl -fsSL -o ~/.config/opencode/plugin/reflection.ts \
+curl -fsSL -o ~/.config/opencode/plugin/reflection-3.ts \
   https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/reflection-3.ts && \
 curl -fsSL -o ~/.config/opencode/plugin/tts.ts \
   https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/tts.ts && \
 curl -fsSL -o ~/.config/opencode/plugin/telegram.ts \
   https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/telegram.ts && \
-curl -fsSL -o ~/.config/opencode/plugin/worktree-status.ts \
-  https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/worktree-status.ts
+curl -fsSL -o ~/.config/opencode/plugin/worktree.ts \
+  https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/worktree.ts
 
 # Install required dependencies
-cat > ~/.config/opencode/package.json << 'EOF'
-{
-  "dependencies": {
-    "@opencode-ai/plugin": "1.1.36",
-    "@supabase/supabase-js": "^2.49.0"
-  }
-}
-EOF
-cd ~/.config/opencode && bun install
+cd ~/.config/opencode && \
+  bun add @supabase/supabase-js@^2.49.0 && \
+  bun install
 ```
-
-Then restart OpenCode.
+</details>
 
 ---
 
