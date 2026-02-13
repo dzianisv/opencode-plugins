@@ -304,30 +304,72 @@ function parseRoutingFromYaml(content: string): RoutingConfig {
   return config
 }
 
-function classifyTaskForRouting(context: TaskContext): RoutingCategory {
-  const text = `${context.taskSummary} ${context.humanMessages.join(" ")}`.toLowerCase()
 
-  // Frontend/UI/UX patterns
-  if (/\b(frontend|front-end|ui\b|ux\b|css|scss|tailwind|styled|animation|responsive|layout|component|react|vue|svelte|angular|next\.?js|nuxt|gatsby|html|dom|canvas|webgl|game|sprite|pixel|render|visual|theme|dark\s*mode|light\s*mode|style|button|form|modal|dialog|tooltip|dropdown|menu|sidebar|navbar|header|footer|carousel|gallery|icon)\b/i.test(text)) {
-    return "frontend"
+function parseRoutingCategory(text: string | null | undefined): RoutingCategory | null {
+  if (typeof text !== "string") return null
+  const trimmed = text.trim()
+  if (!trimmed) return null
+  const jsonMatch = trimmed.match(/\{[\s\S]*\}/)
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]) as { category?: string }
+      const value = (parsed.category || "").toLowerCase()
+      if (value === "backend" || value === "architecture" || value === "frontend" || value === "default") {
+        return value
+      }
+    } catch {}
+  }
+  const word = trimmed.split(/\s+/)[0]?.toLowerCase()
+  if (word === "backend" || word === "architecture" || word === "frontend" || word === "default") {
+    return word
+  }
+  return null
+}
+
+async function classifyTaskForRoutingWithLLM(
+  client: any,
+  directory: string,
+  context: TaskContext,
+  judgeSessionIds: Set<string>
+): Promise<RoutingCategory | null> {
+  const modelList = await loadReflectionModelList()
+  const attempts = modelList.length ? modelList : [""]
+
+  const prompt = `CLASSIFY TASK ROUTING\n\nYou are classifying a task into one routing category.\n\nTask summary:\n${context.taskSummary}\n\nTask type: ${context.taskType}\n\nRecent user messages:\n${context.humanMessages.slice(0, 4).join("\n\n")}\n\nChoose exactly one category from: backend, architecture, frontend, default.\nReturn JSON only:\n{\n  "category": "backend|architecture|frontend|default"\n}`
+
+  for (const modelSpec of attempts) {
+    const { data: classifierSession } = await client.session.create({ query: { directory } })
+    if (!classifierSession?.id) return null
+    judgeSessionIds.add(classifierSession.id)
+
+    let response: string | null = null
+    try {
+      const modelParts = modelSpec ? modelSpec.split("/") : []
+      const providerID = modelParts[0] || ""
+      const modelID = modelParts.slice(1).join("/") || ""
+      const body: any = { parts: [{ type: "text", text: prompt }] }
+      if (providerID && modelID) body.model = { providerID, modelID }
+
+      await client.session.promptAsync({
+        path: { id: classifierSession.id },
+        body
+      })
+
+      response = await waitForResponse(client, classifierSession.id)
+    } catch {
+      continue
+    } finally {
+      try {
+        await client.session.delete({ path: { id: classifierSession.id }, query: { directory } })
+      } catch {}
+      judgeSessionIds.delete(classifierSession.id)
+    }
+
+    const category = parseRoutingCategory(response)
+    if (category) return category
   }
 
-  // Architecture/troubleshooting patterns
-  if (/\b(debug|troubleshoot|diagnose|investigate|why\s+is|root\s*cause|race\s*condition|deadlock|memory\s*leak|performance|profil|architect|design\s*pattern|refactor|restructure|reorganize|migrate|abstraction|interface\s+design|system\s*design|trade-?off|scaling|complexity|review|audit|security|vulnerability)\b/i.test(text)) {
-    return "architecture"
-  }
-
-  // Backend/systems patterns
-  if (/\b(backend|back-end|server|api|endpoint|rest|graphql|grpc|database|sql|postgres|mysql|mongo|redis|queue|worker|cron|microservice|docker|kubernetes|k8s|ci\/cd|pipeline|deploy|infra|aws|gcp|azure|cloud|terraform|ansible|helm|nginx|load\s*balanc|cache|auth|jwt|oauth|webhook|websocket|cli|terminal|shell|script|bash|node\.?js|python|golang|rust|java|c\+\+|systems?\s*program)/i.test(text)) {
-    return "backend"
-  }
-
-  // Coding tasks that don't match specific categories default to backend
-  if (context.taskType === "coding") {
-    return "backend"
-  }
-
-  return "default"
+  return null
 }
 
 async function loadRoutingConfig(): Promise<RoutingConfig> {
@@ -339,7 +381,8 @@ async function loadRoutingConfig(): Promise<RoutingConfig> {
   }
 }
 
-function getRoutingModel(config: RoutingConfig, category: RoutingCategory): { providerID: string; modelID: string } | null {
+function getRoutingModel(config: RoutingConfig, category: RoutingCategory | null): { providerID: string; modelID: string } | null {
+  if (!category) return null
   if (!config.enabled) return null
   const modelSpec = config.models[category] || config.models["default"] || ""
   if (!modelSpec) return null
@@ -991,7 +1034,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
 
         // Compute routing early so it can be included in saved data
         const routingConfig = await loadRoutingConfig()
-        const routingCategory = classifyTaskForRouting(context)
+        const routingCategory = await classifyTaskForRoutingWithLLM(client, directory, context, judgeSessionIds)
         const routingModel = getRoutingModel(routingConfig, routingCategory)
 
         await saveReflectionData(directory, sessionId, {
