@@ -16,6 +16,8 @@ import {
   isJudgeSession,
   isSessionComplete,
   findStaticReflectionPromptIndex,
+  findLastReflectionFeedbackIndex,
+  isSelfAssessmentJson,
   extractFinalResponse,
   formatNotificationText,
   validateNotificationConfig,
@@ -220,9 +222,9 @@ describe("telegram unit: session helpers", () => {
       userMsg("## Reflection-3: tests are missing"),
       assistantMsg("Added tests, all passing now"),
     ]
-    // The reflection marker is at index 2, so extractFinalResponse looks
-    // backwards from index 1 (cutoff - 1) and finds "API built".
-    assert.strictEqual(extractFinalResponse(msgs), "API built")
+    // After reflection feedback, the agent did more work. The LAST
+    // non-JSON assistant response after feedback is the real final answer.
+    assert.strictEqual(extractFinalResponse(msgs), "Added tests, all passing now")
   })
 
   it("extractFinalResponse: returns empty string for no assistant messages", () => {
@@ -264,6 +266,127 @@ describe("telegram unit: session helpers", () => {
       },
     ]
     assert.strictEqual(extractFinalResponse(msgs), "Part 1\nPart 2")
+  })
+
+  // -- isSelfAssessmentJson ---------------------------------------------------
+
+  it("isSelfAssessmentJson: detects typical self-assessment JSON", () => {
+    assert.strictEqual(
+      isSelfAssessmentJson('{"status":"complete","confidence":0.9,"evidence":{}}'),
+      true
+    )
+  })
+
+  it("isSelfAssessmentJson: detects JSON with prose wrapper", () => {
+    const text = 'Here is my assessment:\n{"status":"complete","confidence":0.95,"task_summary":"fixed bug"}'
+    assert.strictEqual(isSelfAssessmentJson(text), true)
+  })
+
+  it("isSelfAssessmentJson: rejects normal assistant text", () => {
+    assert.strictEqual(isSelfAssessmentJson("I've implemented the feature successfully"), false)
+  })
+
+  it("isSelfAssessmentJson: rejects empty string", () => {
+    assert.strictEqual(isSelfAssessmentJson(""), false)
+  })
+
+  it("isSelfAssessmentJson: rejects JSON without status field", () => {
+    assert.strictEqual(isSelfAssessmentJson('{"name":"test","value":123}'), false)
+  })
+
+  it("isSelfAssessmentJson: rejects JSON with status but no assessment fields", () => {
+    assert.strictEqual(isSelfAssessmentJson('{"status":"ok"}'), false)
+  })
+
+  // -- findLastReflectionFeedbackIndex ----------------------------------------
+
+  it("findLastReflectionFeedbackIndex: returns -1 when no feedback", () => {
+    const msgs = [userMsg("Hi"), assistantMsg("Hello")]
+    assert.strictEqual(findLastReflectionFeedbackIndex(msgs), -1)
+  })
+
+  it("findLastReflectionFeedbackIndex: finds last feedback marker", () => {
+    const msgs = [
+      userMsg("Build API"),
+      assistantMsg("API built"),
+      userMsg("## Reflection-3 Self-Assessment\nEvaluate"),
+      assistantMsg('{"status":"incomplete"}'),
+      userMsg("## Reflection-3: tests missing"),
+      assistantMsg("Added tests"),
+      userMsg("## Reflection-3 Self-Assessment\nEvaluate again"),
+      assistantMsg('{"status":"incomplete","confidence":0.5}'),
+      userMsg("## Reflection-3: CI not checked"),
+      assistantMsg("Checked CI, all green"),
+    ]
+    assert.strictEqual(findLastReflectionFeedbackIndex(msgs), 8)
+  })
+
+  // -- extractFinalResponse (advanced scenarios) ------------------------------
+
+  it("extractFinalResponse: skips self-assessment JSON after feedback", () => {
+    const msgs = [
+      userMsg("Build API"),
+      assistantMsg("API built"),
+      userMsg("## Reflection-3 Self-Assessment\nEvaluate"),
+      assistantMsg('{"status":"incomplete","confidence":0.3}'),
+      userMsg("## Reflection-3: tests missing"),
+      assistantMsg("Added tests, all passing"),
+      userMsg("## Reflection-3 Self-Assessment\nRe-evaluate"),
+      assistantMsg('{"status":"complete","confidence":0.95}'),
+    ]
+    // After second self-assessment, the last non-JSON response is "Added tests, all passing"
+    assert.strictEqual(extractFinalResponse(msgs), "Added tests, all passing")
+  })
+
+  it("extractFinalResponse: multiple feedback rounds returns latest real response", () => {
+    const msgs = [
+      userMsg("Fix bug"),
+      assistantMsg("Bug fixed"),
+      userMsg("## Reflection-3 Self-Assessment\nEvaluate"),
+      assistantMsg('{"status":"incomplete"}'),
+      userMsg("## Reflection-3: no tests"),
+      assistantMsg("Added unit tests"),
+      userMsg("## Reflection-3 Self-Assessment\nEvaluate"),
+      assistantMsg('{"status":"incomplete","confidence":0.5}'),
+      userMsg("## Reflection-3: CI not verified"),
+      assistantMsg("Verified CI, all checks pass"),
+    ]
+    assert.strictEqual(extractFinalResponse(msgs), "Verified CI, all checks pass")
+  })
+
+  it("extractFinalResponse: self-assessment only (no feedback) falls back to pre-reflection", () => {
+    const msgs = [
+      userMsg("Implement feature"),
+      assistantMsg("Feature done"),
+      userMsg("## Reflection-3 Self-Assessment\nEvaluate"),
+      assistantMsg('{"status":"complete","confidence":0.95}'),
+    ]
+    // No feedback marker, so fall back to pre-reflection response
+    assert.strictEqual(extractFinalResponse(msgs), "Feature done")
+  })
+
+  it("extractFinalResponse: only self-assessment JSON after feedback falls back to pre-reflection", () => {
+    const msgs = [
+      userMsg("Fix it"),
+      assistantMsg("Fixed"),
+      userMsg("## Reflection-3 Self-Assessment\nEvaluate"),
+      assistantMsg('{"status":"incomplete","confidence":0.3}'),
+      userMsg("## Reflection-3: needs more work"),
+      // Agent's response is ALSO just JSON (edge case)
+      assistantMsg('{"status":"complete","confidence":0.9,"evidence":{}}'),
+    ]
+    // All assistant responses after feedback are JSON → fall back to "Fixed"
+    assert.strictEqual(extractFinalResponse(msgs), "Fixed")
+  })
+
+  it("extractFinalResponse: LLM wraps JSON in prose — still filters it", () => {
+    const msgs = [
+      userMsg("Deploy"),
+      assistantMsg("Deployed successfully"),
+      userMsg("## Reflection-3 Self-Assessment\nEvaluate"),
+      assistantMsg('Here is my self-assessment:\n\n{"status":"complete","confidence":0.9,"task_summary":"deployed"}'),
+    ]
+    assert.strictEqual(extractFinalResponse(msgs), "Deployed successfully")
   })
 })
 
