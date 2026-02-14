@@ -835,21 +835,97 @@ function findStaticReflectionPromptIndex(messages: any[]): number {
   return -1
 }
 
-function extractFinalResponse(messages: any[]): string {
-  const cutoffIndex = findStaticReflectionPromptIndex(messages)
-  const startIndex = cutoffIndex > -1 ? cutoffIndex - 1 : messages.length - 1
+/**
+ * Returns true if the text looks like a reflection self-assessment JSON
+ * response (e.g. '{"status":"complete","confidence":0.9,...}').
+ * These are internal reflection artifacts and should never appear in
+ * Telegram notifications.
+ */
+function isSelfAssessmentJson(text: string): boolean {
+  if (!text) return false
+  // Try to find a JSON object in the text
+  const jsonMatch = text.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) return false
+  try {
+    const parsed = JSON.parse(jsonMatch[0])
+    // Self-assessment JSON always has "status" and typically "confidence" or "evidence"
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof parsed.status === "string" &&
+      ("confidence" in parsed || "evidence" in parsed || "task_summary" in parsed)
+    )
+  } catch {
+    return false
+  }
+}
 
-  for (let i = startIndex; i >= 0; i--) {
+/**
+ * Find the index of the LAST reflection feedback marker (## Reflection-3:).
+ * This is where reflection gave actionable feedback and the agent may have
+ * done more work after it.
+ */
+function findLastReflectionFeedbackIndex(messages: any[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.info?.role !== "user") continue
+    for (const part of msg.parts || []) {
+      if (
+        part.type === "text" &&
+        part.text?.includes(REFLECTION_FEEDBACK_MARKER)
+      ) {
+        return i
+      }
+    }
+  }
+  return -1
+}
+
+function extractFinalResponse(messages: any[]): string {
+  const firstReflectionIndex = findStaticReflectionPromptIndex(messages)
+
+  // No reflection ran — return the last non-empty assistant message
+  if (firstReflectionIndex === -1) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
+      if (msg.info?.role !== "assistant") continue
+      const text = extractAssistantText(msg)
+      if (text) return text
+    }
+    return ""
+  }
+
+  // Reflection ran. Check if there was feedback (INCOMPLETE → agent did more work).
+  const lastFeedbackIndex = findLastReflectionFeedbackIndex(messages)
+  if (lastFeedbackIndex > -1) {
+    // Look for a non-JSON assistant response AFTER the last feedback.
+    // This is the agent's response after fixing issues flagged by reflection.
+    for (let i = messages.length - 1; i > lastFeedbackIndex; i--) {
+      const msg = messages[i]
+      if (msg.info?.role !== "assistant") continue
+      const text = extractAssistantText(msg)
+      if (text && !isSelfAssessmentJson(text)) return text
+    }
+  }
+
+  // Fall back to the assistant message just before the first reflection marker.
+  // This is the original agent response before reflection started.
+  for (let i = firstReflectionIndex - 1; i >= 0; i--) {
     const msg = messages[i]
     if (msg.info?.role !== "assistant") continue
-    const textParts = (msg.parts || [])
-      .filter((p: any) => p.type === "text")
-      .map((p: any) => p.text || "")
-    const text = textParts.join("\n").trim()
+    const text = extractAssistantText(msg)
     if (text) return text
   }
 
   return ""
+}
+
+/** Extract joined text from an assistant message, trimmed. */
+function extractAssistantText(msg: any): string {
+  const textParts = (msg.parts || [])
+    .filter((p: any) => p.type === "text")
+    .map((p: any) => p.text || "")
+  return textParts.join("\n").trim()
 }
 
 // ==================== PLUGIN ====================
