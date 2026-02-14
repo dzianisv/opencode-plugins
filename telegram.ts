@@ -953,6 +953,45 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
   if (!client) {
     return {}
   }
+
+  // Create a safe session proxy that catches NotFoundError on every call.
+  // The OpenCode SDK can internally create promise chains that reject with
+  // NotFoundError when a session is deleted between calls (TOCTOU race).
+  // Bun surfaces these as unhandled promise rejections that corrupt the TUI.
+  // This proxy catches them at the source before they become unhandled.
+  const safeSession = new Proxy(client.session, {
+    get(target: any, prop: string | symbol) {
+      const original = target[prop]
+      if (typeof original !== "function") return original
+      return (...args: any[]) => {
+        try {
+          const result = original.apply(target, args)
+          // If it returns a promise (thenable), catch NotFoundError
+          if (result && typeof result.then === "function") {
+            return result.catch((err: any) => {
+              if (err?.constructor?.name === "NotFoundError" ||
+                  err?.name === "NotFoundError" ||
+                  (err?.message && String(err.message).includes("NotFoundError"))) {
+                // Silently swallow — session was deleted (race condition)
+                return { data: undefined, error: err }
+              }
+              throw err // Re-throw non-NotFoundError errors
+            })
+          }
+          return result
+        } catch (err: any) {
+          if (err?.constructor?.name === "NotFoundError" ||
+              err?.name === "NotFoundError" ||
+              (err?.message && String(err.message).includes("NotFoundError"))) {
+            return { data: undefined, error: err }
+          }
+          throw err
+        }
+      }
+    }
+  })
+  // Replace client.session usage with safeSession throughout this plugin
+  const safeClient = { ...client, session: safeSession }
   
   // Initialize Supabase client for reply subscription
   async function initSupabase(config: TelegramConfig): Promise<any> {
@@ -1032,9 +1071,8 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
 
           try {
             // Verify session still exists before injecting reply
-            try {
-              await client.session.get({ path: { id: targetSessionId } })
-            } catch {
+            const sessionCheck = await safeClient.session.get({ path: { id: targetSessionId } })
+            if (!sessionCheck?.data) {
               await debug(`Session ${targetSessionId} no longer exists, skipping reply`)
               // Mark as processed so it doesn't retry via polling
               await supabase.rpc('mark_reply_processed', { reply_id: reply.id })
@@ -1042,7 +1080,7 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
             }
 
             const prefix = reply.is_voice ? '[User via Telegram Voice]' : '[User via Telegram]'
-            await client.session.promptAsync({
+            await safeClient.session.promptAsync({
               path: { id: targetSessionId },
               body: { parts: [{ type: "text", text: `${prefix} ${replyText}` }] }
             })
@@ -1098,9 +1136,8 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
 
         try {
           // Verify session still exists before injecting reply
-          try {
-            await client.session.get({ path: { id: reply.session_id } })
-          } catch {
+          const sessionCheck = await safeClient.session.get({ path: { id: reply.session_id } })
+          if (!sessionCheck?.data) {
             // Session was deleted — mark reply as processed to prevent infinite retries
             await debug(`Session ${reply.session_id} no longer exists, marking reply ${reply.id} as processed`)
             await supabase.rpc('mark_reply_processed', { reply_id: reply.id })
@@ -1108,7 +1145,7 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
           }
 
           const prefix = reply.is_voice ? '[User via Telegram Voice]' : '[User via Telegram]'
-          await client.session.promptAsync({
+          await safeClient.session.promptAsync({
             path: { id: reply.session_id },
             body: { parts: [{ type: "text", text: `${prefix} ${reply.reply_text}` }] }
           })
@@ -1175,11 +1212,9 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
           // Check for subagent
           // Guard against deleted sessions (e.g., reflection judge sessions that were
           // created and deleted before we could process the idle event)
-          let sessionInfo: any
-          try {
-            const { data } = await client.session.get({ path: { id: sessionId } })
-            sessionInfo = data
-          } catch (e: any) {
+          const sessionResult = await safeClient.session.get({ path: { id: sessionId } })
+          const sessionInfo = sessionResult?.data
+          if (!sessionInfo) {
             // Session was deleted (race with reflection cleanup) — silently skip
             await debug(`Session not found (likely deleted), skipping`)
             return
@@ -1191,14 +1226,8 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
 
           const sessionDirectory = sessionInfo?.directory || directory
 
-          let messages: any[] | undefined
-          try {
-            const { data } = await client.session.messages({ path: { id: sessionId } })
-            messages = data
-          } catch (e: any) {
-            await debug(`Failed to get messages (session may have been deleted), skipping`)
-            return
-          }
+          const messagesResult = await safeClient.session.messages({ path: { id: sessionId } })
+          const messages = messagesResult?.data
           if (!messages || messages.length < 2) return
 
           if (isJudgeSession(messages)) {
