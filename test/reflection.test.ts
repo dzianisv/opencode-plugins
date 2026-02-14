@@ -65,6 +65,63 @@ describe("Reflection Plugin - Unit Tests", () => {
     assert.strictEqual(wasAborted, false, "Should not flag normal session as aborted")
   })
 
+  // Issue #82: Detect aborted sessions via missing time.completed
+  // When user presses ESC, the last assistant message won't have time.completed set.
+  // This catches aborts even when session.idle fires before session.error (race condition).
+  it("detects aborted sessions via missing time.completed (Issue #82)", () => {
+    const messages: any[] = [
+      { info: { role: "user" }, parts: [{ type: "text", text: "Do something" }] },
+      {
+        info: {
+          role: "assistant",
+          time: { start: Date.now() }  // No 'completed' field — interrupted
+        },
+        parts: [{ type: "text", text: "I'll start..." }]
+      }
+    ]
+
+    const lastAssistant = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
+    const isCompleted = !!(lastAssistant?.info?.time as any)?.completed
+    assert.strictEqual(isCompleted, false, "Should detect incomplete session (no time.completed)")
+  })
+
+  it("does not flag completed sessions as aborted via time.completed (Issue #82)", () => {
+    const messages: any[] = [
+      { info: { role: "user" }, parts: [{ type: "text", text: "Do something" }] },
+      {
+        info: {
+          role: "assistant",
+          time: { start: Date.now(), completed: Date.now() + 5000 }
+        },
+        parts: [{ type: "text", text: "Done!" }]
+      }
+    ]
+
+    const lastAssistant = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
+    const isCompleted = !!(lastAssistant?.info?.time as any)?.completed
+    assert.strictEqual(isCompleted, true, "Should recognize completed session (has time.completed)")
+  })
+
+  it("detects aborted sessions even without error field when time.completed is missing (Issue #82)", () => {
+    const messages: any[] = [
+      { info: { role: "user" }, parts: [{ type: "text", text: "Fix the bug" }] },
+      {
+        info: {
+          role: "assistant",
+          time: { start: Date.now() }
+          // No error field, no completed field — ESC pressed but error not yet recorded
+        },
+        parts: [{ type: "text", text: "Let me look at the code..." }]
+      }
+    ]
+
+    const lastAssistant = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
+    const hasTimeCompleted = !!(lastAssistant?.info?.time as any)?.completed
+    const hasAbortError = lastAssistant?.info?.error?.name === "MessageAbortedError"
+    const wasAborted = !hasTimeCompleted || hasAbortError
+    assert.strictEqual(wasAborted, true, "Should detect abort via missing time.completed even without error field")
+  })
+
   it("parses enhanced JSON verdict correctly", () => {
     const judgeResponse = `{
       "complete": false,
