@@ -18,9 +18,10 @@
     "test:reflection-3": "node --import tsx --test test/reflection-static.eval.test.ts",
     "test:install": "jest test/install.test.ts --testTimeout=120000",
     "typecheck": "npx tsc --noEmit",
-    "install:telegram": "mkdir -p ~/.config/opencode/plugin && cp telegram.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
-    "install:tts": "mkdir -p ~/.config/opencode/plugin && cp tts.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && (cd ~/.config/opencode && bun install) && bash scripts/setup-coqui.sh",
-    "install:reflection-3": "mkdir -p ~/.config/opencode/plugin && cp reflection-3.ts ~/.config/opencode/plugin/reflection.ts && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
+    "install:telegram": "mkdir -p ~/.config/opencode/plugin && cp telegram.ts sentry.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
+    "install:tts": "mkdir -p ~/.config/opencode/plugin && cp tts.ts sentry.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && (cd ~/.config/opencode && bun install) && bash scripts/setup-coqui.sh",
+    "install:reflection-3": "mkdir -p ~/.config/opencode/plugin && cp reflection-3.ts ~/.config/opencode/plugin/reflection.ts && cp sentry.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
+    "install:sentry": "mkdir -p ~/.config/opencode/plugin && cp sentry.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
     "eval": "cd evals && npx promptfoo eval",
     "eval:judge": "cd evals && npx promptfoo eval -c promptfooconfig.yaml",
     "eval:stuck": "cd evals && npx promptfoo eval -c stuck-detection.yaml",
@@ -39,6 +40,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@sentry/node": "^9.0.0",
     "@supabase/supabase-js": "^2.49.0"
   },
   "devDependencies": {

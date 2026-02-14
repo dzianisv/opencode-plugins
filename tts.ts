@@ -29,6 +29,15 @@ import { join } from "path"
 import { homedir, tmpdir, platform } from "os"
 import * as net from "net"
 
+// Lazy Sentry helper — reports errors without crashing if @sentry/node is unavailable
+async function reportError(err: unknown, context?: Record<string, string>): Promise<void> {
+  try {
+    const Sentry = await import("@sentry/node")
+    if (!Sentry.isInitialized()) return
+    Sentry.captureException(err, context ? { tags: context } : undefined)
+  } catch {}
+}
+
 const execAsync = promisify(exec)
 
 // Maximum characters to read (to avoid very long speeches)
@@ -672,7 +681,8 @@ async function setupChatterbox(): Promise<boolean> {
     await ensureChatterboxScript()
     chatterboxInstalled = true
     return true
-  } catch {
+  } catch (e: any) {
+    reportError(e, { plugin: "tts", op: "chatterbox-setup" })
     chatterboxInstalled = false
     return false
   }
@@ -1138,6 +1148,7 @@ async function setupCoqui(): Promise<boolean> {
     return true
   } catch (e: any) {
     console.error(`[TTS] Coqui setup failed: ${e.message || e}. Run: npm run install:tts`)
+    reportError(e, { plugin: "tts", op: "coqui-setup" })
     coquiInstalled = false
     return false
   }
@@ -2155,6 +2166,7 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
           }
         } catch (e: any) {
           await debugLog(`Error: ${e?.message || e}`)
+          reportError(e, { plugin: "tts", op: "session-idle" })
         } finally {
           // Remove from set if we didn't actually speak (allow re-processing later)
           if (!shouldKeepInSet) {
