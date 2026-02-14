@@ -2084,8 +2084,9 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
               await debugLog(`Session directory: ${sessionDirectory}`)
             }
           } catch (e: any) {
-            // If we can't get session info, continue anyway
-            await debugLog(`Could not get session info: ${e?.message || e}`)
+            // Session was deleted (e.g., reflection judge session cleanup race) — skip silently
+            await debugLog(`Session not found (likely deleted), skipping: ${e?.message || e}`)
+            return
           }
           
           const { data: messages } = await client.session.messages({ path: { id: sessionId } })
