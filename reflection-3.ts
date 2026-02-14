@@ -10,6 +10,16 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { readFile, writeFile, mkdir, stat } from "fs/promises"
 import { join } from "path"
 import { homedir } from "os"
+
+// Lazy Sentry helper — reports errors without crashing if @sentry/node is unavailable
+async function reportError(err: unknown, context?: Record<string, string>): Promise<void> {
+  try {
+    const Sentry = await import("@sentry/node")
+    if (!Sentry.isInitialized()) return
+    Sentry.captureException(err, context ? { tags: context } : undefined)
+  } catch {}
+}
+
 const SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
 const FEEDBACK_MARKER = "## Reflection-3:"
 
@@ -356,7 +366,8 @@ async function classifyTaskForRoutingWithLLM(
       })
 
       response = await waitForResponse(client, classifierSession.id)
-    } catch {
+    } catch (e) {
+      reportError(e, { plugin: "reflection-3", op: "routing-classifier" })
       continue
     } finally {
       try {
@@ -426,6 +437,7 @@ async function writeVerdictSignal(directory: string, sessionId: string, complete
     debug("Wrote verdict signal:", signalPath)
   } catch (e) {
     debug("Failed to write verdict signal:", String(e))
+    reportError(e, { plugin: "reflection-3", op: "write-verdict-signal" })
   }
 }
 
@@ -708,7 +720,8 @@ function parseSelfAssessmentJson(text: string | null | undefined): SelfAssessmen
   if (!jsonMatch) return null
   try {
     return JSON.parse(jsonMatch[0]) as SelfAssessment
-  } catch {
+  } catch (e) {
+    reportError(e, { plugin: "reflection-3", op: "parse-self-assessment" })
     return null
   }
 }
@@ -941,7 +954,8 @@ Return JSON only:
         requiresHumanAction: !!verdict.requires_human_action,
         severity: verdict.severity || "MEDIUM"
       }
-    } catch {
+    } catch (e) {
+      reportError(e, { plugin: "reflection-3", op: "judge-session" })
       continue
     } finally {
       try {
@@ -1005,6 +1019,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           })
         } catch (e: any) {
           debug("promptAsync failed (self-assessment):", e?.message || e)
+          reportError(e, { plugin: "reflection-3", op: "prompt-self-assessment" })
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           return
         }
@@ -1112,6 +1127,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           })
         } catch (e: any) {
           debug("promptAsync failed (feedback):", e?.message || e)
+          reportError(e, { plugin: "reflection-3", op: "prompt-feedback" })
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           return
         }
@@ -1160,6 +1176,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           await runReflection(sessionId)
         } catch (e: any) {
           debug("runReflection error:", e?.message || e)
+          reportError(e, { plugin: "reflection-3", op: "run-reflection" })
         }
       }
     }

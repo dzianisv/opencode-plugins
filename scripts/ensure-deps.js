@@ -13,7 +13,8 @@ const PACKAGE_JSON_PATH = join(CONFIG_DIR, 'package.json');
 
 // Dependencies required by our plugins
 const REQUIRED_DEPS = {
-  '@supabase/supabase-js': '^2.49.0'
+  '@supabase/supabase-js': '^2.49.0',
+  '@sentry/node': '^9.0.0'
 };
 
 // Minimum stable version for @opencode-ai/plugin
