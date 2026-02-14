@@ -103,7 +103,7 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
   let providerModelsCache: { modelsByProvider: Map<string, Set<string>>; timestamp: number } | null = null
   const PROVIDER_MODELS_CACHE_TTL = 120_000
   
-  // Known fast models per provider (prioritized for quick evaluations)
+  // Known fast models per provider (prioritized for quick evaluations like stuck detection)
   const FAST_MODELS: Record<string, string[]> = {
     "anthropic": ["claude-3-5-haiku-20241022", "claude-3-haiku-20240307", "claude-haiku-4", "claude-haiku-4.5"],
     "openai": ["gpt-4o-mini", "gpt-3.5-turbo"],
@@ -114,11 +114,84 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
     "groq": ["llama-3.1-8b-instant", "mixtral-8x7b-32768"],
   }
 
+  // Capable models per provider for judge evaluation (NOT Haiku/mini - they cause loops)
+  // Judge needs a model smart enough to evaluate task completion accurately.
+  // Haiku-class models produce poor verdicts that create infinite feedback loops (Issue #81).
+  const JUDGE_MODELS: Record<string, string[]> = {
+    "anthropic": ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
+    "openai": ["gpt-4o", "gpt-4-turbo", "gpt-4"],
+    "google": ["gemini-1.5-pro", "gemini-2.0-pro", "gemini-pro", "gemini-3-pro-preview"],
+    "github-copilot": ["claude-sonnet-4.5", "claude-sonnet-4", "claude-3.5-sonnet", "gpt-4o", "gemini-3-pro-preview"],
+    "azure": ["gpt-4o", "gpt-4-turbo", "gpt-4"],
+    "bedrock": ["anthropic.claude-3-5-sonnet-20241022-v2:0", "anthropic.claude-3-sonnet-20240229-v1:0"],
+    "groq": ["llama-3.1-70b-versatile", "llama-3.3-70b-versatile"],
+  }
+
+  // Models that should NEVER be used for judge evaluation (Issue #81)
+  // These models are too weak to produce accurate task completion verdicts
+  // and create infinite feedback loops with poor quality evaluations.
+  const JUDGE_BLOCKED_MODELS = new Set([
+    // Haiku variants (all providers)
+    "claude-3-5-haiku-20241022", "claude-3-haiku-20240307",
+    "claude-haiku-4", "claude-haiku-4.5",
+    // Mini/nano variants
+    "gpt-4o-mini", "gpt-3.5-turbo", "gpt-35-turbo",
+    "gemini-1.5-flash", "gemini-2.0-flash", "gemini-flash",
+    // Small/fast variants from other providers
+    "llama-3.1-8b-instant", "mixtral-8x7b-32768",
+    "anthropic.claude-3-haiku-20240307-v1:0",
+  ])
+
+  // Cache for judge model selection
+  let judgeModelCache: { providerID: string; modelID: string } | null = null
+  let judgeModelCacheTime = 0
+  const JUDGE_MODEL_CACHE_TTL = 300_000 // 5 minutes
+
+  /**
+   * Load judge model from reflection config file.
+   * Supports reflection.json with a "judgeModel" field like "provider/model".
+   * Config locations (priority order):
+   *   1. <project>/.opencode/reflection.json
+   *   2. ~/.config/opencode/reflection.json
+   *   3. Built-in defaults (JUDGE_MODELS list)
+   */
+  async function loadJudgeModelFromConfig(): Promise<{ providerID: string; modelID: string } | null> {
+    const configPaths = [
+      join(directory, ".opencode", "reflection.json"),
+      join(process.env.HOME || "", ".config", "opencode", "reflection.json"),
+    ]
+    
+    for (const configPath of configPaths) {
+      try {
+        const content = await readFile(configPath, "utf-8")
+        const config = JSON.parse(content)
+        
+        // Support "judgeModel": "provider/model" format
+        const judgeModel = config.judgeModel || config.model
+        if (judgeModel && typeof judgeModel === "string" && judgeModel.includes("/")) {
+          const parts = judgeModel.split("/")
+          const providerID = parts[0]
+          const modelID = parts.slice(1).join("/")
+          if (providerID && modelID) {
+            debug("Loaded judge model from config:", configPath, `${providerID}/${modelID}`)
+            return { providerID, modelID }
+          }
+        }
+      } catch {
+        // Config file doesn't exist or invalid, try next
+      }
+    }
+    return null
+  }
+
   
   /**
-   * Get a fast model for quick evaluations.
+   * Get a fast model for quick evaluations (stuck detection, task classification).
    * Uses config.providers() to find available providers and selects a fast model.
    * Falls back to the default model if no fast model is found.
+   * 
+   * NOTE: These models are intentionally cheap/fast (Haiku, gpt-4o-mini, etc.)
+   * and should NOT be used for judge evaluation. Use getJudgeModel() for that.
    */
   async function getFastModel(): Promise<{ providerID: string; modelID: string } | null> {
     // Return cached result if valid
@@ -180,6 +253,94 @@ export const ReflectionPlugin: Plugin = async ({ client, directory }) => {
       return null
     } catch (e) {
       debug("Error getting fast model:", e)
+      return null
+    }
+  }
+
+  /**
+   * Get a capable model for judge evaluation.
+   * 
+   * Unlike getFastModel(), this explicitly avoids weak models (Haiku, gpt-4o-mini, etc.)
+   * that produce poor quality verdicts and cause infinite feedback loops (Issue #81).
+   * 
+   * Selection priority:
+   *   1. Config-specified model (reflection.json: judgeModel or model)
+   *   2. First available JUDGE_MODELS model from providers
+   *   3. Any available model that's NOT in JUDGE_BLOCKED_MODELS
+   *   4. null (caller should skip judge evaluation rather than use a bad model)
+   */
+  async function getJudgeModel(): Promise<{ providerID: string; modelID: string } | null> {
+    // Return cached result if valid
+    if (judgeModelCache && Date.now() - judgeModelCacheTime < JUDGE_MODEL_CACHE_TTL) {
+      return judgeModelCache
+    }
+    
+    try {
+      // 1. Check config file for explicit judge model
+      const configModel = await loadJudgeModelFromConfig()
+      if (configModel) {
+        judgeModelCache = configModel
+        judgeModelCacheTime = Date.now()
+        return judgeModelCache
+      }
+      
+      // 2. Find capable model from provider list
+      const { data } = await client.config.providers({})
+      if (!data) return null
+      
+      const { providers } = data
+      
+      // First pass: find a preferred judge model
+      for (const provider of providers || []) {
+        const providerID = provider.id
+        if (!providerID) continue
+        
+        const judgeModelsForProvider = JUDGE_MODELS[providerID] || []
+        const modelsData = provider.models
+        const availableModels: string[] = modelsData 
+          ? (Array.isArray(modelsData) 
+              ? modelsData.map((m: any) => m.id || m) 
+              : Object.keys(modelsData))
+          : []
+        
+        for (const judgeModel of judgeModelsForProvider) {
+          if (availableModels.includes(judgeModel)) {
+            judgeModelCache = { providerID, modelID: judgeModel }
+            judgeModelCacheTime = Date.now()
+            debug("Selected judge model:", judgeModelCache)
+            return judgeModelCache
+          }
+        }
+      }
+      
+      // 3. Fallback: any available model that's NOT blocked
+      for (const provider of providers || []) {
+        const providerID = provider.id
+        if (!providerID) continue
+        
+        const modelsData = provider.models
+        const availableModels: string[] = modelsData 
+          ? (Array.isArray(modelsData) 
+              ? modelsData.map((m: any) => m.id || m) 
+              : Object.keys(modelsData))
+          : []
+        
+        for (const modelID of availableModels) {
+          if (!JUDGE_BLOCKED_MODELS.has(modelID)) {
+            judgeModelCache = { providerID, modelID }
+            judgeModelCacheTime = Date.now()
+            debug("Selected non-blocked fallback judge model:", judgeModelCache)
+            return judgeModelCache
+          }
+        }
+      }
+      
+      // 4. No capable model found - return null to skip judge evaluation
+      debug("WARNING: No capable judge model found. All available models are blocked (too weak).")
+      debug("Configure a capable model in reflection.json: { \"judgeModel\": \"provider/model\" }")
+      return null
+    } catch (e) {
+      debug("Error getting judge model:", e)
       return null
     }
   }
@@ -1196,6 +1357,16 @@ Guidelines for nudgeMessage:
       }
       debug("extracted task length:", extracted.task.length, "result length:", extracted.result.length)
 
+      // Select a capable model for judge evaluation (Issue #81: avoid Haiku/mini)
+      const judgeModel = await getJudgeModel()
+      if (!judgeModel) {
+        debug("SKIP: no capable judge model available - all models blocked as too weak")
+        debug("Configure a model in reflection.json: { \"judgeModel\": \"provider/model\" }")
+        await showToast("No capable judge model available. Configure judgeModel in reflection.json.", "warning")
+        return
+      }
+      debug("Using judge model:", `${judgeModel.providerID}/${judgeModel.modelID}`)
+
       // Create judge session and evaluate
       const { data: judgeSession } = await client.session.create({
         query: { directory }
@@ -1361,9 +1532,12 @@ Reply with JSON only (no other text):
 
         await client.session.promptAsync({
           path: { id: judgeSession.id },
-          body: { parts: [{ type: "text", text: prompt }] }
+          body: {
+            model: { providerID: judgeModel.providerID, modelID: judgeModel.modelID },
+            parts: [{ type: "text", text: prompt }]
+          }
         })
-        debug("judge prompt sent, waiting for response...")
+        debug("judge prompt sent with model", `${judgeModel.providerID}/${judgeModel.modelID}`, ", waiting for response...")
 
         const response = await waitForResponse(judgeSession.id)
         

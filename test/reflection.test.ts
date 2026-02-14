@@ -741,6 +741,200 @@ describe("Reflection Plugin - Unit Tests", () => {
         assert.strictEqual(hasCachedModelNow, true, "Should use cached model")
       })
     })
+
+    describe("JUDGE_MODELS priority list (Issue #81)", () => {
+      const JUDGE_MODELS: Record<string, string[]> = {
+        "anthropic": ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
+        "openai": ["gpt-4o", "gpt-4-turbo", "gpt-4"],
+        "google": ["gemini-1.5-pro", "gemini-2.0-pro", "gemini-pro", "gemini-3-pro-preview"],
+        "github-copilot": ["claude-sonnet-4.5", "claude-sonnet-4", "claude-3.5-sonnet", "gpt-4o", "gemini-3-pro-preview"],
+        "azure": ["gpt-4o", "gpt-4-turbo", "gpt-4"],
+        "bedrock": ["anthropic.claude-3-5-sonnet-20241022-v2:0", "anthropic.claude-3-sonnet-20240229-v1:0"],
+        "groq": ["llama-3.1-70b-versatile", "llama-3.3-70b-versatile"],
+      }
+
+      it("should have judge models defined for common providers", () => {
+        const expectedProviders = ["anthropic", "openai", "google", "github-copilot"]
+        for (const provider of expectedProviders) {
+          assert.ok(JUDGE_MODELS[provider], `Missing judge models for ${provider}`)
+          assert.ok(JUDGE_MODELS[provider].length > 0, `Empty judge models list for ${provider}`)
+        }
+      })
+
+      it("should prioritize capable models (Sonnet/GPT-4o class) over weak ones", () => {
+        // Anthropic: Sonnet should be first (capable), NOT Haiku (weak)
+        const anthropicModels = JUDGE_MODELS["anthropic"]
+        assert.ok(anthropicModels[0].includes("sonnet") || anthropicModels[0].includes("opus"),
+          "Anthropic judge models should start with Sonnet/Opus, not Haiku")
+        
+        // OpenAI: gpt-4o should be first (capable), NOT gpt-4o-mini (weak)
+        const openaiModels = JUDGE_MODELS["openai"]
+        assert.strictEqual(openaiModels[0], "gpt-4o", "OpenAI judge models should start with gpt-4o")
+        
+        // github-copilot: capable models first
+        const ghModels = JUDGE_MODELS["github-copilot"]
+        for (const model of ghModels) {
+          assert.ok(!model.includes("haiku") && !model.match(/\bmini\b/),
+            `github-copilot JUDGE_MODELS should not include weak model: ${model}`)
+        }
+      })
+
+      it("should NOT include any blocked models in JUDGE_MODELS", () => {
+        const JUDGE_BLOCKED_MODELS = new Set([
+          "claude-3-5-haiku-20241022", "claude-3-haiku-20240307",
+          "claude-haiku-4", "claude-haiku-4.5",
+          "gpt-4o-mini", "gpt-3.5-turbo", "gpt-35-turbo",
+          "gemini-1.5-flash", "gemini-2.0-flash", "gemini-flash",
+          "llama-3.1-8b-instant", "mixtral-8x7b-32768",
+          "anthropic.claude-3-haiku-20240307-v1:0",
+        ])
+
+        for (const [provider, models] of Object.entries(JUDGE_MODELS)) {
+          for (const model of models) {
+            assert.ok(!JUDGE_BLOCKED_MODELS.has(model),
+              `JUDGE_MODELS[${provider}] contains blocked model: ${model}`)
+          }
+        }
+      })
+    })
+
+    describe("JUDGE_BLOCKED_MODELS (Issue #81)", () => {
+      const JUDGE_BLOCKED_MODELS = new Set([
+        "claude-3-5-haiku-20241022", "claude-3-haiku-20240307",
+        "claude-haiku-4", "claude-haiku-4.5",
+        "gpt-4o-mini", "gpt-3.5-turbo", "gpt-35-turbo",
+        "gemini-1.5-flash", "gemini-2.0-flash", "gemini-flash",
+        "llama-3.1-8b-instant", "mixtral-8x7b-32768",
+        "anthropic.claude-3-haiku-20240307-v1:0",
+      ])
+
+      it("should block all Haiku variants", () => {
+        assert.ok(JUDGE_BLOCKED_MODELS.has("claude-3-5-haiku-20241022"))
+        assert.ok(JUDGE_BLOCKED_MODELS.has("claude-3-haiku-20240307"))
+        assert.ok(JUDGE_BLOCKED_MODELS.has("claude-haiku-4"))
+        assert.ok(JUDGE_BLOCKED_MODELS.has("claude-haiku-4.5"))
+      })
+
+      it("should block mini/nano variants", () => {
+        assert.ok(JUDGE_BLOCKED_MODELS.has("gpt-4o-mini"))
+        assert.ok(JUDGE_BLOCKED_MODELS.has("gpt-3.5-turbo"))
+        assert.ok(JUDGE_BLOCKED_MODELS.has("gpt-35-turbo"))
+      })
+
+      it("should block flash variants", () => {
+        assert.ok(JUDGE_BLOCKED_MODELS.has("gemini-1.5-flash"))
+        assert.ok(JUDGE_BLOCKED_MODELS.has("gemini-2.0-flash"))
+        assert.ok(JUDGE_BLOCKED_MODELS.has("gemini-flash"))
+      })
+
+      it("should NOT block capable models", () => {
+        assert.ok(!JUDGE_BLOCKED_MODELS.has("claude-sonnet-4-20250514"))
+        assert.ok(!JUDGE_BLOCKED_MODELS.has("claude-3-5-sonnet-20241022"))
+        assert.ok(!JUDGE_BLOCKED_MODELS.has("gpt-4o"))
+        assert.ok(!JUDGE_BLOCKED_MODELS.has("gpt-4-turbo"))
+        assert.ok(!JUDGE_BLOCKED_MODELS.has("gemini-1.5-pro"))
+      })
+    })
+
+    describe("judge model selection (Issue #81)", () => {
+      const JUDGE_MODELS: Record<string, string[]> = {
+        "anthropic": ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022"],
+        "openai": ["gpt-4o", "gpt-4-turbo"],
+        "github-copilot": ["claude-sonnet-4.5", "claude-sonnet-4", "gpt-4o"],
+      }
+
+      const JUDGE_BLOCKED_MODELS = new Set([
+        "claude-3-5-haiku-20241022", "claude-haiku-4", "claude-haiku-4.5",
+        "gpt-4o-mini", "gpt-3.5-turbo",
+        "gemini-1.5-flash", "gemini-2.0-flash",
+      ])
+
+      it("should select preferred judge model from available models", () => {
+        const providerID = "github-copilot"
+        const availableModels = ["claude-haiku-4.5", "gpt-4o-mini", "gpt-4o", "claude-sonnet-4"]
+        const judgeModelsForProvider = JUDGE_MODELS[providerID] || []
+        
+        // Simulate getJudgeModel() logic - find first preferred model
+        const selectedModel = judgeModelsForProvider.find(m => availableModels.includes(m))
+        assert.strictEqual(selectedModel, "claude-sonnet-4",
+          "Should select claude-sonnet-4 (first preferred model available)")
+      })
+
+      it("should skip blocked models even if they are the only ones available", () => {
+        const availableModels = ["claude-haiku-4.5", "gpt-4o-mini"]
+        
+        // First pass: check preferred models - none available
+        const judgeModelsForProvider = JUDGE_MODELS["github-copilot"] || []
+        const preferred = judgeModelsForProvider.find(m => availableModels.includes(m))
+        assert.strictEqual(preferred, undefined, "No preferred model should match")
+        
+        // Second pass: find any non-blocked model
+        const nonBlocked = availableModels.find(m => !JUDGE_BLOCKED_MODELS.has(m))
+        assert.strictEqual(nonBlocked, undefined, "No non-blocked model should be found")
+      })
+
+      it("should fallback to any non-blocked model when no preferred models available", () => {
+        const availableModels = ["claude-haiku-4.5", "gpt-4o-mini", "some-unknown-model-v2"]
+        
+        // First pass: check preferred models
+        const judgeModelsForProvider = JUDGE_MODELS["github-copilot"] || []
+        const preferred = judgeModelsForProvider.find(m => availableModels.includes(m))
+        assert.strictEqual(preferred, undefined, "No preferred model should match")
+        
+        // Second pass: any non-blocked model
+        const nonBlocked = availableModels.find(m => !JUDGE_BLOCKED_MODELS.has(m))
+        assert.strictEqual(nonBlocked, "some-unknown-model-v2",
+          "Should fallback to unknown model since it's not blocked")
+      })
+
+      it("should return null when all available models are blocked (Issue #81 core bug)", () => {
+        // This is the exact scenario from Issue #81: only Haiku available
+        const availableModels = ["claude-haiku-4.5", "gpt-4o-mini", "gemini-1.5-flash"]
+        
+        const judgeModelsForProvider = JUDGE_MODELS["github-copilot"] || []
+        const preferred = judgeModelsForProvider.find(m => availableModels.includes(m))
+        const nonBlocked = preferred || availableModels.find(m => !JUDGE_BLOCKED_MODELS.has(m))
+        
+        assert.strictEqual(nonBlocked, undefined,
+          "Should return null/undefined when all models are blocked - this prevents the infinite loop from Issue #81")
+      })
+
+      it("should cache judge model selection with TTL", () => {
+        const JUDGE_MODEL_CACHE_TTL = 300_000 // 5 minutes
+        let judgeModelCache: { providerID: string; modelID: string } | null = null
+        let judgeModelCacheTime = 0
+        
+        // First call - no cache
+        const now = Date.now()
+        const hasCachedModel = judgeModelCache && (now - judgeModelCacheTime) < JUDGE_MODEL_CACHE_TTL
+        assert.strictEqual(hasCachedModel, null, "Should not have cached model initially")
+        
+        // Set cache
+        judgeModelCache = { providerID: "github-copilot", modelID: "gpt-4o" }
+        judgeModelCacheTime = now
+        
+        // Cache hit
+        const hasCachedModelNow = judgeModelCache && (now - judgeModelCacheTime) < JUDGE_MODEL_CACHE_TTL
+        assert.strictEqual(hasCachedModelNow, true, "Should use cached model")
+        
+        // Cache expired
+        judgeModelCacheTime = now - JUDGE_MODEL_CACHE_TTL - 1000
+        const cacheExpired = judgeModelCache && (now - judgeModelCacheTime) >= JUDGE_MODEL_CACHE_TTL
+        assert.strictEqual(cacheExpired, true, "Cache should expire after TTL")
+      })
+
+      it("should use config-specified model if available", () => {
+        // Simulate loading from reflection.json: { "judgeModel": "github-copilot/claude-sonnet-4" }
+        const configJudgeModel = "github-copilot/claude-sonnet-4"
+        const parts = configJudgeModel.split("/")
+        const providerID = parts[0]
+        const modelID = parts.slice(1).join("/")
+        
+        assert.strictEqual(providerID, "github-copilot")
+        assert.strictEqual(modelID, "claude-sonnet-4")
+        assert.ok(!JUDGE_BLOCKED_MODELS.has(modelID), "Config model should not be blocked")
+      })
+    })
   })
 
   describe("GenAI Post-Compression Evaluation", () => {
