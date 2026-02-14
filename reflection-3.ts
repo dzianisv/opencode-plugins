@@ -968,6 +968,17 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         if (isJudgeSession(sessionId, messages, judgeSessionIds)) return
         if (isPlanMode(messages)) return
 
+        // Issue #82: Check if session was interrupted by ESC.
+        // When user presses ESC, session.idle can fire before session.error
+        // writes the abort error. The last assistant message won't have
+        // time.completed set. This catches aborts regardless of event ordering
+        // — same approach used by TTS and Telegram plugins (isSessionComplete).
+        const lastAssistant = [...messages].reverse().find(m => m.info?.role === "assistant")
+        if (lastAssistant && !(lastAssistant.info?.time as any)?.completed) {
+          debug("Session interrupted (no time.completed on last assistant message), skipping reflection:", sessionId.slice(0, 8))
+          return
+        }
+
         const lastUserMsgId = getLastRelevantUserMessageId(messages)
         if (!lastUserMsgId) return
 

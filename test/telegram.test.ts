@@ -657,7 +657,7 @@ describe("Error Handling", () => {
 
     // Should return error, not crash
     expect(response.status).toBe(400)
-  })
+  }, 10000) // Extended timeout for network latency
 
   it("send-notify handles invalid uuid gracefully", async () => {
     const response = await fetch(SEND_NOTIFY_URL, {
@@ -677,7 +677,7 @@ describe("Error Handling", () => {
     const result = await response.json()
     // Either text_sent is false OR error is present
     expect(result.text_sent === false || result.error).toBeTruthy()
-  })
+  }, 10000) // Extended timeout for network latency
 
   it("webhook handles malformed JSON gracefully", async () => {
     const response = await fetch(WEBHOOK_URL, {
