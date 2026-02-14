@@ -1031,6 +1031,16 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
           }
 
           try {
+            // Verify session still exists before injecting reply
+            try {
+              await client.session.get({ path: { id: targetSessionId } })
+            } catch {
+              await debug(`Session ${targetSessionId} no longer exists, skipping reply`)
+              // Mark as processed so it doesn't retry via polling
+              await supabase.rpc('mark_reply_processed', { reply_id: reply.id })
+              return
+            }
+
             const prefix = reply.is_voice ? '[User via Telegram Voice]' : '[User via Telegram]'
             await client.session.promptAsync({
               path: { id: targetSessionId },
@@ -1087,6 +1097,16 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
         if (!reply.session_id || !reply.reply_text) continue
 
         try {
+          // Verify session still exists before injecting reply
+          try {
+            await client.session.get({ path: { id: reply.session_id } })
+          } catch {
+            // Session was deleted — mark reply as processed to prevent infinite retries
+            await debug(`Session ${reply.session_id} no longer exists, marking reply ${reply.id} as processed`)
+            await supabase.rpc('mark_reply_processed', { reply_id: reply.id })
+            continue
+          }
+
           const prefix = reply.is_voice ? '[User via Telegram Voice]' : '[User via Telegram]'
           await client.session.promptAsync({
             path: { id: reply.session_id },
@@ -1153,7 +1173,17 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
 
         try {
           // Check for subagent
-          const { data: sessionInfo } = await client.session.get({ path: { id: sessionId } })
+          // Guard against deleted sessions (e.g., reflection judge sessions that were
+          // created and deleted before we could process the idle event)
+          let sessionInfo: any
+          try {
+            const { data } = await client.session.get({ path: { id: sessionId } })
+            sessionInfo = data
+          } catch (e: any) {
+            // Session was deleted (race with reflection cleanup) — silently skip
+            await debug(`Session not found (likely deleted), skipping`)
+            return
+          }
           if (sessionInfo?.parentID) {
             await debug(`Subagent session, skipping`)
             return
@@ -1161,7 +1191,14 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
 
           const sessionDirectory = sessionInfo?.directory || directory
 
-          const { data: messages } = await client.session.messages({ path: { id: sessionId } })
+          let messages: any[] | undefined
+          try {
+            const { data } = await client.session.messages({ path: { id: sessionId } })
+            messages = data
+          } catch (e: any) {
+            await debug(`Failed to get messages (session may have been deleted), skipping`)
+            return
+          }
           if (!messages || messages.length < 2) return
 
           if (isJudgeSession(messages)) {
@@ -1245,10 +1282,15 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
         const sessionId = (event as any).properties?.sessionID
         const lastMsg = lastMessages.get(sessionId)
         if (lastMsg) {
-          const config = await loadConfig()
-          await updateMessageReaction(lastMsg.chatId, lastMsg.messageId, "\u{1F60A}", config)
-          lastMessages.delete(sessionId)
-          await debug(`Updated reaction to \u{1F60A}`)
+          try {
+            const config = await loadConfig()
+            await updateMessageReaction(lastMsg.chatId, lastMsg.messageId, "\u{1F60A}", config)
+            await debug(`Updated reaction to \u{1F60A}`)
+          } catch (err: any) {
+            reportError(err, { plugin: "telegram", op: "update-reaction" })
+          } finally {
+            lastMessages.delete(sessionId)
+          }
         }
       }
     }
