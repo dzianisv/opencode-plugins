@@ -25,6 +25,15 @@ import { promisify } from "util"
 import { join } from "path"
 import { homedir } from "os"
 
+// Lazy Sentry helper — reports errors without crashing if @sentry/node is unavailable
+async function reportError(err: unknown, context?: Record<string, string>): Promise<void> {
+  try {
+    const Sentry = await import("@sentry/node")
+    if (!Sentry.isInitialized()) return
+    Sentry.captureException(err, context ? { tags: context } : undefined)
+  } catch {}
+}
+
 const execAsync = promisify(exec)
 
 // ==================== WHISPER PATHS ====================
@@ -247,6 +256,7 @@ async function sendNotification(
       chatId: result.chat_id,
     }
   } catch (err: any) {
+    reportError(err, { plugin: "telegram", op: "send-notification" })
     return { success: false, error: err?.message || "Network error" }
   }
 }
@@ -280,6 +290,7 @@ async function updateMessageReaction(
 
     return { success: true }
   } catch (err) {
+    reportError(err, { plugin: "telegram", op: "update-reaction" })
     return { success: false, error: String(err) }
   }
 }
@@ -578,6 +589,7 @@ async function setupWhisper(): Promise<boolean> {
     return true
   } catch (err: any) {
     await debug(`Whisper setup failed: ${err?.message}`)
+    reportError(err, { plugin: "telegram", op: "whisper-setup" })
     whisperInstalled = false
     return false
   }
@@ -754,6 +766,7 @@ async function transcribeAudio(
     return result.text || null
   } catch (err: any) {
     await debug(`Whisper transcription error: ${err?.message}`)
+    reportError(err, { plugin: "telegram", op: "whisper-transcribe" })
     return null
   }
 }
@@ -954,8 +967,9 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
       const { createClient } = await import("@supabase/supabase-js")
       supabaseClient = createClient(supabaseUrl, supabaseKey, {})
       return supabaseClient
-    } catch {
+    } catch (e) {
       // silent — console.error corrupts the OpenCode TUI
+      reportError(e, { plugin: "telegram", op: "init-supabase" })
       return null
     }
   }
@@ -1037,6 +1051,7 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
             await debug(`Forwarded reply to session ${targetSessionId}`)
           } catch (err: any) {
             await debug(`Failed to forward reply: ${err?.message}`)
+            reportError(err, { plugin: "telegram", op: "forward-reply" })
           }
         }
       )
@@ -1087,12 +1102,14 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
 
           await supabase.rpc('mark_reply_processed', { reply_id: reply.id })
           await debug(`Recovered reply for session ${reply.session_id}`)
-        } catch {
+        } catch (e) {
           await debug(`Failed to recover reply ${reply.id}`)
+          reportError(e, { plugin: "telegram", op: "recover-reply" })
         }
       }
     } catch (err: any) {
       await debug(`Poll failed: ${err?.message}`)
+      reportError(err, { plugin: "telegram", op: "poll-missed-replies" })
     }
   }
 
@@ -1107,6 +1124,7 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
         await pollMissedReplies(config)
       } catch (err: any) {
         await debug(`Background init failed: ${err?.message}`)
+        reportError(err, { plugin: "telegram", op: "background-init" })
       }
     }, 100)
   }
@@ -1217,6 +1235,7 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
 
         } catch (err: any) {
           await debug(`Error: ${err?.message}`)
+          reportError(err, { plugin: "telegram", op: "session-idle" })
           spokenSessions.delete(sessionId)
         }
       }
