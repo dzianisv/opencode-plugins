@@ -23,6 +23,22 @@ async function initSentry(): Promise<void> {
       tracesSampleRate: 0,
       sendDefaultPii: false,
       environment: process.env.NODE_ENV || "production",
+      integrations(defaults) {
+        return defaults.map((integration) => {
+          // Suppress stderr logging of unhandled rejections.
+          // Default mode 'warn' calls console.warn/console.error which
+          // corrupts the OpenCode TUI. Mode 'none' still captures to Sentry
+          // but skips all console output.
+          if (integration.name === "OnUnhandledRejection") {
+            return Sentry.onUnhandledRejectionIntegration({ mode: "none" })
+          }
+          // Suppress stderr logging of uncaught exceptions for the same reason.
+          if (integration.name === "OnUncaughtException") {
+            return Sentry.onUncaughtExceptionIntegration({ exitEvenIfOtherHandlersAreRegistered: false })
+          }
+          return integration
+        })
+      },
     })
   } catch {
     // @sentry/node not installed — silently skip
