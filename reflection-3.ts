@@ -655,9 +655,11 @@ I'm verifying the task completion and quality standards. Please provide a self-a
 - Required checks: ${requirements.join("; ")}
 - Detected signals: ${signalSummary}
 
-${agents ? `**Project Instructions:**\n${agents.slice(0, 800)}\n\n` : ""}**Respond with JSON only** - provide a structured self-assessment using this exact format:
+${agents ? `**Project Instructions:**\n${agents.slice(0, 800)}\n\n` : ""}**IMPORTANT: Your entire response must be valid JSON and nothing else.**
+Do not include any explanation, commentary, markdown formatting, or code fences.
+Do not write anything before or after the JSON object.
+Output ONLY a single JSON object using this exact schema:
 
-\`\`\`json
 {
   "task_summary": "brief description of what was done",
   "task_type": "feature|bugfix|refactor|docs|research|ops|other",
@@ -687,7 +689,6 @@ ${agents ? `**Project Instructions:**\n${agents.slice(0, 800)}\n\n` : ""}**Respo
   "stuck": false,
   "alternate_approach": "describe if needed"
 }
-\`\`\`
 
 **Verification Rules:**
 - If coding work is complete, confirm tests ran after the latest changes and passed
@@ -696,7 +697,9 @@ ${agents ? `**Project Instructions:**\n${agents.slice(0, 800)}\n\n` : ""}**Respo
 - Tests cannot be skipped or marked as flaky/not important
 - Direct pushes to main/master are not allowed; require a PR instead
 - If stuck, propose an alternate approach
-- If you need user action (auth, 2FA, credentials), list it in needs_user_action`
+- If you need user action (auth, 2FA, credentials), list it in needs_user_action
+
+Remember: respond with ONLY the JSON object. No other text.`
 }
 
 function parseSelfAssessmentJson(text: string | null | undefined): SelfAssessment | null {
