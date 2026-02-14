@@ -104,6 +104,14 @@ export function isSessionComplete(messages: any[]): boolean {
 }
 
 /**
+ * Returns true if the session contains reflection-injected messages.
+ * Mirrors telegram.ts:hasReflectionContent
+ */
+export function hasReflectionContent(messages: any[]): boolean {
+  return findStaticReflectionPromptIndex(messages) !== -1
+}
+
+/**
  * Find the index of the first user message that contains a Reflection-3
  * self-assessment or feedback marker.
  * Mirrors telegram.ts:findStaticReflectionPromptIndex
