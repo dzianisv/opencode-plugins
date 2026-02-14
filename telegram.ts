@@ -74,6 +74,7 @@ const DEFAULT_WHISPER_URL = "http://127.0.0.1:8000"
 
 const REFLECTION_VERDICT_WAIT_MS = 10_000
 const REFLECTION_POLL_INTERVAL_MS = 250
+const REFLECTION_ACTIVE_WAIT_MS = 60_000  // longer wait when reflection is actively running
 
 // Debug logging (silenced — console.error corrupts the OpenCode TUI)
 async function debug(_msg: string) {}
@@ -796,6 +797,27 @@ function isSessionComplete(messages: any[]): boolean {
 const REFLECTION_SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
 const REFLECTION_FEEDBACK_MARKER = "## Reflection-3:"
 
+/**
+ * Returns true if the session contains reflection-injected messages
+ * (self-assessment prompt or feedback). This means reflection ran on this
+ * session, so Telegram should require a COMPLETE verdict before sending.
+ */
+function hasReflectionContent(messages: any[]): boolean {
+  for (const msg of messages) {
+    if (msg.info?.role !== "user") continue
+    for (const part of msg.parts || []) {
+      if (
+        part.type === "text" &&
+        (part.text?.includes(REFLECTION_SELF_ASSESSMENT_MARKER) ||
+          part.text?.includes(REFLECTION_FEEDBACK_MARKER))
+      ) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
 function findStaticReflectionPromptIndex(messages: any[]): number {
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
@@ -833,6 +855,7 @@ function extractFinalResponse(messages: any[]): string {
 // ==================== PLUGIN ====================
 
 const spokenSessions = new Set<string>()
+const incompleteReflectionSessions = new Set<string>()  // sessions where reflection said INCOMPLETE
 const lastMessages = new Map<string, { chatId: number; messageId: number }>()
 let supabaseClient: any = null
 let replySubscription: any = null
@@ -1025,6 +1048,13 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
         }
 
         if (!sessionId || spokenSessions.has(sessionId)) return
+
+        // If this session was previously marked INCOMPLETE by reflection,
+        // only allow it through if a fresh COMPLETE verdict now exists.
+        if (incompleteReflectionSessions.has(sessionId)) {
+          await debug(`Session previously INCOMPLETE, checking for fresh COMPLETE verdict`)
+        }
+
         spokenSessions.add(sessionId)
 
         try {
@@ -1051,20 +1081,34 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
             return
           }
 
+          // Detect if reflection has injected content into this session
+          const reflectionActive = hasReflectionContent(messages)
+
           const config = await loadConfig()
           const waitForVerdict = config.reflection?.waitForVerdict !== false
           if (waitForVerdict) {
-            const maxWaitMs = config.reflection?.maxWaitMs || REFLECTION_VERDICT_WAIT_MS
+            // If reflection injected content, wait longer — reflection is actively
+            // evaluating and needs time to write a verdict
+            const defaultWait = reflectionActive ? REFLECTION_ACTIVE_WAIT_MS : REFLECTION_VERDICT_WAIT_MS
+            const maxWaitMs = config.reflection?.maxWaitMs || defaultWait
             const verdictDir = sessionDirectory || directory
             const verdict = await waitForReflectionVerdict(verdictDir, sessionId, maxWaitMs)
 
             if (verdict) {
               if (!verdict.complete) {
-                await debug(`Reflection verdict: INCOMPLETE (${verdict.severity}), skipping Telegram`) 
+                await debug(`Reflection verdict: INCOMPLETE (${verdict.severity}), skipping Telegram`)
+                incompleteReflectionSessions.add(sessionId)
                 spokenSessions.delete(sessionId)
                 return
               }
               await debug(`Reflection verdict: COMPLETE (${verdict.severity}), proceeding with Telegram`)
+              incompleteReflectionSessions.delete(sessionId)
+            } else if (reflectionActive) {
+              // Reflection ran but no verdict found — reflection may still be processing
+              // or the verdict was already consumed. Do NOT send without a verdict.
+              await debug(`Reflection active but no verdict found, suppressing Telegram`)
+              spokenSessions.delete(sessionId)
+              return
             } else {
               await debug(`No reflection verdict found, proceeding with Telegram`)
             }
@@ -1107,9 +1151,9 @@ export const TelegramPlugin: Plugin = async ({ client, directory }) => {
         const lastMsg = lastMessages.get(sessionId)
         if (lastMsg) {
           const config = await loadConfig()
-          await updateMessageReaction(lastMsg.chatId, lastMsg.messageId, "😊", config)
+          await updateMessageReaction(lastMsg.chatId, lastMsg.messageId, "\u{1F60A}", config)
           lastMessages.delete(sessionId)
-          await debug(`Updated reaction to 😊`)
+          await debug(`Updated reaction to \u{1F60A}`)
         }
       }
     }
