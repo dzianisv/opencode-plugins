@@ -11,6 +11,7 @@ __pycache__/
 # Build artifacts
 *.js
 !jest.config.js
+!scripts/ensure-deps.js
 *.js.map
 *.d.ts
 
