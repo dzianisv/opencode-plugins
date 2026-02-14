@@ -348,7 +348,13 @@ async function classifyTaskForRoutingWithLLM(
   const prompt = `CLASSIFY TASK ROUTING\n\nYou are classifying a task into one routing category.\n\nTask summary:\n${context.taskSummary}\n\nTask type: ${context.taskType}\n\nRecent user messages:\n${context.humanMessages.slice(0, 4).join("\n\n")}\n\nChoose exactly one category from: backend, architecture, frontend, default.\nReturn JSON only:\n{\n  "category": "backend|architecture|frontend|default"\n}`
 
   for (const modelSpec of attempts) {
-    const { data: classifierSession } = await client.session.create({ query: { directory } })
+    let classifierSession: any
+    try {
+      const { data } = await client.session.create({ query: { directory } })
+      classifierSession = data
+    } catch {
+      return null
+    }
     if (!classifierSession?.id) return null
     judgeSessionIds.add(classifierSession.id)
 
@@ -921,7 +927,13 @@ Return JSON only:
 }`
 
   for (const modelSpec of attempts) {
-    const { data: judgeSession } = await client.session.create({ query: { directory } })
+    let judgeSession: any
+    try {
+      const { data } = await client.session.create({ query: { directory } })
+      judgeSession = data
+    } catch {
+      return null
+    }
     if (!judgeSession?.id) return null
     judgeSessionIds.add(judgeSession.id)
 
@@ -979,7 +991,14 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
       activeReflections.add(sessionId)
 
       try {
-        const { data: messages } = await client.session.messages({ path: { id: sessionId } })
+        let messages: any[] | undefined
+        try {
+          const { data } = await client.session.messages({ path: { id: sessionId } })
+          messages = data
+        } catch {
+          debug("Session not found (likely deleted), skipping reflection:", sessionId.slice(0, 8))
+          return
+        }
         if (!messages || messages.length < 2) return
 
         if (isJudgeSession(sessionId, messages, judgeSessionIds)) return
@@ -1032,7 +1051,15 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
 
         debug("Self-assessment received")
 
-        const { data: currentMessages } = await client.session.messages({ path: { id: sessionId } })
+        let currentMessages: any[] | undefined
+        try {
+          const { data } = await client.session.messages({ path: { id: sessionId } })
+          currentMessages = data
+        } catch {
+          debug("Session deleted during reflection, aborting:", sessionId.slice(0, 8))
+          lastReflectedMsgId.set(sessionId, lastUserMsgId)
+          return
+        }
         const currentUserMsgId = getLastRelevantUserMessageId(currentMessages || [])
         if (currentUserMsgId && currentUserMsgId !== initialUserMsgId) {
           lastReflectedMsgId.set(sessionId, initialUserMsgId)
@@ -1093,7 +1120,15 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
 
         // Re-check for new user messages or abort before feedback injection
         // (analysis/judge phase can take significant time)
-        const { data: preFeedbackMessages } = await client.session.messages({ path: { id: sessionId } })
+        let preFeedbackMessages: any[] | undefined
+        try {
+          const { data } = await client.session.messages({ path: { id: sessionId } })
+          preFeedbackMessages = data
+        } catch {
+          debug("Session deleted before feedback injection, aborting:", sessionId.slice(0, 8))
+          lastReflectedMsgId.set(sessionId, lastUserMsgId)
+          return
+        }
         const preFeedbackUserMsgId = getLastRelevantUserMessageId(preFeedbackMessages || [])
         if (preFeedbackUserMsgId && preFeedbackUserMsgId !== initialUserMsgId) {
           lastReflectedMsgId.set(sessionId, initialUserMsgId)

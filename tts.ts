@@ -2089,7 +2089,15 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
             return
           }
           
-          const { data: messages } = await client.session.messages({ path: { id: sessionId } })
+          let messages: any[] | undefined
+          try {
+            const { data } = await client.session.messages({ path: { id: sessionId } })
+            messages = data
+          } catch (e: any) {
+            // Session was deleted between session.get and session.messages (TOCTOU race)
+            await debugLog(`Session messages not found (likely deleted), skipping: ${e?.message || e}`)
+            return
+          }
           await debugLog(`Got ${messages?.length || 0} messages`)
           
           if (!messages || messages.length < 2) {
