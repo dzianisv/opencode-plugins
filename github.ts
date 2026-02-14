@@ -1,8 +1,10 @@
 /**
- * GitHub Issue Integration Plugin for OpenCode
+ * GitHub Issue & PR Integration Plugin for OpenCode
  *
- * Posts all agent messages to the associated GitHub issue as comments,
- * keeping a complete history of the agent's work and thought process.
+ * Two-way integration with GitHub:
+ * 1. Posts agent messages to the associated GitHub issue as comments.
+ * 2. Monitors GitHub issue/PR comments for actionable directives (ending with "Act.")
+ *    and injects them into the active OpenCode session.
  *
  * Issue Detection Priority:
  * 1. GitHub issue URL in first message
@@ -19,7 +21,10 @@
  *   "postToolCalls": false,
  *   "batchInterval": 5000,
  *   "createIssueIfMissing": true,
- *   "issueLabels": ["opencode", "ai-session"]
+ *   "issueLabels": ["opencode", "ai-session"],
+ *   "monitorComments": true,
+ *   "commentPollInterval": 30000,
+ *   "commentTrigger": "Act."
  * }
  */
 
@@ -32,6 +37,20 @@ import { homedir } from "os"
 
 const execAsync = promisify(exec)
 
+// ==================== SENTRY ====================
+
+let _reportError: ((err: unknown, ctx?: Record<string, any>) => void) | undefined
+function reportError(err: unknown, ctx?: Record<string, any>) {
+  if (!_reportError) {
+    _reportError = (e, c) => {
+      import("@sentry/node")
+        .then(Sentry => Sentry.captureException(e, { extra: c }))
+        .catch(() => {})
+    }
+  }
+  _reportError(err, ctx)
+}
+
 // ==================== CONFIGURATION ====================
 
 interface GitHubConfig {
@@ -43,11 +62,16 @@ interface GitHubConfig {
   maxMessageLength?: number
   createIssueIfMissing?: boolean
   issueLabels?: string[]
+  monitorComments?: boolean
+  commentPollInterval?: number
+  commentTrigger?: string
 }
 
 const CONFIG_PATH = join(homedir(), ".config", "opencode", "github.json")
 const ISSUE_FILE = ".github-issue.md"
 const MAX_COMMENT_LENGTH = 65000 // GitHub's limit is 65536
+const DEFAULT_POLL_INTERVAL = 30000 // 30 seconds
+const DEFAULT_TRIGGER = "Act."
 
 // Debug logging (silenced — console.error corrupts the OpenCode TUI)
 function debug(..._args: any[]) {}
@@ -63,7 +87,21 @@ async function loadConfig(): Promise<GitHubConfig> {
   }
 }
 
-function getConfig(config: GitHubConfig): Required<GitHubConfig> {
+interface ResolvedConfig {
+  enabled: boolean
+  postUserMessages: boolean
+  postAssistantMessages: boolean
+  postToolCalls: boolean
+  batchInterval: number
+  maxMessageLength: number
+  createIssueIfMissing: boolean
+  issueLabels: string[]
+  monitorComments: boolean
+  commentPollInterval: number
+  commentTrigger: string
+}
+
+function getConfig(config: GitHubConfig): ResolvedConfig {
   return {
     enabled: config.enabled ?? true,
     postUserMessages: config.postUserMessages ?? false,
@@ -72,13 +110,23 @@ function getConfig(config: GitHubConfig): Required<GitHubConfig> {
     batchInterval: config.batchInterval ?? 5000,
     maxMessageLength: config.maxMessageLength ?? MAX_COMMENT_LENGTH,
     createIssueIfMissing: config.createIssueIfMissing ?? true,
-    issueLabels: config.issueLabels ?? ["opencode", "ai-session"]
+    issueLabels: config.issueLabels ?? ["opencode", "ai-session"],
+    monitorComments: config.monitorComments ?? true,
+    commentPollInterval: config.commentPollInterval ?? DEFAULT_POLL_INTERVAL,
+    commentTrigger: config.commentTrigger ?? DEFAULT_TRIGGER,
   }
 }
 
-// ==================== ISSUE DETECTION ====================
+// ==================== ISSUE / PR DETECTION ====================
 
 interface IssueInfo {
+  owner: string
+  repo: string
+  number: number
+  url: string
+}
+
+interface PRInfo {
   owner: string
   repo: string
   number: number
@@ -97,6 +145,22 @@ function parseIssueUrl(text: string): IssueInfo | null {
       repo: match[2],
       number: parseInt(match[3]),
       url: `https://github.com/${match[1]}/${match[2]}/issues/${match[3]}`
+    }
+  }
+  return null
+}
+
+/**
+ * Parse GitHub PR URL from text
+ */
+function parsePRUrl(text: string): PRInfo | null {
+  const match = text.match(/github\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/i)
+  if (match) {
+    return {
+      owner: match[1],
+      repo: match[2],
+      number: parseInt(match[3]),
+      url: `https://github.com/${match[1]}/${match[2]}/pull/${match[3]}`
     }
   }
   return null
@@ -199,6 +263,32 @@ async function getIssueFromPR(directory: string): Promise<number | null> {
 }
 
 /**
+ * Get current branch's open PR number
+ */
+async function getCurrentPR(directory: string): Promise<PRInfo | null> {
+  try {
+    const { stdout } = await execAsync(
+      `gh pr view --json number,url -q '{"number": .number, "url": .url}'`,
+      { cwd: directory }
+    )
+    const result = JSON.parse(stdout.trim())
+    if (!result?.number) return null
+
+    const repoInfo = await getRepoInfo(directory)
+    if (!repoInfo) return null
+
+    return {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      number: result.number,
+      url: result.url
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
  * Verify issue exists
  */
 async function verifyIssue(owner: string, repo: string, number: number): Promise<boolean> {
@@ -294,7 +384,7 @@ async function createIssue(
 async function detectIssue(
   directory: string,
   firstMessage: string | null,
-  config: Required<GitHubConfig>
+  config: ResolvedConfig
 ): Promise<IssueInfo | null> {
   debug("Detecting issue for directory:", directory)
 
@@ -406,7 +496,7 @@ async function postComment(issue: IssueInfo, body: string): Promise<boolean> {
 
     // Use gh CLI to post comment
     // Using a heredoc to handle multi-line content
-    const { stdout } = await execAsync(
+    await execAsync(
       `gh issue comment ${issue.number} --repo ${issue.owner}/${issue.repo} --body-file -`,
       {
         input: commentBody
@@ -449,6 +539,94 @@ ${content}
 ---`
 }
 
+// ==================== COMMENT MONITORING ====================
+
+interface GitHubComment {
+  id: number
+  body: string
+  user: { login: string }
+  created_at: string
+  html_url: string
+}
+
+/**
+ * Fetch issue comments since a given timestamp using gh API.
+ */
+async function fetchIssueComments(
+  issue: IssueInfo,
+  since?: string
+): Promise<GitHubComment[]> {
+  try {
+    const sinceParam = since ? `&since=${since}` : ""
+    const { stdout } = await execAsync(
+      `gh api "repos/${issue.owner}/${issue.repo}/issues/${issue.number}/comments?per_page=100&sort=created&direction=desc${sinceParam}"`,
+      { maxBuffer: 1024 * 1024 }
+    )
+    return JSON.parse(stdout) as GitHubComment[]
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Fetch PR review comments (code-level review comments).
+ */
+async function fetchPRReviewComments(
+  pr: PRInfo,
+  since?: string
+): Promise<GitHubComment[]> {
+  try {
+    const sinceParam = since ? `&since=${since}` : ""
+    const { stdout } = await execAsync(
+      `gh api "repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/comments?per_page=100&sort=created&direction=desc${sinceParam}"`,
+      { maxBuffer: 1024 * 1024 }
+    )
+    return JSON.parse(stdout) as GitHubComment[]
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Check if a comment body ends with the trigger phrase.
+ * Trims trailing whitespace/newlines before checking.
+ */
+function hasCommentTrigger(body: string, trigger: string): boolean {
+  return body.trimEnd().endsWith(trigger)
+}
+
+/**
+ * Add a reaction to a comment to acknowledge it was processed.
+ */
+async function addCommentReaction(
+  owner: string,
+  repo: string,
+  commentId: number,
+  reaction: string = "eyes"
+): Promise<void> {
+  try {
+    await execAsync(
+      `gh api "repos/${owner}/${repo}/issues/comments/${commentId}/reactions" -f content="${reaction}" --silent`
+    )
+  } catch {}
+}
+
+/**
+ * Add a reaction to a PR review comment.
+ */
+async function addPRReviewCommentReaction(
+  owner: string,
+  repo: string,
+  commentId: number,
+  reaction: string = "eyes"
+): Promise<void> {
+  try {
+    await execAsync(
+      `gh api "repos/${owner}/${repo}/pulls/comments/${commentId}/reactions" -f content="${reaction}" --silent`
+    )
+  } catch {}
+}
+
 // ==================== PLUGIN ====================
 
 export const GitHubPlugin: Plugin = async ({ client, directory }) => {
@@ -457,11 +635,28 @@ export const GitHubPlugin: Plugin = async ({ client, directory }) => {
   }
   debug("GitHub plugin initializing for directory:", directory)
 
-  // Session state
+  // ---- Session & message posting state ----
   const sessionIssues = new Map<string, IssueInfo | null>()
   const pendingMessages = new Map<string, Array<{ role: string; content: string; metadata?: any }>>()
   const batchTimers = new Map<string, NodeJS.Timeout>()
   const processedMessages = new Set<string>()
+
+  // ---- Comment monitoring state ----
+  // Maps "owner/repo#number" to the most-recently-seen comment ID (for dedup)
+  const lastSeenIssueCommentId = new Map<string, number>()
+  const lastSeenPRCommentId = new Map<string, number>()
+  // Tracks which sessionId is associated with which issue/PR for routing
+  const sessionToIssue = new Map<string, IssueInfo>()
+  const sessionToPR = new Map<string, PRInfo>()
+  // Reverse lookups: "owner/repo#number" → sessionId (most recent session wins)
+  const issueKeyToSession = new Map<string, string>()
+  const prKeyToSession = new Map<string, string>()
+  // Active sessions (from most recent session.idle)
+  let activeSessionId: string | null = null
+  // Polling timer
+  let pollTimer: NodeJS.Timeout | null = null
+  // Processed comment IDs (prevent re-processing after restart)
+  const processedCommentIds = new Set<number>()
 
   // Load config
   const rawConfig = await loadConfig()
@@ -476,6 +671,11 @@ export const GitHubPlugin: Plugin = async ({ client, directory }) => {
   const ghAvailable = await isGhAvailable()
   if (!ghAvailable) {
     debug("gh CLI not available or not authenticated - plugin will have limited functionality")
+  }
+
+  // ---- Helper: issue/PR key for maps ----
+  function issueKey(info: IssueInfo | PRInfo): string {
+    return `${info.owner}/${info.repo}#${info.number}`
   }
 
   /**
@@ -555,70 +755,367 @@ export const GitHubPlugin: Plugin = async ({ client, directory }) => {
     return texts.join("\n\n")
   }
 
+  // ==================== COMMENT MONITORING LOGIC ====================
+
+  /**
+   * Detect which issue & PR are associated with the current directory and
+   * register them for comment monitoring. Called on session.idle.
+   */
+  async function registerSessionForMonitoring(sessionId: string) {
+    // Detect issue
+    const issue = sessionIssues.get(sessionId) || await getSessionIssue(sessionId)
+    if (issue) {
+      const key = issueKey(issue)
+      sessionToIssue.set(sessionId, issue)
+      issueKeyToSession.set(key, sessionId)
+      debug("Registered issue monitoring:", key, "session:", sessionId.slice(0, 8))
+    }
+
+    // Detect PR for current branch
+    if (ghAvailable) {
+      const pr = await getCurrentPR(directory)
+      if (pr) {
+        const key = issueKey(pr)
+        sessionToPR.set(sessionId, pr)
+        prKeyToSession.set(key, sessionId)
+        debug("Registered PR monitoring:", key, "session:", sessionId.slice(0, 8))
+      }
+    }
+  }
+
+  /**
+   * Poll for new comments on all monitored issues and PRs.
+   * Injects actionable comments (ending with trigger) into the session.
+   */
+  async function pollForComments() {
+    if (!config.monitorComments) return
+
+    try {
+      // Poll issue comments
+      for (const [key, sessionId] of issueKeyToSession) {
+        const issue = sessionToIssue.get(sessionId)
+        if (!issue) continue
+
+        try {
+          const comments = await fetchIssueComments(issue)
+          const lastSeen = lastSeenIssueCommentId.get(key) || 0
+
+          // Process new comments (newest first, but we want chronological order)
+          const newComments = comments
+            .filter(c => c.id > lastSeen && !processedCommentIds.has(c.id))
+            .reverse() // chronological order
+
+          for (const comment of newComments) {
+            processedCommentIds.add(comment.id)
+
+            if (hasCommentTrigger(comment.body, config.commentTrigger)) {
+              debug("Actionable issue comment found:", comment.id, "from", comment.user.login)
+
+              // Verify session still exists
+              try {
+                await client.session.get({ path: { id: sessionId } })
+              } catch {
+                debug("Session gone, skipping comment injection")
+                continue
+              }
+
+              // Inject into session
+              const prefix = `[GitHub Issue #${issue.number} comment by @${comment.user.login}]`
+              try {
+                await client.session.promptAsync({
+                  path: { id: sessionId },
+                  body: { parts: [{ type: "text", text: `${prefix}\n\n${comment.body}` }] }
+                })
+
+                // React to acknowledge
+                await addCommentReaction(issue.owner, issue.repo, comment.id, "rocket")
+                debug("Injected issue comment into session:", sessionId.slice(0, 8))
+              } catch (e) {
+                reportError(e, { plugin: "github", op: "inject-issue-comment" })
+              }
+            }
+          }
+
+          // Update high-water mark
+          if (comments.length > 0) {
+            const maxId = Math.max(...comments.map(c => c.id))
+            if (maxId > lastSeen) {
+              lastSeenIssueCommentId.set(key, maxId)
+            }
+          }
+        } catch (e) {
+          reportError(e, { plugin: "github", op: "poll-issue-comments", key })
+        }
+      }
+
+      // Poll PR review comments
+      for (const [key, sessionId] of prKeyToSession) {
+        const pr = sessionToPR.get(sessionId)
+        if (!pr) continue
+
+        try {
+          const comments = await fetchPRReviewComments(pr)
+          const lastSeen = lastSeenPRCommentId.get(key) || 0
+
+          const newComments = comments
+            .filter(c => c.id > lastSeen && !processedCommentIds.has(c.id))
+            .reverse()
+
+          for (const comment of newComments) {
+            processedCommentIds.add(comment.id)
+
+            if (hasCommentTrigger(comment.body, config.commentTrigger)) {
+              debug("Actionable PR review comment found:", comment.id, "from", comment.user.login)
+
+              try {
+                await client.session.get({ path: { id: sessionId } })
+              } catch {
+                debug("Session gone, skipping comment injection")
+                continue
+              }
+
+              const prefix = `[GitHub PR #${pr.number} review comment by @${comment.user.login}]`
+              try {
+                await client.session.promptAsync({
+                  path: { id: sessionId },
+                  body: { parts: [{ type: "text", text: `${prefix}\n\n${comment.body}` }] }
+                })
+
+                await addPRReviewCommentReaction(pr.owner, pr.repo, comment.id, "rocket")
+                debug("Injected PR review comment into session:", sessionId.slice(0, 8))
+              } catch (e) {
+                reportError(e, { plugin: "github", op: "inject-pr-comment" })
+              }
+            }
+          }
+
+          if (comments.length > 0) {
+            const maxId = Math.max(...comments.map(c => c.id))
+            if (maxId > lastSeen) {
+              lastSeenPRCommentId.set(key, maxId)
+            }
+          }
+        } catch (e) {
+          reportError(e, { plugin: "github", op: "poll-pr-comments", key })
+        }
+      }
+
+      // Also poll PR issue-level comments (not review comments —
+      // these are top-level PR conversation comments)
+      for (const [key, sessionId] of prKeyToSession) {
+        const pr = sessionToPR.get(sessionId)
+        if (!pr) continue
+
+        // PR issue-level comments use the same API as issue comments
+        const prAsIssue: IssueInfo = {
+          owner: pr.owner,
+          repo: pr.repo,
+          number: pr.number,
+          url: pr.url
+        }
+        const prIssueKey = `pr-issue:${key}`
+
+        try {
+          const comments = await fetchIssueComments(prAsIssue)
+          const lastSeen = lastSeenIssueCommentId.get(prIssueKey) || 0
+
+          const newComments = comments
+            .filter(c => c.id > lastSeen && !processedCommentIds.has(c.id))
+            .reverse()
+
+          for (const comment of newComments) {
+            processedCommentIds.add(comment.id)
+
+            if (hasCommentTrigger(comment.body, config.commentTrigger)) {
+              debug("Actionable PR conversation comment found:", comment.id)
+
+              try {
+                await client.session.get({ path: { id: sessionId } })
+              } catch {
+                continue
+              }
+
+              const prefix = `[GitHub PR #${pr.number} comment by @${comment.user.login}]`
+              try {
+                await client.session.promptAsync({
+                  path: { id: sessionId },
+                  body: { parts: [{ type: "text", text: `${prefix}\n\n${comment.body}` }] }
+                })
+
+                await addCommentReaction(pr.owner, pr.repo, comment.id, "rocket")
+              } catch (e) {
+                reportError(e, { plugin: "github", op: "inject-pr-conversation-comment" })
+              }
+            }
+          }
+
+          if (comments.length > 0) {
+            const maxId = Math.max(...comments.map(c => c.id))
+            if (maxId > lastSeen) {
+              lastSeenIssueCommentId.set(prIssueKey, maxId)
+            }
+          }
+        } catch (e) {
+          reportError(e, { plugin: "github", op: "poll-pr-conversation-comments", key })
+        }
+      }
+    } catch (e) {
+      reportError(e, { plugin: "github", op: "poll-comments" })
+    }
+  }
+
+  /**
+   * Start the polling loop for comment monitoring.
+   */
+  function startPolling() {
+    if (pollTimer) return
+    if (!config.monitorComments) return
+
+    debug("Starting comment polling every", config.commentPollInterval, "ms")
+    pollTimer = setInterval(async () => {
+      try {
+        await pollForComments()
+      } catch (e) {
+        reportError(e, { plugin: "github", op: "poll-interval" })
+      }
+    }, config.commentPollInterval)
+  }
+
+  /**
+   * Seed the high-water marks with existing comments so we don't
+   * re-process old comments on first run.
+   */
+  async function seedHighWaterMarks() {
+    for (const [key, sessionId] of issueKeyToSession) {
+      const issue = sessionToIssue.get(sessionId)
+      if (!issue) continue
+      if (lastSeenIssueCommentId.has(key)) continue
+
+      try {
+        const comments = await fetchIssueComments(issue)
+        if (comments.length > 0) {
+          const maxId = Math.max(...comments.map(c => c.id))
+          lastSeenIssueCommentId.set(key, maxId)
+          // Also mark all existing comment IDs as processed
+          for (const c of comments) processedCommentIds.add(c.id)
+          debug("Seeded issue comment HWM:", key, "=", maxId)
+        }
+      } catch {}
+    }
+
+    for (const [key, sessionId] of prKeyToSession) {
+      const pr = sessionToPR.get(sessionId)
+      if (!pr) continue
+
+      // Seed PR review comments
+      if (!lastSeenPRCommentId.has(key)) {
+        try {
+          const comments = await fetchPRReviewComments(pr)
+          if (comments.length > 0) {
+            const maxId = Math.max(...comments.map(c => c.id))
+            lastSeenPRCommentId.set(key, maxId)
+            for (const c of comments) processedCommentIds.add(c.id)
+            debug("Seeded PR review comment HWM:", key, "=", maxId)
+          }
+        } catch {}
+      }
+
+      // Seed PR issue-level comments
+      const prIssueKey = `pr-issue:${key}`
+      if (!lastSeenIssueCommentId.has(prIssueKey)) {
+        const prAsIssue: IssueInfo = { owner: pr.owner, repo: pr.repo, number: pr.number, url: pr.url }
+        try {
+          const comments = await fetchIssueComments(prAsIssue)
+          if (comments.length > 0) {
+            const maxId = Math.max(...comments.map(c => c.id))
+            lastSeenIssueCommentId.set(prIssueKey, maxId)
+            for (const c of comments) processedCommentIds.add(c.id)
+          }
+        } catch {}
+      }
+    }
+  }
+
+  // ==================== EVENT HANDLER ====================
+
   return {
     event: async ({ event }: { event: { type: string; properties?: any } }) => {
       if (!config.enabled) return
 
-      // Handle new messages
-      if (event.type === "message.updated" || event.type === "message.created") {
-        const props = (event as any).properties
-        const sessionId = props?.sessionID
-        const messageId = props?.message?.id
-        const role = props?.message?.info?.role
-        const parts = props?.message?.parts
-        const completed = (props?.message?.info?.time as any)?.completed
+      try {
+        // Handle new messages — post to GitHub issue
+        if (event.type === "message.updated" || event.type === "message.created") {
+          const props = (event as any).properties
+          const sessionId = props?.sessionID
+          const messageId = props?.message?.id
+          const role = props?.message?.info?.role
+          const parts = props?.message?.parts
+          const completed = (props?.message?.info?.time as any)?.completed
 
-        if (!sessionId || !messageId || !parts) return
+          if (!sessionId || !messageId || !parts) return
 
-        // Only process completed messages
-        if (!completed) return
+          // Only process completed messages
+          if (!completed) return
 
-        // Skip if already processed
-        const msgKey = `${sessionId}:${messageId}`
-        if (processedMessages.has(msgKey)) return
-        processedMessages.add(msgKey)
+          // Skip if already processed
+          const msgKey = `${sessionId}:${messageId}`
+          if (processedMessages.has(msgKey)) return
+          processedMessages.add(msgKey)
 
-        // Check role filtering
-        if (role === "user" && !config.postUserMessages) return
-        if (role === "assistant" && !config.postAssistantMessages) return
+          // Check role filtering
+          if (role === "user" && !config.postUserMessages) return
+          if (role === "assistant" && !config.postAssistantMessages) return
 
-        // Extract text content
-        const content = extractTextFromParts(parts)
-        if (!content.trim()) return
+          // Extract text content
+          const content = extractTextFromParts(parts)
+          if (!content.trim()) return
 
-        debug("Processing message:", role, "session:", sessionId.slice(0, 8), "length:", content.length)
+          debug("Processing message:", role, "session:", sessionId.slice(0, 8), "length:", content.length)
 
-        // Get or detect issue (use first user message for detection)
-        let firstMessage: string | undefined
-        if (role === "user" && !sessionIssues.has(sessionId)) {
-          firstMessage = content
+          // Get or detect issue (use first user message for detection)
+          let firstMessage: string | undefined
+          if (role === "user" && !sessionIssues.has(sessionId)) {
+            firstMessage = content
+          }
+          const issue = await getSessionIssue(sessionId, firstMessage)
+
+          if (!issue) {
+            debug("No issue associated with session, skipping")
+            return
+          }
+
+          // Queue message for batched posting
+          queueMessage(sessionId, role, content, {
+            model: props?.message?.info?.model,
+            timestamp: new Date()
+          })
         }
-        const issue = await getSessionIssue(sessionId, firstMessage)
 
-        if (!issue) {
-          debug("No issue associated with session, skipping")
-          return
+        // Flush messages and register for monitoring on session idle
+        if (event.type === "session.idle") {
+          const sessionId = (event as any).properties?.sessionID
+          if (!sessionId) return
+
+          // Flush pending outbound messages
+          if (pendingMessages.has(sessionId)) {
+            const timer = batchTimers.get(sessionId)
+            if (timer) clearTimeout(timer)
+            batchTimers.delete(sessionId)
+            await flushMessages(sessionId)
+          }
+
+          // Register this session for comment monitoring
+          activeSessionId = sessionId
+          await registerSessionForMonitoring(sessionId)
+
+          // Seed high-water marks on first registration, then start polling
+          if (!pollTimer && config.monitorComments && ghAvailable) {
+            await seedHighWaterMarks()
+            startPolling()
+          }
         }
-
-        // Queue message for batched posting
-        queueMessage(sessionId, role, content, {
-          model: props?.message?.info?.model,
-          timestamp: new Date()
-        })
-      }
-
-      // Flush messages on session idle
-      if (event.type === "session.idle") {
-        const sessionId = (event as any).properties?.sessionID
-        if (sessionId && pendingMessages.has(sessionId)) {
-          // Clear any existing timer
-          const timer = batchTimers.get(sessionId)
-          if (timer) clearTimeout(timer)
-          batchTimers.delete(sessionId)
-
-          // Flush immediately
-          await flushMessages(sessionId)
-        }
+      } catch (e) {
+        reportError(e, { plugin: "github", op: "event-handler" })
       }
     }
   }

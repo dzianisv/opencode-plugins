@@ -1,109 +1,20 @@
 /**
- * Tests for GitHub Issue Integration Plugin
- * 
- * Note: These test utility functions directly since OpenCode plugin system
- * doesn't support named exports (it tries to call them as plugins).
+ * Tests for GitHub Issue & PR Integration Plugin
+ *
+ * Uses the test-helpers extraction pattern: pure logic functions are
+ * duplicated in github.test-helpers.ts so they can be imported without
+ * triggering OpenCode's plugin loader (which treats named exports as plugins).
  */
 
 import { describe, it, expect } from "@jest/globals"
-
-// ==================== INLINE TEST UTILITIES ====================
-// These mirror the functions in github.ts for testing purposes
-
-interface IssueInfo {
-  owner: string
-  repo: string
-  number: number
-  url: string
-}
-
-function parseIssueUrl(text: string): IssueInfo | null {
-  const match = text.match(/github\.com\/([^\/]+)\/([^\/]+)\/issues\/(\d+)/i)
-  if (match) {
-    return {
-      owner: match[1],
-      repo: match[2],
-      number: parseInt(match[3]),
-      url: `https://github.com/${match[1]}/${match[2]}/issues/${match[3]}`
-    }
-  }
-  return null
-}
-
-function extractIssueFromBranch(branchName: string): number | null {
-  // Pattern 1: explicit issue prefix (issue-123, issue/123)
-  let match = branchName.match(/issue[-\/](\d+)/i)
-  if (match) return parseInt(match[1])
-
-  // Pattern 2: GH-N prefix
-  match = branchName.match(/GH-(\d+)/i)
-  if (match) return parseInt(match[1])
-
-  // Pattern 3: type/N-description (fix/123-typo, feat/42-new-feature)
-  match = branchName.match(/^[a-z]+\/(\d+)[-_]/i)
-  if (match) return parseInt(match[1])
-
-  // Pattern 4: N-description at start (123-fix-bug)
-  match = branchName.match(/^(\d+)[-_]/)
-  if (match) return parseInt(match[1])
-
-  // Pattern 5: number anywhere after slash (feature/add-thing-123)
-  match = branchName.match(/\/.*?(\d+)/)
-  if (match && parseInt(match[1]) > 0 && parseInt(match[1]) < 100000) {
-    return parseInt(match[1])
-  }
-
-  return null
-}
-
-function formatMessage(
-  role: "user" | "assistant" | "tool",
-  content: string,
-  metadata?: { model?: string; timestamp?: Date; toolName?: string }
-): string {
-  const timestamp = metadata?.timestamp || new Date()
-  const timeStr = timestamp.toISOString()
-
-  let header = ""
-  if (role === "user") {
-    header = `### User Message`
-  } else if (role === "assistant") {
-    header = `### Assistant${metadata?.model ? ` (${metadata.model})` : ""}`
-  } else if (role === "tool") {
-    header = `### Tool: ${metadata?.toolName || "unknown"}`
-  }
-
-  return `${header}
-<sub>${timeStr}</sub>
-
-${content}
-
----`
-}
-
-interface GitHubConfig {
-  enabled?: boolean
-  postUserMessages?: boolean
-  postAssistantMessages?: boolean
-  postToolCalls?: boolean
-  batchInterval?: number
-  maxMessageLength?: number
-  createIssueIfMissing?: boolean
-  issueLabels?: string[]
-}
-
-function getConfig(config: GitHubConfig): Required<GitHubConfig> {
-  return {
-    enabled: config.enabled ?? true,
-    postUserMessages: config.postUserMessages ?? false,
-    postAssistantMessages: config.postAssistantMessages ?? true,
-    postToolCalls: config.postToolCalls ?? false,
-    batchInterval: config.batchInterval ?? 5000,
-    maxMessageLength: config.maxMessageLength ?? 65000,
-    createIssueIfMissing: config.createIssueIfMissing ?? true,
-    issueLabels: config.issueLabels ?? ["opencode", "ai-session"]
-  }
-}
+import {
+  parseIssueUrl,
+  parsePRUrl,
+  extractIssueFromBranch,
+  hasCommentTrigger,
+  formatMessage,
+  getConfig,
+} from "../github.test-helpers.ts"
 
 // ==================== TESTS ====================
 
@@ -152,6 +63,50 @@ describe("GitHub Plugin", () => {
     })
   })
 
+  describe("parsePRUrl", () => {
+    it("parses standard GitHub PR URL", () => {
+      const result = parsePRUrl("https://github.com/owner/repo/pull/456")
+      expect(result).toEqual({
+        owner: "owner",
+        repo: "repo",
+        number: 456,
+        url: "https://github.com/owner/repo/pull/456"
+      })
+    })
+
+    it("parses PR URL embedded in text", () => {
+      const result = parsePRUrl("Review https://github.com/dzianisv/opencode-plugins/pull/92 please")
+      expect(result).toEqual({
+        owner: "dzianisv",
+        repo: "opencode-plugins",
+        number: 92,
+        url: "https://github.com/dzianisv/opencode-plugins/pull/92"
+      })
+    })
+
+    it("parses PR URL with trailing content", () => {
+      const result = parsePRUrl("https://github.com/org/project/pull/10#discussion_r123")
+      expect(result).toEqual({
+        owner: "org",
+        repo: "project",
+        number: 10,
+        url: "https://github.com/org/project/pull/10"
+      })
+    })
+
+    it("returns null for non-PR URLs", () => {
+      expect(parsePRUrl("https://github.com/owner/repo")).toBeNull()
+      expect(parsePRUrl("https://github.com/owner/repo/issues/123")).toBeNull()
+      expect(parsePRUrl("no url here")).toBeNull()
+    })
+
+    it("handles case insensitivity", () => {
+      const result = parsePRUrl("https://GitHub.com/Owner/Repo/Pull/789")
+      expect(result).not.toBeNull()
+      expect(result?.number).toBe(789)
+    })
+  })
+
   describe("extractIssueFromBranch", () => {
     it("extracts from issue-N format", () => {
       expect(extractIssueFromBranch("issue-123")).toBe(123)
@@ -185,6 +140,52 @@ describe("GitHub Plugin", () => {
     it("handles complex branch names", () => {
       expect(extractIssueFromBranch("feat/reflection-static-plugin")).toBeNull()
       expect(extractIssueFromBranch("fix/issue-42-then-more")).toBe(42)
+    })
+
+    it("extracts from issue-91-github-comment-monitoring style", () => {
+      expect(extractIssueFromBranch("issue-91-github-comment-monitoring")).toBe(91)
+    })
+  })
+
+  describe("hasCommentTrigger", () => {
+    const trigger = "Act."
+
+    it("detects trigger at end of single-line comment", () => {
+      expect(hasCommentTrigger("Please fix the bug. Act.", trigger)).toBe(true)
+    })
+
+    it("detects trigger at end of multi-line comment", () => {
+      expect(hasCommentTrigger("Line 1\nLine 2\nDo this. Act.", trigger)).toBe(true)
+    })
+
+    it("detects trigger with trailing whitespace", () => {
+      expect(hasCommentTrigger("Do something. Act.  ", trigger)).toBe(true)
+      expect(hasCommentTrigger("Do something. Act.\n", trigger)).toBe(true)
+      expect(hasCommentTrigger("Do something. Act.\n\n  ", trigger)).toBe(true)
+    })
+
+    it("returns false when trigger is not at end", () => {
+      expect(hasCommentTrigger("Act. Please do this", trigger)).toBe(false)
+      expect(hasCommentTrigger("Not actionable", trigger)).toBe(false)
+    })
+
+    it("returns false for empty body", () => {
+      expect(hasCommentTrigger("", trigger)).toBe(false)
+    })
+
+    it("returns false for trigger substring (not exact)", () => {
+      expect(hasCommentTrigger("React.", trigger)).toBe(false)
+      expect(hasCommentTrigger("Fact.", trigger)).toBe(false)
+    })
+
+    it("handles exact trigger as entire body", () => {
+      expect(hasCommentTrigger("Act.", trigger)).toBe(true)
+    })
+
+    it("works with custom triggers", () => {
+      expect(hasCommentTrigger("Do it now @bot", "@bot")).toBe(true)
+      expect(hasCommentTrigger("Please execute //run", "//run")).toBe(true)
+      expect(hasCommentTrigger("Just a comment", "@bot")).toBe(false)
     })
   })
 
@@ -225,6 +226,9 @@ describe("GitHub Plugin", () => {
       expect(config.batchInterval).toBe(5000)
       expect(config.createIssueIfMissing).toBe(true)
       expect(config.issueLabels).toEqual(["opencode", "ai-session"])
+      expect(config.monitorComments).toBe(true)
+      expect(config.commentPollInterval).toBe(30000)
+      expect(config.commentTrigger).toBe("Act.")
     })
 
     it("respects provided values", () => {
@@ -232,12 +236,18 @@ describe("GitHub Plugin", () => {
         enabled: false,
         postUserMessages: true,
         batchInterval: 10000,
-        issueLabels: ["custom"]
+        issueLabels: ["custom"],
+        monitorComments: false,
+        commentPollInterval: 60000,
+        commentTrigger: "@bot",
       })
       expect(config.enabled).toBe(false)
       expect(config.postUserMessages).toBe(true)
       expect(config.batchInterval).toBe(10000)
       expect(config.issueLabels).toEqual(["custom"])
+      expect(config.monitorComments).toBe(false)
+      expect(config.commentPollInterval).toBe(60000)
+      expect(config.commentTrigger).toBe("@bot")
     })
   })
 })
@@ -260,7 +270,6 @@ describe("GitHub Plugin - Integration", () => {
 
   it("can check gh CLI availability", async () => {
     const available = await hasGh()
-    console.log(`gh CLI available: ${available}`)
     // This test just logs the status, doesn't fail
     expect(true).toBe(true)
   })
