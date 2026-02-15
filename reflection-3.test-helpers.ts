@@ -76,7 +76,7 @@ export function inferTaskType(text: string): TaskType {
   return "other"
 }
 
-export function buildSelfAssessmentPrompt(context: TaskContext, agents: string): string {
+export function buildSelfAssessmentPrompt(context: TaskContext, agents: string, lastAssistantText?: string): string {
   const safeContext = {
     ...context,
     detectedSignals: Array.isArray(context.detectedSignals) ? context.detectedSignals : []
@@ -92,17 +92,26 @@ export function buildSelfAssessmentPrompt(context: TaskContext, agents: string):
 
   const signalSummary = safeContext.detectedSignals.length ? safeContext.detectedSignals.join(", ") : "none"
 
-  return `## Reflection-3 Self-Assessment
+  const assistantSection = lastAssistantText
+    ? `\n## Agent's Last Response\n${lastAssistantText.slice(0, 4000)}\n`
+    : ""
 
-Task summary:
-${safeContext.taskSummary}
+  return `SELF-ASSESS REFLECTION-3
 
-Agent mode: ${safeContext.agentMode}
-Detected task type: ${safeContext.taskType}
-Workflow gates: ${requirements.join("; ")}
-Signals: ${signalSummary}
+You are evaluating an agent's work against workflow requirements.
+Analyze the task context, the agent's last response, and the tool signals to determine whether the task is complete.
 
-${agents ? `Project instructions (follow them):\n${agents.slice(0, 800)}\n\n` : ""}Respond with JSON only:
+## Task Context
+- Summary: ${safeContext.taskSummary}
+- Type: ${safeContext.taskType}
+- Mode: ${safeContext.agentMode}
+- Required checks: ${requirements.join("; ")}
+- Detected signals: ${signalSummary}
+
+## Tool Commands Run
+${safeContext.toolsSummary}
+${assistantSection}
+${agents ? `## Project Instructions\n${agents.slice(0, 800)}\n\n` : ""}Return JSON only:
 {
   "task_summary": "...",
   "task_type": "feature|bugfix|refactor|docs|research|ops|other",
