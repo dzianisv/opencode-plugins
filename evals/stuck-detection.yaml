@@ -299,4 +299,49 @@ tests:
           const result = JSON.parse(json[0]);
           return result.stuck === false || result.shouldNudge === false;
 
+  - description: "Planning loop - agent only read/explored, never wrote code (issue #115)"
+    vars:
+      time_since_activity: "120"
+      message_completed: "true"
+      output_tokens: "3500"
+      last_user_message: "https://github.com/VibeTechnologies/VibeWebAgent/issues/513 - Investigate and fix the MCP WebSocket connection failure"
+      last_assistant_response: |
+        ## Root Cause Analysis
+        
+        After investigating the codebase extensively, I found that the MCP WebSocket connection
+        failure is caused by a race condition in the connection manager. The `connectToServer`
+        function doesn't properly handle the case where the server closes the connection
+        during the handshake phase.
+        
+        ### Recommendations
+        1. Add retry logic with exponential backoff
+        2. Handle the WebSocket close event during handshake
+        3. Add connection state tracking
+        
+        I've identified all the relevant files and understand the issue thoroughly.
+        The fix should be straightforward to implement.
+      tool_calls: |
+        github_issue_read (get issue #513)
+        task (explore codebase)
+        read (src/mcp/connection.ts)
+        read (src/mcp/websocket.ts)
+        glob (src/**/*.ts)
+        grep (connectToServer)
+        read (src/mcp/manager.ts)
+        read (src/mcp/types.ts)
+        bash (git log --oneline -10)
+        read (src/mcp/retry.ts)
+        webfetch (docs reference)
+        read (package.json)
+        task (explore more files)
+        read (src/mcp/handler.ts)
+        read (src/utils/logger.ts)
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          return result.stuck === true && result.reason === "genuinely_stuck";
+
 outputPath: ./evals/results/stuck-detection-latest.json
