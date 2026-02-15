@@ -6,6 +6,7 @@ import {
   inferTaskType,
   parseRoutingFromYaml,
   getRoutingModel,
+  buildEscalatingFeedback,
   RoutingConfig
 } from "../reflection-3.test-helpers.ts"
 
@@ -339,6 +340,74 @@ describe("reflection-3 unit", () => {
 
     assert.strictEqual(analysis.complete, true)
     assert.strictEqual(analysis.missing.length, 0)
+  })
+})
+
+describe("buildEscalatingFeedback", () => {
+  it("handles null verdict without crashing", () => {
+    const result = buildEscalatingFeedback(1, "medium", null, false)
+    assert.ok(result.includes("Task Incomplete"))
+    assert.ok(result.includes("medium"))
+  })
+
+  it("handles undefined verdict without crashing", () => {
+    const result = buildEscalatingFeedback(1, "high", undefined, false)
+    assert.ok(result.includes("Task Incomplete"))
+    assert.ok(result.includes("high"))
+  })
+
+  it("includes missing items and next actions from verdict", () => {
+    const verdict = {
+      feedback: "Tests not run",
+      missing: ["Run tests", "Create PR"],
+      next_actions: ["npm test", "gh pr create"]
+    }
+    const result = buildEscalatingFeedback(1, "high", verdict, false)
+    assert.ok(result.includes("Tests not run"))
+    assert.ok(result.includes("- Run tests"))
+    assert.ok(result.includes("- Create PR"))
+    assert.ok(result.includes("- npm test"))
+    assert.ok(result.includes("- gh pr create"))
+  })
+
+  it("returns planning loop message when isPlanningLoop is true", () => {
+    const result = buildEscalatingFeedback(1, "high", null, true)
+    assert.ok(result.includes("Planning Loop Detected"))
+    assert.ok(result.includes("Start coding NOW"))
+  })
+
+  it("planning loop ignores verdict content", () => {
+    const verdict = { feedback: "Some feedback", missing: ["item"], next_actions: ["action"] }
+    const result = buildEscalatingFeedback(1, "high", verdict, true)
+    assert.ok(result.includes("Planning Loop Detected"))
+    assert.ok(!result.includes("Some feedback"))
+  })
+
+  it("escalates tone after attempt 2", () => {
+    const verdict = { missing: ["Run tests", "Create PR", "Check CI", "Update docs"] }
+    const result = buildEscalatingFeedback(3, "high", verdict, false)
+    assert.ok(result.includes("Still Incomplete"))
+    assert.ok(result.includes("attempt 3/5"))
+    // Should truncate to first 3 missing items
+    assert.ok(result.includes("Run tests"))
+    assert.ok(result.includes("Create PR"))
+    assert.ok(result.includes("Check CI"))
+    assert.ok(!result.includes("Update docs"))
+  })
+
+  it("handles verdict with empty arrays", () => {
+    const verdict = { feedback: "", missing: [], next_actions: [] }
+    const result = buildEscalatingFeedback(1, "low", verdict, false)
+    assert.ok(result.includes("Task Incomplete"))
+    assert.ok(!result.includes("### Missing"))
+    assert.ok(!result.includes("### Next Actions"))
+  })
+
+  it("handles verdict with missing fields (partial object)", () => {
+    const verdict = { feedback: "Incomplete" }
+    const result = buildEscalatingFeedback(2, "medium", verdict, false)
+    assert.ok(result.includes("Incomplete"))
+    assert.ok(!result.includes("### Missing"))
   })
 })
 
