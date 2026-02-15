@@ -22,6 +22,58 @@ async function reportError(err: unknown, context?: Record<string, string>): Prom
 
 const SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
 const FEEDBACK_MARKER = "## Reflection-3:"
+const MAX_ATTEMPTS = 5
+
+const PLANNING_LOOP_MIN_TOOL_CALLS = 8
+const PLANNING_LOOP_WRITE_RATIO_THRESHOLD = 0.1
+
+const READ_ONLY_TOOL_PATTERNS = [
+  "read",
+  "glob",
+  "grep",
+  "todowrite",
+  "task",
+  "webfetch",
+  "knowledge-graph_search",
+  "knowledge-graph_read",
+  "knowledge-graph_open",
+  "context7_"
+]
+
+const READ_ONLY_BASH_PATTERNS = [
+  /^\s*git\s+(status|log|diff|show|branch|remote|tag)\b/i,
+  /^\s*ls\b/i,
+  /^\s*cat\b/i,
+  /^\s*head\b/i,
+  /^\s*tail\b/i,
+  /^\s*find\b/i,
+  /^\s*grep\b/i,
+  /^\s*rg\b/i,
+  /^\s*wc\b/i,
+  /^\s*file\b/i
+]
+
+const WRITE_TOOL_NAMES = [
+  "edit",
+  "write",
+  "apply_patch",
+  "github_create_or_update_file",
+  "github_push_files",
+  "github_delete_file",
+  "github_create_pull_request",
+  "github_update_pull_request"
+]
+
+const WRITE_BASH_PATTERNS = [
+  /^\s*npm\s+(run\s+)?(build|test|lint|fmt|format)\b/i,
+  /^\s*yarn\s+(build|test|lint|format)\b/i,
+  /^\s*pnpm\s+(build|test|lint|format)\b/i,
+  /^\s*git\s+(add|commit|push|checkout|switch|merge|rebase)\b/i,
+  /^\s*mkdir\b/i,
+  /^\s*rm\b/i,
+  /^\s*mv\b/i,
+  /^\s*cp\b/i
+]
 
 type TaskType = "coding" | "docs" | "research" | "ops" | "other"
 type AgentMode = "plan" | "build" | "unknown"
@@ -234,6 +286,111 @@ function isPlanMode(messages: any[]): boolean {
     }
   }
   return false
+}
+
+export function detectPlanningLoop(messages: any[]): {
+  detected: boolean
+  readCount: number
+  writeCount: number
+  totalTools: number
+} {
+  if (!Array.isArray(messages)) {
+    return { detected: false, readCount: 0, writeCount: 0, totalTools: 0 }
+  }
+
+  let readCount = 0
+  let writeCount = 0
+  let totalTools = 0
+
+  for (const msg of messages) {
+    if (msg.info?.role !== "assistant") continue
+    for (const part of msg.parts || []) {
+      if (part.type !== "tool") continue
+      totalTools++
+
+      const toolName = (part.tool || "").toString()
+      const toolNameLower = toolName.toLowerCase()
+      const input = part.state?.input || {}
+
+      if (WRITE_TOOL_NAMES.includes(toolNameLower)) {
+        writeCount++
+        continue
+      }
+
+      if (toolNameLower === "bash") {
+        const cmd = (input.command || input.cmd || "").toString()
+        if (WRITE_BASH_PATTERNS.some((p) => p.test(cmd))) {
+          writeCount++
+        } else if (READ_ONLY_BASH_PATTERNS.some((p) => p.test(cmd))) {
+          readCount++
+        }
+        continue
+      }
+
+      if (READ_ONLY_TOOL_PATTERNS.some((r) => toolNameLower.startsWith(r))) {
+        readCount++
+      }
+    }
+  }
+
+  const detected =
+    totalTools >= PLANNING_LOOP_MIN_TOOL_CALLS &&
+    (writeCount === 0 ||
+      writeCount / totalTools < PLANNING_LOOP_WRITE_RATIO_THRESHOLD)
+
+  return { detected, readCount, writeCount, totalTools }
+}
+
+export function buildEscalatingFeedback(
+  attemptCount: number,
+  severity: string,
+  verdict: any,
+  isPlanningLoop: boolean
+): string {
+  const missingItems: string[] = Array.isArray(verdict?.missing) ? verdict.missing : []
+  const nextActions: string[] = Array.isArray(verdict?.next_actions) ? verdict.next_actions : []
+  const feedbackText = typeof verdict?.feedback === "string" ? verdict.feedback : "Task incomplete"
+
+  if (isPlanningLoop) {
+    return `${FEEDBACK_MARKER} STOP: Planning Loop Detected
+
+You have been reading files, checking git status, and creating todo lists without writing any code.
+
+DO NOT:
+- Run git status or git log again
+- Create another todo list
+- Read more files "for context"
+- Say "let me get right to work" without actually working
+
+DO NOW:
+Pick the FIRST item from your existing todo list and implement it. Open a file with Edit or Write and make changes. If you don't know where to start, create the simplest possible file first.
+
+Start coding NOW. No more planning.`
+  }
+
+  if (attemptCount <= 2) {
+    const missing = missingItems.length
+      ? `\n### Missing\n${missingItems.map((m: string) => `- ${m}`).join("\n")}`
+      : ""
+    const nextActionsBlock = nextActions.length
+      ? `\n### Next Actions\n${nextActions.map((a: string) => `- ${a}`).join("\n")}`
+      : ""
+    return `${FEEDBACK_MARKER} Task Incomplete (${severity})
+${feedbackText}
+${missing}
+${nextActionsBlock}
+
+Please address these issues and continue.`
+  }
+
+  const missingBrief = missingItems.length
+    ? `Still missing: ${missingItems.slice(0, 3).join(", ")}.`
+    : ""
+  return `${FEEDBACK_MARKER} Still Incomplete (attempt ${attemptCount}/${MAX_ATTEMPTS})
+
+${missingBrief}
+
+You have been asked ${attemptCount} times to complete this task. Stop re-reading files or re-planning. Focus on the specific items above and implement them now. If something is blocking you, say what it is clearly.`
 }
 
 async function showToast(client: any, directory: string, message: string, variant: "info" | "success" | "warning" | "error" = "info") {
@@ -1024,6 +1181,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
   const lastReflectedMsgId = new Map<string, string>()
   const activeReflections = new Set<string>()
   const recentlyAbortedSessions = new Map<string, number>()
+  const attempts = new Map<string, number>()
 
   async function runReflection(sessionId: string): Promise<void> {
       debug("runReflection called for session:", sessionId.slice(0, 8))
@@ -1059,6 +1217,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         if (!lastUserMsgId) return
 
         const initialUserMsgId = lastUserMsgId
+        const attemptKey = `${sessionId}:${lastUserMsgId}`
         const lastReflectedId = lastReflectedMsgId.get(sessionId)
         if (lastUserMsgId === lastReflectedId) return
 
@@ -1124,6 +1283,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         }
 
         if (!selfAssessment) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           return
         }
@@ -1133,6 +1293,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         // Check if user sent a new message or aborted during assessment
         const abortTime = recentlyAbortedSessions.get(sessionId)
         if (abortTime) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           return
         }
@@ -1143,11 +1304,13 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           currentMessages = data
         } catch {
           debug("Session deleted during reflection, aborting:", sessionId.slice(0, 8))
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           return
         }
         const currentUserMsgId = getLastRelevantUserMessageId(currentMessages || [])
         if (currentUserMsgId && currentUserMsgId !== initialUserMsgId) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, initialUserMsgId)
           return
         }
@@ -1161,6 +1324,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         }
 
         if (!analysis) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           await showToast(client, directory, "Reflection analysis failed", "warning")
           return
@@ -1184,6 +1348,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         await writeVerdictSignal(directory, sessionId, analysis.complete, analysis.severity)
 
         if (analysis.complete) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           await showToast(client, directory, `Task complete ✓ (${analysis.severity})`, "success")
           debug("Reflection complete")
@@ -1191,6 +1356,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         }
 
         if (analysis.requiresHumanAction && !analysis.shouldContinue) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           const hint = analysis.missing[0] || "User action required"
           await showToast(client, directory, `Action needed: ${hint}`, "warning")
@@ -1206,30 +1372,48 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           preFeedbackMessages = data
         } catch {
           debug("Session deleted before feedback injection, aborting:", sessionId.slice(0, 8))
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           return
         }
         const preFeedbackUserMsgId = getLastRelevantUserMessageId(preFeedbackMessages || [])
         if (preFeedbackUserMsgId && preFeedbackUserMsgId !== initialUserMsgId) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, initialUserMsgId)
           debug("User sent new message during analysis, skipping feedback")
           return
         }
         const preFeedbackAbort = recentlyAbortedSessions.get(sessionId)
         if (preFeedbackAbort) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           debug("Session aborted during analysis, skipping feedback")
           return
         }
 
-        const feedbackLines: string[] = []
-        feedbackLines.push(`${FEEDBACK_MARKER} Task incomplete.`)
-        if (analysis.reason) feedbackLines.push(`Reason: ${analysis.reason}`)
-        if (analysis.missing.length) feedbackLines.push(`Missing: ${analysis.missing.join("; ")}`)
-        if (analysis.nextActions.length) feedbackLines.push(`Next actions: ${analysis.nextActions.join("; ")}`)
+        const nextAttemptCount = (attempts.get(attemptKey) || 0) + 1
+        attempts.set(attemptKey, nextAttemptCount)
+        if (nextAttemptCount >= MAX_ATTEMPTS) {
+          lastReflectedMsgId.set(sessionId, lastUserMsgId)
+          await showToast(client, directory, `Max attempts (${MAX_ATTEMPTS}) reached`, "warning")
+          debug("Max attempts reached for", sessionId.slice(0, 8))
+          return
+        }
+
+        const loopCheck = detectPlanningLoop(preFeedbackMessages || messages)
+        const feedbackText = buildEscalatingFeedback(
+          nextAttemptCount,
+          analysis.severity || "MEDIUM",
+          {
+            feedback: analysis.reason || "Task incomplete",
+            missing: analysis.missing,
+            next_actions: analysis.nextActions
+          },
+          loopCheck.detected
+        )
 
         // Apply task-based model routing to feedback injection
-        const feedbackBody: any = { parts: [{ type: "text", text: feedbackLines.join("\n") }] }
+        const feedbackBody: any = { parts: [{ type: "text", text: feedbackText }] }
         if (routingModel) {
           feedbackBody.model = routingModel
           debug("Routing feedback to", routingCategory, "model:", JSON.stringify(routingModel))

@@ -342,6 +342,213 @@ describe("Reflection Plugin - Unit Tests", () => {
     })
   })
 
+  describe("Planning Loop Detection (Issue #5)", () => {
+    let detectPlanningLoop: (messages: any[]) => { detected: boolean; readCount: number; writeCount: number; totalTools: number }
+
+    beforeAll(async () => {
+      const mod = await import("../reflection-3.ts")
+      detectPlanningLoop = mod.detectPlanningLoop
+    })
+
+    function toolPart(tool: string, input: any = {}) {
+      return { type: "tool", tool, state: { input } }
+    }
+
+    function assistantMsg(...parts: any[]) {
+      return { info: { role: "assistant" }, parts }
+    }
+
+    it("detects planning loop: many read-only tools, no writes", () => {
+      const messages = [
+        assistantMsg(toolPart("TodoWrite", { todos: [] })),
+        assistantMsg(toolPart("bash", { command: "git status" })),
+        assistantMsg(toolPart("Read", { filePath: "/foo" })),
+        assistantMsg(toolPart("Glob", { pattern: "**/*.ts" })),
+        assistantMsg(toolPart("bash", { command: "git log --oneline -5" })),
+        assistantMsg(toolPart("TodoWrite", { todos: [] })),
+        assistantMsg(toolPart("bash", { command: "git status" })),
+        assistantMsg(toolPart("Read", { filePath: "/bar" })),
+        assistantMsg(toolPart("Grep", { pattern: "foo" })),
+      ]
+      const result = detectPlanningLoop(messages)
+      assert.strictEqual(result.detected, true, "Should detect planning loop")
+      assert.strictEqual(result.writeCount, 0, "Should have zero writes")
+      assert.ok(result.readCount >= 8, "Should have 8+ read-only tools")
+      assert.ok(result.totalTools >= 9, "Should have 9 total tools")
+    })
+
+    it("does NOT detect loop when writes are present", () => {
+      const messages = [
+        assistantMsg(toolPart("TodoWrite", { todos: [] })),
+        assistantMsg(toolPart("bash", { command: "git status" })),
+        assistantMsg(toolPart("Read", { filePath: "/foo" })),
+        assistantMsg(toolPart("Edit", { filePath: "/foo", oldString: "a", newString: "b" })),
+        assistantMsg(toolPart("bash", { command: "npm test" })),
+        assistantMsg(toolPart("Write", { filePath: "/bar", content: "test" })),
+        assistantMsg(toolPart("bash", { command: "git add ." })),
+        assistantMsg(toolPart("bash", { command: "git commit -m 'test'" })),
+        assistantMsg(toolPart("Read", { filePath: "/baz" })),
+      ]
+      const result = detectPlanningLoop(messages)
+      assert.strictEqual(result.detected, false, "Should NOT detect loop with writes")
+      assert.ok(result.writeCount >= 4, "Should have 4+ writes (Edit, Write, npm test, git add, git commit)")
+    })
+
+    it("does NOT detect loop with too few tool calls", () => {
+      const messages = [
+        assistantMsg(toolPart("bash", { command: "git status" })),
+        assistantMsg(toolPart("Read", { filePath: "/foo" })),
+        assistantMsg(toolPart("TodoWrite", { todos: [] })),
+      ]
+      const result = detectPlanningLoop(messages)
+      assert.strictEqual(result.detected, false, "Should NOT flag with < 8 tool calls")
+      assert.ok(result.totalTools < 8, "Total tools should be under threshold")
+    })
+
+    it("handles empty messages", () => {
+      const result = detectPlanningLoop([])
+      assert.strictEqual(result.detected, false, "Should NOT detect loop with no messages")
+      assert.strictEqual(result.totalTools, 0)
+    })
+
+    it("ignores user messages (only analyzes assistant tool calls)", () => {
+      const messages = [
+        { info: { role: "user" }, parts: [{ type: "text", text: "Do something" }] },
+        assistantMsg(toolPart("bash", { command: "git status" })),
+        assistantMsg(toolPart("Read", { filePath: "/foo" })),
+      ]
+      const result = detectPlanningLoop(messages)
+      assert.strictEqual(result.detected, false)
+      assert.strictEqual(result.totalTools, 2, "Should only count assistant tool calls")
+    })
+
+    it("classifies bash write commands correctly", () => {
+      const messages = [
+        assistantMsg(toolPart("bash", { command: "git status" })),
+        assistantMsg(toolPart("bash", { command: "git log" })),
+        assistantMsg(toolPart("bash", { command: "ls -la" })),
+        assistantMsg(toolPart("bash", { command: "cat foo.txt" })),
+        assistantMsg(toolPart("Read", { filePath: "/a" })),
+        assistantMsg(toolPart("Read", { filePath: "/b" })),
+        assistantMsg(toolPart("Glob", { pattern: "*.ts" })),
+        assistantMsg(toolPart("bash", { command: "npm run build" })),
+      ]
+      const result = detectPlanningLoop(messages)
+      assert.strictEqual(result.detected, false, "npm run build counts as a write, should not flag as loop")
+      assert.strictEqual(result.writeCount, 1)
+    })
+
+    it("detects loop in realistic session from issue #5 (plan->read->replan cycle)", () => {
+      const messages = [
+        assistantMsg(toolPart("todowrite", { todos: [{ content: "Research codebase", status: "pending" }] })),
+        assistantMsg(toolPart("bash", { command: "git status" })),
+        assistantMsg(toolPart("bash", { command: "git log --oneline -10" })),
+        assistantMsg(toolPart("Read", { filePath: "/src/index.ts" })),
+        assistantMsg(toolPart("Glob", { pattern: "src/**/*.ts" })),
+        assistantMsg(toolPart("todowrite", { todos: [{ content: "Implement feature", status: "in_progress" }] })),
+        assistantMsg(toolPart("bash", { command: "git diff" })),
+        assistantMsg(toolPart("Read", { filePath: "/package.json" })),
+        assistantMsg(toolPart("Grep", { pattern: "export" })),
+        assistantMsg(toolPart("todowrite", { todos: [{ content: "Still planning", status: "pending" }] })),
+        assistantMsg(toolPart("bash", { command: "git status" })),
+        assistantMsg(toolPart("Read", { filePath: "/src/config.ts" })),
+      ]
+      const result = detectPlanningLoop(messages)
+      assert.strictEqual(result.detected, true, "Should detect the classic plan->read->replan pattern from issue #5")
+      assert.strictEqual(result.writeCount, 0, "Should have zero writes in pure planning loop")
+      assert.ok(result.readCount >= 10, "Should count most tools as read-only")
+    })
+
+    it("correctly handles mixed tool names (case-insensitive tool matching)", () => {
+      const messages = [
+        assistantMsg(toolPart("Task", { description: "explore" })),
+        assistantMsg(toolPart("task", { description: "research" })),
+        assistantMsg(toolPart("webfetch", { url: "https://example.com" })),
+        assistantMsg(toolPart("WebFetch", { url: "https://example.com/docs" })),
+        assistantMsg(toolPart("Read", { filePath: "/foo" })),
+        assistantMsg(toolPart("Glob", { pattern: "**/*" })),
+        assistantMsg(toolPart("Grep", { pattern: "test" })),
+        assistantMsg(toolPart("TodoWrite", { todos: [] })),
+        assistantMsg(toolPart("bash", { command: "pwd" })),
+      ]
+      const result = detectPlanningLoop(messages)
+      assert.strictEqual(result.detected, true, "Should detect loop with mixed-case tools")
+    })
+  })
+
+  describe("Escalating Feedback (Issue #5)", () => {
+    let buildEscalatingFeedback: (attemptCount: number, severity: string, verdict: any, isPlanningLoop: boolean) => string
+
+    beforeAll(async () => {
+      const mod = await import("../reflection-3.ts")
+      buildEscalatingFeedback = mod.buildEscalatingFeedback
+    })
+
+    const sampleVerdict = {
+      feedback: "Tests are missing",
+      missing: ["Unit tests for auth module", "Integration tests"],
+      next_actions: ["Run npm test", "Add test file"],
+      severity: "HIGH"
+    }
+
+    it("returns structured feedback for early attempts (1-2)", () => {
+      const fb = buildEscalatingFeedback(1, "HIGH", sampleVerdict, false)
+      assert.ok(fb.includes("## Reflection-3: Task Incomplete (HIGH)"), "Should have structured header")
+      assert.ok(fb.includes("Tests are missing"), "Should include verdict feedback")
+      assert.ok(fb.includes("Unit tests for auth module"), "Should include missing items")
+      assert.ok(fb.includes("Run npm test"), "Should include next actions")
+      assert.ok(fb.includes("Please address these issues"), "Should have polite closing")
+    })
+
+    it("returns escalated direct feedback for attempt 3+", () => {
+      const fb = buildEscalatingFeedback(3, "HIGH", sampleVerdict, false)
+      assert.ok(fb.includes("Still Incomplete"), "Should indicate persistence")
+      assert.ok(fb.includes("attempt 3/"), "Should show attempt count")
+      assert.ok(fb.includes("Stop re-reading files"), "Should be more direct")
+      assert.ok(fb.includes("Unit tests for auth module"), "Should still mention missing items briefly")
+    })
+
+    it("returns planning loop override regardless of attempt count", () => {
+      const fb1 = buildEscalatingFeedback(1, "MEDIUM", sampleVerdict, true)
+      assert.ok(fb1.includes("STOP: Planning Loop Detected"), "Should have planning loop header")
+      assert.ok(fb1.includes("DO NOT"), "Should have explicit stop instructions")
+      assert.ok(fb1.includes("Start coding NOW"), "Should demand immediate action")
+      assert.ok(fb1.includes("## Reflection-3:"), "Should use reflection-3 header")
+
+      const fb5 = buildEscalatingFeedback(5, "MEDIUM", sampleVerdict, true)
+      assert.ok(fb5.includes("STOP: Planning Loop Detected"), "Planning loop message should be same at any attempt")
+    })
+
+    it("handles verdict with no missing items gracefully", () => {
+      const emptyVerdict = { feedback: "Looks incomplete", missing: [], next_actions: [] }
+      const fb = buildEscalatingFeedback(1, "MEDIUM", emptyVerdict, false)
+      assert.ok(fb.includes("## Reflection-3: Task Incomplete (MEDIUM)"), "Should still have header")
+      assert.ok(fb.includes("Looks incomplete"), "Should include feedback text")
+    })
+
+    it("attempt 3+ truncates missing items to 3", () => {
+      const bigVerdict = {
+        feedback: "Many things missing",
+        missing: ["item1", "item2", "item3", "item4", "item5"],
+        next_actions: ["action1", "action2", "action3", "action4"]
+      }
+      const fb = buildEscalatingFeedback(4, "HIGH", bigVerdict, false)
+      assert.ok(fb.includes("item1"), "Should include first item")
+      assert.ok(fb.includes("item3"), "Should include third item")
+      assert.ok(!fb.includes("item4"), "Should NOT include 4th item (truncated)")
+    })
+  })
+
+  describe("MAX_ATTEMPTS reduced to 5 (Issue #5)", () => {
+    it("MAX_ATTEMPTS should be 5 (down from 16)", () => {
+      const fs = require("fs")
+      const source = fs.readFileSync(require("path").join(__dirname, "../reflection-3.ts"), "utf8")
+      const match = source.match(/const MAX_ATTEMPTS\s*=\s*(\d+)/)
+      assert.ok(match, "MAX_ATTEMPTS should be defined")
+      assert.strictEqual(parseInt(match![1]), 5, "MAX_ATTEMPTS should be 5 (was 16)")
+    })
+  })
+
   describe("extractTaskAndResult with multiple human messages", () => {
     // Helper function that mimics extractTaskAndResult logic
     function extractTaskAndResult(messages: any[]): { task: string; result: string; tools: string; isResearch: boolean; humanMessages: string[] } | null {
