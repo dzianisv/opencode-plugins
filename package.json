@@ -22,13 +22,15 @@
     "install:tts": "mkdir -p ~/.config/opencode/plugin && cp tts.ts sentry.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && (cd ~/.config/opencode && bun install) && bash scripts/setup-coqui.sh",
     "install:reflection-3": "mkdir -p ~/.config/opencode/plugin && cp reflection-3.ts ~/.config/opencode/plugin/reflection.ts && cp sentry.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
     "install:sentry": "mkdir -p ~/.config/opencode/plugin && cp sentry.ts ~/.config/opencode/plugin/ && node scripts/ensure-deps.js && cd ~/.config/opencode && bun install",
+    "install:opencode-worktree": "mkdir -p ~/.local/bin && cp scripts/opencode-worktree.ts ~/.local/bin/opencode-worktree && chmod +x ~/.local/bin/opencode-worktree",
     "eval": "cd evals && npx promptfoo eval",
     "eval:judge": "cd evals && npx promptfoo eval -c promptfooconfig.yaml",
     "eval:stuck": "cd evals && npx promptfoo eval -c stuck-detection.yaml",
     "eval:compression": "cd evals && npx promptfoo eval -c post-compression.yaml",
     "eval:agent": "cd evals && npx promptfoo eval -c agent-evaluation.yaml",
     "eval:e2e": "npx tsx eval.ts",
-    "eval:view": "npx promptfoo view --latest"
+    "eval:view": "npx promptfoo view --latest",
+    "worktree": "bun scripts/opencode-worktree.ts"
   },
   "keywords": [
     "opencode",
