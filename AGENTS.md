@@ -311,7 +311,7 @@ Task patterns allow query-based customization. Each pattern has:
 
 ### Overview
 Reads the final agent response aloud when a session completes. Supports three engines:
-- **Coqui TTS**: High-quality neural TTS (default) - Model: `tts_models/en/vctk/vits` with p226 voice
+- **Coqui TTS**: High-quality neural TTS (default) - Model: `tts_models/en/ljspeech/vits` (LJSpeech, single speaker, female)
 - **OS TTS**: Native macOS `say` command (instant, no setup)
 - **Chatterbox**: Alternative neural TTS with voice cloning
 
@@ -321,11 +321,28 @@ Reads the final agent response aloud when a session completes. Supports three en
 - **Shared server**: Single TTS instance shared across all OpenCode sessions
 - **Lock mechanism**: Prevents multiple server startups from concurrent sessions
 - **Device auto-detection**: Supports CUDA, MPS (Apple Silicon), CPU
-- **Multi-speaker support**: Coqui VCTK model supports 109 speakers (p226 default)
+- **Multi-speaker support**: Coqui VCTK model supports 109 speakers (optional, high memory)
 - Cleans markdown/code from text before speaking
 - Truncates long messages (1000 char limit)
 - Skips judge/reflection sessions
 - Tracks sessions to prevent duplicate speech
+
+### Memory Usage
+
+| Model | Disk Size | Runtime Memory (MPS) | Notes |
+|-------|-----------|---------------------|-------|
+| `vits` (default) | 139 MB | ~1-2 GB | Single speaker, low memory |
+| `vctk_vits` | 152 MB | **~9 GB** | 109 speaker embeddings loaded into GPU memory |
+| `jenny` | 1.6 GB | ~3-4 GB | Single speaker |
+
+The `vctk_vits` model uses ~9 GB because it loads all 109 speaker embedding vectors into MPS (Apple Silicon GPU) memory. On a 16 GB machine this is problematic — switch to `vits` to save ~7 GB.
+
+Each OpenCode session (`opencode -c`) uses 1-3 GB due to:
+- **WebKit Malloc** (~450 MB swapped) — Bun's JavaScriptCore runtime
+- **JS VM Gigacage** (~55 GB virtual, ~11 MB resident) — JSC reserved address space (mostly unallocated)
+- **IOAccelerator** (~1.6 GB swapped) — GPU buffer allocations
+- **Child processes** (~100-200 MB) — 5 MCP servers + LSP servers per session
+- **macOS memory compression** — `top` reports compressed+swapped sizes, not actual RAM
 
 ### Configuration
 Edit `~/.config/opencode/tts.json`:
@@ -338,9 +355,8 @@ Edit `~/.config/opencode/tts.json`:
     "rate": 200
   },
   "coqui": {
-    "model": "vctk_vits",
+    "model": "vits",
     "device": "mps",
-    "speaker": "p226",
     "serverMode": true
   },
   "chatterbox": {
@@ -353,14 +369,14 @@ Edit `~/.config/opencode/tts.json`:
 ```
 
 ### Coqui TTS Models
-| Model | Description | Speed |
-|-------|-------------|-------|
-| `vctk_vits` | Multi-speaker VITS (109 speakers, p226 recommended) | Fast |
-| `vits` | LJSpeech single speaker | Fast |
-| `jenny` | Jenny voice | Medium |
-| `xtts_v2` | XTTS with voice cloning | Slower |
-| `bark` | Multilingual neural TTS | Slower |
-| `tortoise` | Very high quality | Very slow |
+| Model | Description | Memory | Speed |
+|-------|-------------|--------|-------|
+| `vits` | LJSpeech single speaker (default, **recommended**) | ~1-2 GB | Fast |
+| `vctk_vits` | Multi-speaker VITS (109 speakers) | ~9 GB | Fast |
+| `jenny` | Jenny voice | ~3-4 GB | Medium |
+| `xtts_v2` | XTTS with voice cloning | ~4-5 GB | Slower |
+| `bark` | Multilingual neural TTS | ~5 GB | Slower |
+| `tortoise` | Very high quality | ~6 GB | Very slow |
 
 ### Coqui Server Files
 Located in `~/.config/opencode/opencode-helpers/coqui/`:

@@ -372,9 +372,8 @@ async function loadConfig(): Promise<TTSConfig> {
       enabled: true, 
       engine: "coqui",
       coqui: {
-        model: "vctk_vits",
+        model: "vits",
         device: "mps",
-        speaker: "p226",
         serverMode: true
       },
       os: {
@@ -1138,11 +1137,11 @@ def main():
     parser = argparse.ArgumentParser(description="Coqui TTS")
     parser.add_argument("text", help="Text to synthesize")
     parser.add_argument("--output", "-o", required=True, help="Output WAV file")
-    parser.add_argument("--model", default="vctk_vits", choices=["bark", "xtts_v2", "tortoise", "vits", "vctk_vits", "jenny"])
+    parser.add_argument("--model", default="vits", choices=["bark", "xtts_v2", "tortoise", "vits", "vctk_vits", "jenny"])
     parser.add_argument("--device", default="cuda", choices=["cuda", "mps", "cpu"])
     parser.add_argument("--voice-ref", help="Reference voice audio path (for XTTS voice cloning)")
     parser.add_argument("--language", default="en", help="Language code (for XTTS)")
-    parser.add_argument("--speaker", default="p226", help="Speaker ID for multi-speaker models (e.g., 'p226' for vctk_vits)")
+    parser.add_argument("--speaker", default=None, help="Speaker ID for multi-speaker models (e.g., 'p226' for vctk_vits)")
     args = parser.parse_args()
     
     try:
@@ -1226,10 +1225,10 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description="Coqui TTS Server")
     parser.add_argument("--socket", required=True, help="Unix socket path")
-    parser.add_argument("--model", default="vctk_vits", choices=["bark", "xtts_v2", "tortoise", "vits", "vctk_vits", "jenny"])
+    parser.add_argument("--model", default="vits", choices=["bark", "xtts_v2", "tortoise", "vits", "vctk_vits", "jenny"])
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu", "mps"])
     parser.add_argument("--voice-ref", help="Default reference voice (for XTTS)")
-    parser.add_argument("--speaker", default="p226", help="Default speaker ID (e.g., 'p226' for vctk_vits)")
+    parser.add_argument("--speaker", default=None, help="Default speaker ID (e.g., 'p226' for vctk_vits)")
     parser.add_argument("--language", default="en", help="Default language")
     args = parser.parse_args()
     

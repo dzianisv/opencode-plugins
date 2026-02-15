@@ -37,7 +37,7 @@ This plugin adds a **judge layer** that automatically evaluates task completion 
 - **Automatic task verification** - Judge evaluates completion after each agent response
 - **Self-healing workflow** - Agent receives feedback and continues if work is incomplete
 - **Telegram notifications** - Get notified when tasks finish, reply via text or voice
-- **Local TTS** - Hear responses read aloud (Coqui VCTK/VITS, Chatterbox, macOS)
+- **Local TTS** - Hear responses read aloud (Coqui LJSpeech VITS, Chatterbox, macOS)
 - **Voice-to-text** - Reply to Telegram with voice messages, transcribed by local Whisper
 
 ## Quick Install
@@ -166,16 +166,34 @@ Text-to-speech with Telegram integration for remote notifications and two-way co
 
 ### Coqui TTS Models
 
-| Model | Description | Multi-Speaker | Speed |
-|-------|-------------|---------------|-------|
-| `vctk_vits` | VCTK VITS (109 speakers, **recommended**) | Yes (p226 default) | Fast |
-| `vits` | LJSpeech single speaker | No | Fast |
-| `jenny` | Jenny voice | No | Medium |
-| `xtts_v2` | XTTS v2 with voice cloning | Yes (via voiceRef) | Slower |
-| `bark` | Multilingual neural TTS | No | Slower |
-| `tortoise` | Very high quality | No | Very slow |
+| Model | Description | Memory | Multi-Speaker | Speed |
+|-------|-------------|--------|---------------|-------|
+| `vits` | LJSpeech single speaker (default, **recommended**) | ~1-2 GB | No | Fast |
+| `vctk_vits` | VCTK VITS (109 speakers) | ~9 GB | Yes (p226 default) | Fast |
+| `jenny` | Jenny voice | ~3-4 GB | No | Medium |
+| `xtts_v2` | XTTS v2 with voice cloning | ~4-5 GB | Yes (via voiceRef) | Slower |
+| `bark` | Multilingual neural TTS | ~5 GB | No | Slower |
+| `tortoise` | Very high quality | ~6 GB | No | Very slow |
 
-**Recommended**: `vctk_vits` with speaker `p226` (clear, professional British male voice)
+**Recommended**: `vits` — LJSpeech single speaker, female voice, uses only ~1-2 GB memory vs ~9 GB for `vctk_vits`.
+
+### Memory Usage
+
+| Component | Memory | Notes |
+|-----------|--------|-------|
+| **Coqui `vits`** (default) | ~1-2 GB | Single speaker, 139 MB on disk |
+| **Coqui `vctk_vits`** | **~9 GB** | 109 speaker embeddings loaded into MPS GPU memory |
+| **OpenCode session** | 1-3 GB reported | Mostly virtual/compressed (see below) |
+
+**Why `vctk_vits` uses 9 GB:** It loads all 109 speaker embedding vectors into MPS (Apple Silicon GPU) memory. On a 16 GB machine this leaves very little room for anything else.
+
+**Why OpenCode sessions appear to use 2-3 GB each:**
+macOS `top` reports compressed + swapped memory, not actual RSS. A typical session's actual breakdown:
+- **WebKit Malloc** (~450 MB swapped) — Bun's JavaScriptCore runtime
+- **JS VM Gigacage** (~55 GB virtual, ~11 MB resident) — JSC reserved address space (mostly unallocated)
+- **IOAccelerator** (~1.6 GB swapped) — GPU buffer allocations
+- **Child processes** (~100-200 MB) — 5 MCP servers + LSP servers per session
+- **Actual RSS** is typically 100-300 MB per session
 
 ### VCTK Speakers (vctk_vits model)
 
@@ -273,9 +291,8 @@ Supported languages: `en`, `es`, `fr`, `de`, `it`, `pt`, `pl`, `tr`, `ru`, `nl`,
   "enabled": true,
   "engine": "coqui",
   "coqui": {
-    "model": "vctk_vits",
+    "model": "vits",
     "device": "mps",
-    "speaker": "p226",
     "serverMode": true
   },
   "os": {
@@ -310,9 +327,9 @@ Supported languages: `en`, `es`, `fr`, `de`, `it`, `pt`, `pl`, `tr`, `ru`, `nl`,
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `model` | TTS model (see table above) | `"vctk_vits"` |
+| `model` | TTS model (see table above) | `"vits"` |
 | `device` | `"cuda"`, `"mps"`, or `"cpu"` | auto-detect |
-| `speaker` | Speaker ID for multi-speaker models | `"p226"` |
+| `speaker` | Speaker ID for multi-speaker models | - |
 | `serverMode` | Keep model loaded for fast requests | `true` |
 | `voiceRef` | Path to voice clip for cloning (XTTS) | - |
 | `language` | Language code for XTTS | `"en"` |
