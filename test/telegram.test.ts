@@ -2,10 +2,16 @@
  * Telegram Plugin Integration Tests
  * 
  * Tests the REAL Telegram integration against Supabase:
- * 1. Notifications are delivered from OpenCode to Telegram
- * 2. Text replies are routed to correct sessions
- * 3. Voice replies are stored and can be transcribed
- * 4. Multi-session routing works correctly
+ * 1. Text replies are routed to correct sessions
+ * 2. Voice replies are stored and can be transcribed
+ * 3. Multi-session routing works correctly
+ * 4. Database operations (RPCs, context lifecycle)
+ * 5. Error handling (malformed input, missing fields)
+ * 
+ * NOTE: Outbound message delivery tests (send-notify) were removed
+ * because they posted dumb test messages to the real Telegram chat
+ * (see issues #76, #112). Notification formatting is covered by
+ * unit tests in test/telegram.unit.test.ts instead.
  * 
  * These tests use REAL Supabase APIs - no mocks.
  * 
@@ -38,106 +44,8 @@ beforeAll(() => {
 })
 
 // ============================================================================
-// PART 1: MESSAGE DELIVERY (OpenCode -> Telegram)
-// ============================================================================
-
-describe("Message Delivery: OpenCode -> Telegram", () => {
-  
-  it("send-notify endpoint accepts valid requests", async () => {
-    const response = await fetch(SEND_NOTIFY_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-        "apikey": SUPABASE_ANON_KEY,
-      },
-      body: JSON.stringify({
-        uuid: TEST_UUID,
-        text: `Test notification ${Date.now()}`,
-        session_id: `ses_test_${uniqueId()}`,
-        directory: "/tmp/test",
-      }),
-    })
-
-    expect(response.status).toBe(200)
-    const result = await response.json()
-    expect(result.text_sent).toBe(true)
-  }, 15000) // Extended timeout for network
-
-  it("send-notify creates reply context for session routing", async () => {
-    const sessionId = `ses_${uniqueId()}`
-    const testText = `Context test ${Date.now()}`
-
-    const response = await fetch(SEND_NOTIFY_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-        "apikey": SUPABASE_ANON_KEY,
-      },
-      body: JSON.stringify({
-        uuid: TEST_UUID,
-        text: testText,
-        session_id: sessionId,
-        directory: "/tmp/test",
-      }),
-    })
-
-    expect(response.status).toBe(200)
-    const result = await response.json()
-    expect(result.text_sent).toBe(true)
-    expect(result.message_id).toBeDefined()
-
-    // Verify reply context was created
-    const { data: contexts } = await supabase
-      .from("telegram_reply_contexts")
-      .select("*")
-      .eq("session_id", sessionId)
-      .eq("uuid", TEST_UUID)
-      .limit(1)
-
-    expect(contexts).toBeDefined()
-    expect(contexts!.length).toBe(1)
-    expect(contexts![0].message_id).toBe(result.message_id)
-    expect(contexts![0].is_active).toBe(true)
-
-    // Cleanup
-    await supabase.from("telegram_reply_contexts").delete().eq("session_id", sessionId)
-  })
-
-  it("send-notify handles markdown characters correctly", async () => {
-    const testMessages = [
-      "Code: `const x = 1`",
-      "**Bold** and _italic_",
-    ]
-
-    for (const text of testMessages) {
-      const response = await fetch(SEND_NOTIFY_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-          "apikey": SUPABASE_ANON_KEY,
-        },
-        body: JSON.stringify({
-          uuid: TEST_UUID,
-          text,
-          session_id: `ses_markdown_${uniqueId()}`,
-        }),
-      })
-
-      expect(response.status).toBe(200)
-      const result = await response.json()
-      expect(result.text_sent).toBe(true)
-      
-      // Small delay to avoid rate limiting
-      await new Promise(r => setTimeout(r, 500))
-    }
-  }, 30000)
-})
-
-// ============================================================================
-// PART 2: TEXT REPLY ROUTING (Telegram -> OpenCode)
+// PART 1: TEXT REPLY ROUTING (Telegram -> OpenCode)
+// (Message delivery tests removed — see issues #76, #112)
 // ============================================================================
 
 describe("Text Reply Routing: Telegram -> Correct Session", () => {
@@ -364,7 +272,7 @@ describe("Text Reply Routing: Telegram -> Correct Session", () => {
 })
 
 // ============================================================================
-// PART 3: VOICE REPLY HANDLING
+// PART 2: VOICE REPLY HANDLING
 // ============================================================================
 
 describe("Voice Reply Handling", () => {
@@ -526,7 +434,7 @@ describe("Voice Reply Handling", () => {
 })
 
 // ============================================================================
-// PART 4: DATABASE OPERATIONS
+// PART 3: DATABASE OPERATIONS
 // ============================================================================
 
 describe("Database Operations", () => {
@@ -636,7 +544,7 @@ describe("Database Operations", () => {
 })
 
 // ============================================================================
-// PART 5: ERROR HANDLING
+// PART 4: ERROR HANDLING
 // ============================================================================
 
 describe("Error Handling", () => {
