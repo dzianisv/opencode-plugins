@@ -364,3 +364,58 @@ export function getRoutingModel(config: RoutingConfig, category: RoutingCategory
   if (!providerID || !modelID) return null
   return { providerID, modelID }
 }
+
+const FEEDBACK_MARKER = "## Reflection-3:"
+const MAX_ATTEMPTS = 5
+
+export function buildEscalatingFeedback(
+  attemptCount: number,
+  severity: string,
+  verdict: { feedback?: string; missing?: string[]; next_actions?: string[] } | undefined | null,
+  isPlanningLoop: boolean
+): string {
+  const safeVerdict = verdict ?? {}
+  const missingItems = Array.isArray(safeVerdict.missing) ? safeVerdict.missing : []
+  const nextActionItems = Array.isArray(safeVerdict.next_actions) ? safeVerdict.next_actions : []
+  const feedbackStr = safeVerdict.feedback || ""
+  if (isPlanningLoop) {
+    return `${FEEDBACK_MARKER} STOP: Planning Loop Detected
+
+You have been reading files, checking git status, and creating todo lists without writing any code.
+
+DO NOT:
+- Run git status or git log again
+- Create another todo list
+- Read more files "for context"
+- Say "let me get right to work" without actually working
+
+DO NOW:
+Pick the FIRST item from your existing todo list and implement it. Open a file with Edit or Write and make changes. If you don't know where to start, create the simplest possible file first.
+
+Start coding NOW. No more planning.`
+  }
+
+  if (attemptCount <= 2) {
+    const missing = missingItems.length
+      ? `\n### Missing\n${missingItems.map((m) => `- ${m}`).join("\n")}`
+      : ""
+    const nextActions = nextActionItems.length
+      ? `\n### Next Actions\n${nextActionItems.map((a) => `- ${a}`).join("\n")}`
+      : ""
+    return `${FEEDBACK_MARKER} Task Incomplete (${severity})
+${feedbackStr}
+${missing}
+${nextActions}
+
+Please address these issues and continue.`
+  }
+
+  const missingBrief = missingItems.length
+    ? `Still missing: ${missingItems.slice(0, 3).join(", ")}.`
+    : ""
+  return `${FEEDBACK_MARKER} Still Incomplete (attempt ${attemptCount}/${MAX_ATTEMPTS})
+
+${missingBrief}
+
+You have been asked ${attemptCount} times to complete this task. Stop re-reading files or re-planning. Focus on the specific items above and implement them now. If something is blocking you, say what it is clearly.`
+}
