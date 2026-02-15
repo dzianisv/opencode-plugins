@@ -169,4 +169,68 @@ const oc = spawnSync("opencode", [], {
   env: process.env,
 });
 
+// ── Auto-cleanup after opencode exits ────────────────────────────────
+// Remove the worktree and branch if there are no uncommitted, unstashed,
+// or unpushed changes.  If anything is dirty, keep it and inform the user.
+
+function worktreeIsClean(): { clean: boolean; reason?: string } {
+  try {
+    // 1. Uncommitted changes (staged or unstaged)
+    const status = git(["status", "--porcelain"], worktreePath);
+    if (status.length > 0) {
+      return { clean: false, reason: "uncommitted changes" };
+    }
+
+    // 2. Stash entries
+    const stash = git(["stash", "list"], worktreePath);
+    if (stash.length > 0) {
+      return { clean: false, reason: "stashed changes" };
+    }
+
+    // 3. Unpushed commits — compare HEAD to its upstream
+    try {
+      const unpushed = git(["log", "@{u}..HEAD", "--oneline"], worktreePath);
+      if (unpushed.length > 0) {
+        return { clean: false, reason: "unpushed commits" };
+      }
+    } catch {
+      // No upstream set — check if branch has any commits beyond the base
+      try {
+        const unpushed = git(["log", `${defaultBranch}..HEAD`, "--oneline"], worktreePath);
+        if (unpushed.length > 0) {
+          return { clean: false, reason: "unpushed commits (no upstream)" };
+        }
+      } catch {
+        // Can't determine — be safe and keep it
+        return { clean: false, reason: "unable to determine push status" };
+      }
+    }
+
+    return { clean: true };
+  } catch (e: any) {
+    return { clean: false, reason: `check failed: ${e.message}` };
+  }
+}
+
+const { clean, reason } = worktreeIsClean();
+
+if (clean) {
+  log(`\nWorktree is clean — removing ${worktreePath} and branch ${branch}...`);
+  try {
+    git(["worktree", "remove", "--force", worktreePath], repoRoot);
+    log(`  ✓ worktree removed`);
+  } catch (e: any) {
+    log(`  Warning: failed to remove worktree: ${e.message}`);
+  }
+  try {
+    git(["branch", "-D", branch], repoRoot);
+    log(`  ✓ branch ${branch} deleted`);
+  } catch (e: any) {
+    log(`  Warning: failed to delete branch: ${e.message}`);
+  }
+} else {
+  log(`\nKeeping worktree at ${worktreePath} (${reason}).`);
+  log(`To remove manually:\n  git worktree remove ${worktreePath} && git branch -D ${branch}`);
+}
+
 process.exit(oc.status ?? 1);
