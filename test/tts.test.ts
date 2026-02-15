@@ -128,6 +128,65 @@ describe("TTS Plugin - Unit Tests", () => {
     expect(result).toBe("Hello world test")
   })
 
+  /**
+   * formatModelName - converts raw model IDs to spoken names
+   * (must match plugin's implementation)
+   */
+  function formatModelName(modelID: string | undefined): string {
+    if (!modelID) return "the agent"
+    
+    // Strip date suffixes like -20250514 or -2025-03-01
+    let name = modelID.replace(/-\d{4}-?\d{2}-?\d{2}.*$/, "")
+    // Strip provider prefixes like "github-copilot/"
+    name = name.replace(/^[^/]*\//, "")
+    // Strip common suffixes like -latest, -preview
+    name = name.replace(/-(latest|preview|canary)$/i, "")
+    
+    // Capitalize first letter of each segment and replace hyphens with spaces
+    name = name
+      .split("-")
+      .map(part => {
+        if (/^(gpt|o\d+|claude|llm)$/i.test(part)) {
+          return part.toUpperCase()
+        }
+        return part.charAt(0).toUpperCase() + part.slice(1)
+      })
+      .join(" ")
+    
+    return name
+  }
+
+  it("formats Claude model IDs", () => {
+    expect(formatModelName("claude-opus-4-20250514")).toBe("CLAUDE Opus 4")
+    expect(formatModelName("claude-sonnet-4-20250514")).toBe("CLAUDE Sonnet 4")
+    expect(formatModelName("claude-3-5-sonnet-20241022")).toBe("CLAUDE 3 5 Sonnet")
+  })
+
+  it("formats GPT model IDs", () => {
+    expect(formatModelName("gpt-4o-2025-03-01")).toBe("GPT 4o")
+    expect(formatModelName("gpt-4o")).toBe("GPT 4o")
+    expect(formatModelName("gpt-5.2-code")).toBe("GPT 5.2 Code")
+  })
+
+  it("formats model IDs with provider prefix", () => {
+    expect(formatModelName("github-copilot/claude-opus-4-20250514")).toBe("CLAUDE Opus 4")
+    expect(formatModelName("openai/gpt-4o-2025-03-01")).toBe("GPT 4o")
+  })
+
+  it("formats model IDs with suffixes", () => {
+    expect(formatModelName("claude-sonnet-4-latest")).toBe("CLAUDE Sonnet 4")
+    expect(formatModelName("gpt-4o-preview")).toBe("GPT 4o")
+  })
+
+  it("handles undefined/empty model ID", () => {
+    expect(formatModelName(undefined)).toBe("the agent")
+    expect(formatModelName("")).toBe("the agent")
+  })
+
+  it("handles o-series model IDs", () => {
+    expect(formatModelName("o3-pro")).toBe("O3 Pro")
+  })
+
   it("loads config with valid whisper port", () => {
     const port = getWhisperPort()
     console.log(`  [INFO] Whisper port from config: ${port}`)

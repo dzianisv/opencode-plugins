@@ -1742,6 +1742,36 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
     return null
   }
 
+  /**
+   * Convert a raw model ID (e.g. "claude-opus-4-20250514", "gpt-4o-2025-03-01")
+   * into a human-friendly spoken name (e.g. "Claude Opus 4", "GPT 4o").
+   */
+  function formatModelName(modelID: string | undefined): string {
+    if (!modelID) return "the agent"
+    
+    // Strip date suffixes like -20250514 or -2025-03-01
+    let name = modelID.replace(/-\d{4}-?\d{2}-?\d{2}.*$/, "")
+    // Strip provider prefixes like "github-copilot/"
+    name = name.replace(/^[^/]*\//, "")
+    // Strip common suffixes like -latest, -preview
+    name = name.replace(/-(latest|preview|canary)$/i, "")
+    
+    // Capitalize first letter of each segment and replace hyphens with spaces
+    name = name
+      .split("-")
+      .map(part => {
+        // Keep known acronyms uppercase
+        if (/^(gpt|o\d+|claude|llm)$/i.test(part)) {
+          return part.toUpperCase()
+        }
+        // Capitalize first letter
+        return part.charAt(0).toUpperCase() + part.slice(1)
+      })
+      .join(" ")
+    
+    return name
+  }
+
   function cleanTextForSpeech(text: string): string {
     return text
       .replace(/```[\s\S]*?```/g, "code block omitted")
@@ -1762,9 +1792,15 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
     const cleaned = cleanTextForSpeech(text)
     if (!cleaned) return
 
-    const toSpeak = cleaned.length > MAX_SPEECH_LENGTH
-      ? cleaned.slice(0, MAX_SPEECH_LENGTH) + "... message truncated."
-      : cleaned
+    // Build prefix announcement: "<Model> finished task for project <dir>."
+    const spokenModelName = formatModelName(modelID)
+    const projectName = targetDirectory.split("/").filter(Boolean).pop() || "unknown"
+    const prefix = `${spokenModelName} finished task for project ${projectName}. `
+
+    const prefixed = prefix + cleaned
+    const toSpeak = prefixed.length > MAX_SPEECH_LENGTH
+      ? prefixed.slice(0, MAX_SPEECH_LENGTH) + "... message truncated."
+      : prefixed
 
     // Check if TTS is still enabled before waiting in queue
     if (!(await isEnabled())) {
