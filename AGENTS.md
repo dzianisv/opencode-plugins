@@ -65,6 +65,17 @@ Artifacts:
 - `.reflection/verdict_<session>.json` (signals for TTS/Telegram gating)
 - `.reflection/<session>_<timestamp>.json` (full analysis record)
 
+## Plugin Development Rules
+
+### No console output from plugins
+Never use `console.log`, `console.error`, `console.warn`, `process.stdout.write`, or `process.stderr.write` in plugin runtime code. Any output to stdout/stderr corrupts the OpenCode TUI.
+
+For debug/diagnostic logging, write to log files instead:
+- Reflection plugin: `.reflection/debug.log` (enabled by `REFLECTION_DEBUG=1`)
+- TTS plugin: `~/.config/opencode/opencode-helpers/tts.log`
+
+Test files (`test/*.ts`) may use `console.log` for test output.
+
 ## References
 - `docs/reflection.md`
 - `docs/tts.md`

@@ -7,7 +7,7 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
-import { readFile, writeFile, mkdir, stat } from "fs/promises"
+import { readFile, writeFile, mkdir, stat, appendFile } from "fs/promises"
 import { join } from "path"
 import { homedir } from "os"
 
@@ -109,8 +109,32 @@ const POLL_INTERVAL = 2_000
 const ABORT_COOLDOWN = 10_000
 const REFLECTION_CONFIG_PATH = join(homedir(), ".config", "opencode", "reflection.yaml")
 
-// Debug logging (silenced — console.error corrupts the OpenCode TUI)
-function debug(..._args: any[]) {}
+// Debug logging — writes to .reflection/debug.log when REFLECTION_DEBUG=1.
+// Never write to stdout/stderr — it corrupts the OpenCode TUI.
+const REFLECTION_DEBUG = process.env.REFLECTION_DEBUG === "1"
+
+// Module-level debug function, initially a no-op.
+// Replaced with a file-backed logger once the plugin initializes with a directory.
+let debug: (...args: any[]) => void = () => {}
+
+function initDebugLogger(directory: string) {
+  if (!REFLECTION_DEBUG) return
+  const logPath = join(directory, ".reflection", "debug.log")
+  let dirEnsured = false
+  debug = (...args: any[]) => {
+    const msg = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ")
+    const ts = new Date().toISOString()
+    const line = `[${ts}] [Reflection3] ${msg}\n`
+    // Fire-and-forget: do not await to avoid slowing down the plugin
+    ;(async () => {
+      if (!dirEnsured) {
+        try { await mkdir(join(directory, ".reflection"), { recursive: true }) } catch {}
+        dirEnsured = true
+      }
+      try { await appendFile(logPath, line) } catch {}
+    })()
+  }
+}
 
 async function loadReflectionPrompt(directory: string): Promise<string | null> {
   const candidates = ["reflection.md", "reflection.MD"]
@@ -166,7 +190,7 @@ function isJudgeSession(sessionId: string, messages: any[], judgeSessionIds: Set
   if (judgeSessionIds.has(sessionId)) return true
   for (const msg of messages) {
     for (const part of msg.parts || []) {
-      if (part.type === "text" && part.text?.includes("ANALYZE REFLECTION-3")) {
+      if (part.type === "text" && (part.text?.includes("ANALYZE REFLECTION-3") || part.text?.includes("SELF-ASSESS REFLECTION-3"))) {
         return true
       }
     }
@@ -646,7 +670,19 @@ async function buildTaskContext(messages: any[], directory: string): Promise<Tas
   }
 }
 
-function buildSelfAssessmentPrompt(context: TaskContext, agents: string): string {
+function extractLastAssistantText(messages: any[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.info?.role === "assistant") {
+      for (const part of msg.parts || []) {
+        if (part.type === "text" && part.text) return part.text
+      }
+    }
+  }
+  return ""
+}
+
+function buildSelfAssessmentPrompt(context: TaskContext, agents: string, lastAssistantText?: string): string {
   const safeContext = {
     ...context,
     detectedSignals: Array.isArray(context.detectedSignals) ? context.detectedSignals : []
@@ -662,22 +698,26 @@ function buildSelfAssessmentPrompt(context: TaskContext, agents: string): string
 
   const signalSummary = safeContext.detectedSignals.length ? safeContext.detectedSignals.join(", ") : "none"
 
-  return `${SELF_ASSESSMENT_MARKER}
+  const assistantSection = lastAssistantText
+    ? `\n## Agent's Last Response\n${lastAssistantText.slice(0, 4000)}\n`
+    : ""
 
-I'm verifying the task completion and quality standards. Please provide a self-assessment of your work.
+  return `SELF-ASSESS REFLECTION-3
 
-**Task Context:**
+You are evaluating an agent's work against workflow requirements.
+Analyze the task context, the agent's last response, and the tool signals to determine whether the task is complete.
+
+## Task Context
 - Summary: ${safeContext.taskSummary}
 - Type: ${safeContext.taskType}
 - Mode: ${safeContext.agentMode}
 - Required checks: ${requirements.join("; ")}
 - Detected signals: ${signalSummary}
 
-${agents ? `**Project Instructions:**\n${agents.slice(0, 800)}\n\n` : ""}**IMPORTANT: Your entire response must be valid JSON and nothing else.**
-Do not include any explanation, commentary, markdown formatting, or code fences.
-Do not write anything before or after the JSON object.
-Output ONLY a single JSON object using this exact schema:
-
+## Tool Commands Run
+${safeContext.toolsSummary}
+${assistantSection}
+${agents ? `## Project Instructions\n${agents.slice(0, 800)}\n\n` : ""}Return JSON only:
 {
   "task_summary": "brief description of what was done",
   "task_type": "feature|bugfix|refactor|docs|research|ops|other",
@@ -708,16 +748,14 @@ Output ONLY a single JSON object using this exact schema:
   "alternate_approach": "describe if needed"
 }
 
-**Verification Rules:**
-- If coding work is complete, confirm tests ran after the latest changes and passed
-- If local tests are required, provide the exact commands run in this session
-- If PR exists, verify CI checks and report status
-- Tests cannot be skipped or marked as flaky/not important
-- Direct pushes to main/master are not allowed; require a PR instead
-- If stuck, propose an alternate approach
-- If you need user action (auth, 2FA, credentials), list it in needs_user_action
-
-Remember: respond with ONLY the JSON object. No other text.`
+Rules:
+- If coding work is complete, confirm tests ran after the latest changes and passed.
+- If local tests are required, provide the exact commands run in this session.
+- If PR exists, verify CI checks and report status.
+- Tests cannot be skipped or marked as flaky/not important.
+- Direct pushes to main/master are not allowed; require a PR instead.
+- If stuck, propose an alternate approach.
+- If you need user action (auth, 2FA, credentials), list it in needs_user_action.`
 }
 
 function parseSelfAssessmentJson(text: string | null | undefined): SelfAssessment | null {
@@ -981,12 +1019,14 @@ Return JSON only:
 }
 
 export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
+  initDebugLogger(directory)
   const judgeSessionIds = new Set<string>()
   const lastReflectedMsgId = new Map<string, string>()
   const activeReflections = new Set<string>()
   const recentlyAbortedSessions = new Map<string, number>()
 
   async function runReflection(sessionId: string): Promise<void> {
+      debug("runReflection called for session:", sessionId.slice(0, 8))
       if (activeReflections.has(sessionId)) return
       activeReflections.add(sessionId)
 
@@ -1025,31 +1065,77 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         const context = await buildTaskContext(messages, directory)
         if (!context) return
 
+        const lastAssistantText = extractLastAssistantText(messages)
         const customPrompt = await loadReflectionPrompt(directory)
         const agents = await getAgentsFile(directory)
-        const reflectionPrompt = customPrompt || buildSelfAssessmentPrompt(context, agents)
+        const reflectionPrompt = customPrompt || buildSelfAssessmentPrompt(context, agents, lastAssistantText)
 
         await showToast(client, directory, "Requesting reflection self-assessment...", "info")
+        debug("Requesting reflection self-assessment")
 
-        try {
-          await client.session.promptAsync({
-            path: { id: sessionId },
-            body: { parts: [{ type: "text", text: reflectionPrompt }] }
-          })
-        } catch (e: any) {
-          debug("promptAsync failed (self-assessment):", e?.message || e)
-          reportError(e, { plugin: "reflection-3", op: "prompt-self-assessment" })
-          lastReflectedMsgId.set(sessionId, lastUserMsgId)
-          return
+        // Issue #98: Run self-assessment in a separate ephemeral session instead
+        // of prompting the active agent session. Asking the active session to
+        // respond in JSON poisons its context, causing subsequent replies to be
+        // JSON-only.
+        const modelList = await loadReflectionModelList()
+        const assessmentAttempts = modelList.length ? modelList : [""]
+
+        let selfAssessment: string | null = null
+        for (const modelSpec of assessmentAttempts) {
+          let assessmentSession: any
+          try {
+            const { data } = await client.session.create({ query: { directory } })
+            assessmentSession = data
+          } catch {
+            debug("Failed to create self-assessment session")
+            lastReflectedMsgId.set(sessionId, lastUserMsgId)
+            return
+          }
+          if (!assessmentSession?.id) {
+            lastReflectedMsgId.set(sessionId, lastUserMsgId)
+            return
+          }
+          judgeSessionIds.add(assessmentSession.id)
+
+          try {
+            const modelParts = modelSpec ? modelSpec.split("/") : []
+            const providerID = modelParts[0] || ""
+            const modelID = modelParts.slice(1).join("/") || ""
+            const body: any = { parts: [{ type: "text", text: reflectionPrompt }] }
+            if (providerID && modelID) body.model = { providerID, modelID }
+
+            await client.session.promptAsync({
+              path: { id: assessmentSession.id },
+              body
+            })
+
+            selfAssessment = await waitForResponse(client, assessmentSession.id)
+            if (selfAssessment) break
+          } catch (e: any) {
+            debug("promptAsync failed (self-assessment):", e?.message || e)
+            reportError(e, { plugin: "reflection-3", op: "prompt-self-assessment" })
+            continue
+          } finally {
+            try {
+              await client.session.delete({ path: { id: assessmentSession.id }, query: { directory } })
+            } catch {}
+            judgeSessionIds.delete(assessmentSession.id)
+          }
         }
 
-        const selfAssessment = await waitForResponse(client, sessionId)
         if (!selfAssessment) {
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           return
         }
 
         debug("Self-assessment received")
+
+        // Check if user sent a new message or aborted during assessment
+        const abortTime = recentlyAbortedSessions.get(sessionId)
+        if (abortTime) {
+          lastReflectedMsgId.set(sessionId, lastUserMsgId)
+          return
+        }
 
         let currentMessages: any[] | undefined
         try {
@@ -1063,12 +1149,6 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         const currentUserMsgId = getLastRelevantUserMessageId(currentMessages || [])
         if (currentUserMsgId && currentUserMsgId !== initialUserMsgId) {
           lastReflectedMsgId.set(sessionId, initialUserMsgId)
-          return
-        }
-
-        const abortTime = recentlyAbortedSessions.get(sessionId)
-        if (abortTime) {
-          lastReflectedMsgId.set(sessionId, lastUserMsgId)
           return
         }
 
@@ -1186,6 +1266,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
       return
     },
     event: async ({ event }: { event: { type: string; properties?: any } }) => {
+      debug("event received:", event.type)
       if (event.type === "session.error") {
         const props = (event as any).properties
         const sessionId = props?.sessionID
@@ -1197,6 +1278,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
       }
 
       if (event.type === "session.idle") {
+        debug("session.idle received")
         const sessionId = (event as any).properties?.sessionID
         if (!sessionId || typeof sessionId !== "string") return
 

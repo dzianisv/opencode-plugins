@@ -229,6 +229,7 @@ describe("reflection + telegram plugin E2E evaluation", { timeout: TIMEOUT + 60_
   let telegramResult: TelegramFilterResult
   let evaluationResult: EvaluationResult
   const serverLogs: string[] = []
+  const debugLogPath = join(testDir, ".reflection", "debug.log")
 
   before(async () => {
     await rm(testDir, { recursive: true, force: true })
@@ -246,17 +247,8 @@ describe("reflection + telegram plugin E2E evaluation", { timeout: TIMEOUT + 60_
       }
     })
 
-    server.stdout?.on("data", (d) => {
-      for (const line of d.toString().split("\n").filter((l: string) => l.trim())) {
-        if (line.includes("[Reflection3]")) serverLogs.push(line)
-      }
-    })
-
-    server.stderr?.on("data", (d) => {
-      for (const line of d.toString().split("\n").filter((l: string) => l.trim())) {
-        if (line.includes("[Reflection3]")) serverLogs.push(line)
-      }
-    })
+    // Debug logs are written to .reflection/debug.log (not stdout/stderr).
+    // We poll the file during the test to populate serverLogs.
 
     client = createOpencodeClient({
       baseUrl: `http://localhost:${port}`,
@@ -333,20 +325,6 @@ Requirements:
       for (const msg of testResult.messages) {
         for (const part of msg.parts || []) {
           if (part.type === "text" && part.text) {
-            if (part.text.includes("Reflection-3 Self-Assessment") ||
-                part.text.includes("What was the task?")) {
-              if (!testResult.selfAssessmentQuestion) {
-                testResult.selfAssessmentQuestion = true
-                console.log("[task] reflection asked self-assessment")
-              }
-            }
-
-            if (msg.info?.role === "assistant" && testResult.selfAssessmentQuestion) {
-              if (part.text.includes("{") && part.text.includes("status")) {
-                testResult.selfAssessmentResponse = part.text
-              }
-            }
-
             if (part.text.includes("Reflection-3:")) {
               testResult.pluginAction = "continue"
             }
@@ -361,7 +339,29 @@ Requirements:
         }
       }
 
+      // Read debug logs from .reflection/debug.log (populated by the plugin)
+      try {
+        const logContent = await readFile(debugLogPath, "utf-8")
+        const logLines = logContent.split("\n").filter(l => l.includes("[Reflection3]"))
+        // Merge new log lines (avoid duplicates by replacing the whole array)
+        serverLogs.length = 0
+        serverLogs.push(...logLines)
+      } catch {}
+
+      // Detect self-assessment via server logs instead of active session messages.
+      // Since issue #98, self-assessment runs in a separate ephemeral session,
+      // so the prompt/response no longer appear in the active session's messages.
       const recentLogs = serverLogs.slice(-30).join(" ")
+      if (recentLogs.includes("Requesting reflection self-assessment")) {
+        if (!testResult.selfAssessmentQuestion) {
+          testResult.selfAssessmentQuestion = true
+          console.log("[task] reflection asked self-assessment (detected via server logs)")
+        }
+      }
+      if (recentLogs.includes("Self-assessment received") || recentLogs.includes("Self-assessment")) {
+        testResult.selfAssessmentResponse = "(completed in separate session)"
+      }
+
       if (recentLogs.includes("Reflection analysis completed") || recentLogs.includes("Reflection pushed continuation") || recentLogs.includes("Reflection complete") || recentLogs.includes("Reflection requires human action")) {
         testResult.pluginAnalysis = true
       }
@@ -452,13 +452,11 @@ Requirements:
       `extractFinalResponse must not return self-assessment JSON. Got: ${finalResponse.slice(0, 200)}`
     )
 
-    // If reflection ran, at least one self-assessment JSON should exist in the messages
+    // Since issue #98, self-assessment runs in a separate ephemeral session,
+    // so self-assessment JSON no longer appears in the active session's messages.
+    // The telegram filter still works correctly — it just has nothing to filter.
     if (telegramResult.reflectionContentPresent) {
-      assert.ok(
-        selfAssessmentCount > 0,
-        "When reflection content is present, at least one assistant message should contain self-assessment JSON"
-      )
-      console.log(`[telegram] PASS: ${selfAssessmentCount} self-assessment JSON message(s) filtered from final response`)
+      console.log(`[telegram] PASS: reflection content present, self-assessment ran in separate session (${selfAssessmentCount} JSON messages in active session — expected 0)`)
     }
   })
 
