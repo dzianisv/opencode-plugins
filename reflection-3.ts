@@ -121,6 +121,7 @@ const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
 const JUDGE_RESPONSE_TIMEOUT = 120_000
 const POLL_INTERVAL = 2_000
 const ABORT_COOLDOWN = 10_000
+const ABORT_RACE_DELAY = 1_500 // ms to wait for session.error to arrive before running reflection
 const REFLECTION_CONFIG_PATH = join(homedir(), ".config", "opencode", "reflection.yaml")
 
 // Debug logging — writes to .reflection/debug.log when REFLECTION_DEBUG=1.
@@ -1213,16 +1214,14 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         if (isJudgeSession(sessionId, messages, judgeSessionIds)) return
         if (isPlanMode(messages)) return
 
-        // Issue #82: Check if session was interrupted by ESC.
-        // When user presses ESC, session.idle can fire before session.error
-        // writes the abort error. The last assistant message won't have
-        // time.completed set. This catches aborts regardless of event ordering
-        // — same approach used by TTS and Telegram plugins (isSessionComplete).
-        const lastAssistant = [...messages].reverse().find(m => m.info?.role === "assistant")
-        if (lastAssistant && !(lastAssistant.info?.time as any)?.completed) {
-          debug("Session interrupted (no time.completed on last assistant message), skipping reflection:", sessionId.slice(0, 8))
-          return
-        }
+        // Issue #82 / Issue #109: ESC-abort detection.
+        // Previously we checked time.completed on the last assistant message, but
+        // that caused false negatives — sessions where the model stopped producing
+        // output (context exhaustion, rate limit, etc.) also lack time.completed,
+        // and reflection would silently skip them.
+        // We now rely solely on the recentlyAbortedSessions map (populated by
+        // session.error with MessageAbortedError) plus a brief delay in the event
+        // handler to handle the race where session.idle fires before session.error.
 
         const lastUserMsgId = getLastRelevantUserMessageId(messages)
         if (!lastUserMsgId) return
@@ -1485,6 +1484,16 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           const elapsed = Date.now() - abortTime
           if (elapsed < ABORT_COOLDOWN) return
           recentlyAbortedSessions.delete(sessionId)
+        }
+
+        // Issue #109: Brief delay before running reflection to let session.error
+        // arrive first (handles race where session.idle fires before session.error
+        // when user presses ESC). After the delay, re-check the abort map.
+        await new Promise(resolve => setTimeout(resolve, ABORT_RACE_DELAY))
+        const postDelayAbortTime = recentlyAbortedSessions.get(sessionId)
+        if (postDelayAbortTime) {
+          debug("Session aborted during race delay, skipping reflection:", sessionId.slice(0, 8))
+          return
         }
 
         try {

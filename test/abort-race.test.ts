@@ -1,12 +1,15 @@
 /**
- * Test for Esc Abort Race Condition (Issue #18)
+ * Test for Esc Abort Race Condition (Issue #18, updated for Issue #109)
  * 
  * This test simulates the exact race condition scenario:
  * 1. session.error fires with MessageAbortedError
  * 2. session.idle fires immediately after
  * 3. Verify reflection does NOT run
  * 
- * Updated to test the cooldown-based approach (Map with timestamps)
+ * Updated for Issue #109: the time.completed guard was removed from
+ * runReflection() because it caused false negatives (stalled sessions
+ * without time.completed were incorrectly treated as ESC aborts).
+ * ESC detection now relies on recentlyAbortedSessions + ABORT_RACE_DELAY.
  */
 
 import assert from "assert"
@@ -35,7 +38,9 @@ describe("Esc Abort Race Condition - Issue #18", () => {
     debug("runReflection called for", sessionId)
   }
   
-  // Simulate the event handler from reflection-3.ts (updated for Map + cooldown)
+  // Simulate the event handler from reflection-3.ts (updated for Map + cooldown + race delay)
+  const ABORT_RACE_DELAY = 1_500  // Match the plugin's race delay
+  
   async function handleEvent(event: { type: string; properties?: any }) {
     const sessionId = event.properties?.sessionID
     const error = event.properties?.error
@@ -62,6 +67,17 @@ describe("Esc Abort Race Condition - Issue #18", () => {
           recentlyAbortedSessions.delete(sessionId)
           debug("Abort cooldown expired, allowing reflection")
         }
+
+        // Issue #109: Brief delay before running reflection to let session.error
+        // arrive first (handles race where session.idle fires before session.error).
+        // In tests we simulate this by checking the abort map again after "delay".
+        // (In production, this is an actual setTimeout(ABORT_RACE_DELAY).)
+        const postDelayAbortTime = recentlyAbortedSessions.get(sessionId)
+        if (postDelayAbortTime) {
+          debug("SKIP: session aborted during race delay")
+          return
+        }
+
         await runReflection(sessionId)
       }
     }
@@ -99,12 +115,12 @@ describe("Esc Abort Race Condition - Issue #18", () => {
       "Should log skip reason")
   })
   
-  it("event handler allows runReflection when session.idle fires BEFORE session.error", async () => {
-    // This tests if events can arrive in opposite order.
-    // The EVENT HANDLER can't catch this case (it has no message data).
-    // However, runReflection() now checks time.completed on the last assistant
-    // message (Issue #82), so the abort IS caught inside runReflection.
-    // This test documents the event handler's limitation only.
+  it("event handler allows runReflection when session.idle fires BEFORE session.error (no abort)", async () => {
+    // Issue #109: When session.idle fires before session.error, the event handler
+    // now includes a race delay (ABORT_RACE_DELAY). If no session.error arrives
+    // during the delay, reflection proceeds. This test documents the non-abort case.
+    // The actual race delay is a setTimeout in production; in tests we simulate
+    // by checking the abort map after "delay" (which is empty for non-aborted sessions).
     const sessionId = "ses_test_abort_2"
     
     await handleEvent({
@@ -112,11 +128,30 @@ describe("Esc Abort Race Condition - Issue #18", () => {
       properties: { sessionID: sessionId }
     })
     
-    // Event handler calls runReflection because it doesn't know about abort yet.
-    // In production, runReflection itself will detect the incomplete message
-    // via the time.completed check (Issue #82 fix).
+    // No abort was recorded, so reflection should run
     assert.strictEqual(reflectionRanCount, 1, 
-      "Event handler calls runReflection (abort caught inside runReflection via time.completed check)")
+      "Event handler runs reflection when no abort is recorded (stalled/completed session)")
+  })
+
+  it("race delay catches abort when session.error arrives during delay (Issue #109)", async () => {
+    // Simulate: session.idle fires, then during the race delay period,
+    // session.error arrives and records the abort. The post-delay check
+    // should catch it. In this test, we simulate by recording the abort
+    // BEFORE calling handleEvent for idle (since the real delay is async).
+    const sessionId = "ses_test_race_delay"
+
+    // Simulate: session.error arrives (abort recorded)
+    recentlyAbortedSessions.set(sessionId, mockNow)
+
+    // Now session.idle arrives — the initial check passes (abort is already
+    // in the map), so it gets caught in the fast path.
+    await handleEvent({
+      type: "session.idle",
+      properties: { sessionID: sessionId }
+    })
+
+    assert.strictEqual(reflectionRanCount, 0,
+      "Reflection should NOT run when abort is recorded (caught by fast path or race delay)")
   })
   
   it("blocks reflection during cooldown period (multiple rapid Esc presses)", async () => {

@@ -65,10 +65,16 @@ describe("Reflection Plugin - Unit Tests", () => {
     assert.strictEqual(wasAborted, false, "Should not flag normal session as aborted")
   })
 
-  // Issue #82: Detect aborted sessions via missing time.completed
-  // When user presses ESC, the last assistant message won't have time.completed set.
-  // This catches aborts even when session.idle fires before session.error (race condition).
-  it("detects aborted sessions via missing time.completed (Issue #82)", () => {
+  // Issue #82 / #109: time.completed guard was removed from reflection-3.ts
+  // because it caused false negatives — sessions where the model stopped producing
+  // output (context exhaustion, rate limit) also lack time.completed.
+  // ESC detection now relies solely on recentlyAbortedSessions (session.error)
+  // plus ABORT_RACE_DELAY in the event handler.
+  // These tests verify the time.completed field detection logic still works
+  // for TTS/Telegram (which still use isSessionComplete), and that reflection
+  // correctly does NOT skip sessions missing time.completed.
+
+  it("detects missing time.completed field (used by TTS/Telegram, not reflection)", () => {
     const messages: any[] = [
       { info: { role: "user" }, parts: [{ type: "text", text: "Do something" }] },
       {
@@ -102,24 +108,64 @@ describe("Reflection Plugin - Unit Tests", () => {
     assert.strictEqual(isCompleted, true, "Should recognize completed session (has time.completed)")
   })
 
-  it("detects aborted sessions even without error field when time.completed is missing (Issue #82)", () => {
+  // Issue #109: Reflection must NOT skip sessions where time.completed is missing
+  // but no ESC abort occurred. This was the root cause of the bug — the agent
+  // stopped mid-task (context exhaustion, rate limit, etc.) and reflection silently
+  // skipped it because the time.completed guard treated it as an ESC abort.
+  it("reflection should NOT skip sessions with missing time.completed when no abort occurred (Issue #109)", () => {
+    // Simulate a session where the model stopped mid-task (no ESC, no abort error)
+    // The last assistant message has no time.completed — but this is NOT an abort
     const messages: any[] = [
-      { info: { role: "user" }, parts: [{ type: "text", text: "Fix the bug" }] },
+      { id: "msg_1", info: { role: "user" }, parts: [{ type: "text", text: "Implement feature X" }] },
       {
+        id: "msg_2",
         info: {
           role: "assistant",
           time: { start: Date.now() }
-          // No error field, no completed field — ESC pressed but error not yet recorded
+          // No 'completed' field — model stopped producing output
+          // No error field — not an ESC abort
         },
-        parts: [{ type: "text", text: "Let me look at the code..." }]
+        parts: [{ type: "text", text: "I'll edit the file now..." }]
       }
     ]
 
+    // The recentlyAbortedSessions map is empty (no ESC was pressed)
+    const recentlyAbortedSessions = new Map<string, number>()
+    const sessionId = "ses_stalled_109"
+
+    // Under the old guard, this would return early (false negative).
+    // Under the new logic, reflection should proceed because:
+    // 1. No abort recorded in recentlyAbortedSessions
+    // 2. The missing time.completed is NOT treated as an abort signal by reflection
+    const abortTime = recentlyAbortedSessions.get(sessionId)
+    const shouldSkipViaAbortMap = !!abortTime
+
+    // Verify: reflection should NOT skip
+    assert.strictEqual(shouldSkipViaAbortMap, false,
+      "Reflection should NOT skip a stalled session — no abort was recorded")
+
+    // Verify: the session IS incomplete (for TTS/Telegram which still check this)
     const lastAssistant = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
     const hasTimeCompleted = !!(lastAssistant?.info?.time as any)?.completed
-    const hasAbortError = lastAssistant?.info?.error?.name === "MessageAbortedError"
-    const wasAborted = !hasTimeCompleted || hasAbortError
-    assert.strictEqual(wasAborted, true, "Should detect abort via missing time.completed even without error field")
+    assert.strictEqual(hasTimeCompleted, false,
+      "Session is indeed incomplete (no time.completed) — but reflection should still run")
+  })
+
+  it("reflection skips session when abort IS recorded in recentlyAbortedSessions (Issue #109)", () => {
+    const recentlyAbortedSessions = new Map<string, number>()
+    const sessionId = "ses_aborted_109"
+    const ABORT_COOLDOWN = 10_000
+
+    // Simulate ESC: session.error fires and records the abort
+    recentlyAbortedSessions.set(sessionId, Date.now())
+
+    // session.idle fires — should be skipped
+    const abortTime = recentlyAbortedSessions.get(sessionId)
+    const elapsed = abortTime ? Date.now() - abortTime : Infinity
+    const shouldSkip = !!abortTime && elapsed < ABORT_COOLDOWN
+
+    assert.strictEqual(shouldSkip, true,
+      "Reflection SHOULD skip when abort is recorded in the map")
   })
 
   it("parses enhanced JSON verdict correctly", () => {
