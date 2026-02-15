@@ -40,6 +40,15 @@ async function reportError(err: unknown, context?: Record<string, string>): Prom
 
 const execAsync = promisify(exec)
 
+// Debug logging — writes to opencode-helpers/tts.log.
+// Never write to stdout/stderr — it corrupts the OpenCode TUI.
+const TTS_LOG_PATH = join(homedir(), ".config", "opencode", "opencode-helpers", "tts.log")
+async function ttsLog(...args: any[]) {
+  const msg = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ")
+  const ts = new Date().toISOString()
+  try { await appendFile(TTS_LOG_PATH, `[${ts}] [TTS] ${msg}\n`) } catch {}
+}
+
 // Maximum characters to read (to avoid very long speeches)
 const MAX_SPEECH_LENGTH = 1000
 
@@ -1105,7 +1114,7 @@ async function setupCoqui(): Promise<boolean> {
   
   const python = await findPython3()
   if (!python) {
-    console.error("[TTS] Coqui setup failed: no Python 3.10-3.12 found in PATH")
+    ttsLog("Coqui setup failed: no Python 3.10-3.12 found in PATH")
     return false
   }
   
@@ -1121,12 +1130,12 @@ async function setupCoqui(): Promise<boolean> {
         coquiInstalled = true
         return true
       }
-      console.error("[TTS] Coqui venv exists but TTS import failed — will attempt reinstall")
+      ttsLog("Coqui venv exists but TTS import failed — will attempt reinstall")
     } catch (e: any) {
-      console.error(`[TTS] Coqui venv check failed: ${e.message || e} — will attempt install`)
+      ttsLog(`Coqui venv check failed: ${e.message || e} — will attempt install`)
     }
     
-    console.error("[TTS] Installing Coqui TTS (this may take a few minutes)...")
+    ttsLog("Installing Coqui TTS (this may take a few minutes)...")
     await execAsync(`"${python}" -m venv "${COQUI_VENV}"`, { timeout: 60000 })
     
     const pip = join(COQUI_VENV, "bin", "pip")
@@ -1137,17 +1146,17 @@ async function setupCoqui(): Promise<boolean> {
     // Verify installation actually worked
     const { stdout: verifyOut } = await execAsync(`"${venvPython}" -c "from TTS.api import TTS; print('ok')"`, { timeout: 30000 })
     if (!verifyOut.includes("ok")) {
-      console.error("[TTS] Coqui TTS installed but import verification failed. Run: npm run install:tts")
+      ttsLog("Coqui TTS installed but import verification failed. Run: npm run install:tts")
       coquiInstalled = false
       return false
     }
     
     await ensureCoquiScript()
     coquiInstalled = true
-    console.error("[TTS] Coqui TTS installed successfully")
+    ttsLog("Coqui TTS installed successfully")
     return true
   } catch (e: any) {
-    console.error(`[TTS] Coqui setup failed: ${e.message || e}. Run: npm run install:tts`)
+    ttsLog(`Coqui setup failed: ${e.message || e}. Run: npm run install:tts`)
     reportError(e, { plugin: "tts", op: "coqui-setup" })
     coquiInstalled = false
     return false

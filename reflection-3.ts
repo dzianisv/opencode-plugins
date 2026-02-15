@@ -7,7 +7,7 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
-import { readFile, writeFile, mkdir, stat } from "fs/promises"
+import { readFile, writeFile, mkdir, stat, appendFile } from "fs/promises"
 import { join } from "path"
 import { homedir } from "os"
 
@@ -109,8 +109,32 @@ const POLL_INTERVAL = 2_000
 const ABORT_COOLDOWN = 10_000
 const REFLECTION_CONFIG_PATH = join(homedir(), ".config", "opencode", "reflection.yaml")
 
-// Debug logging (silenced — console.error corrupts the OpenCode TUI)
-function debug(..._args: any[]) {}
+// Debug logging — writes to .reflection/debug.log when REFLECTION_DEBUG=1.
+// Never write to stdout/stderr — it corrupts the OpenCode TUI.
+const REFLECTION_DEBUG = process.env.REFLECTION_DEBUG === "1"
+
+// Module-level debug function, initially a no-op.
+// Replaced with a file-backed logger once the plugin initializes with a directory.
+let debug: (...args: any[]) => void = () => {}
+
+function initDebugLogger(directory: string) {
+  if (!REFLECTION_DEBUG) return
+  const logPath = join(directory, ".reflection", "debug.log")
+  let dirEnsured = false
+  debug = (...args: any[]) => {
+    const msg = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ")
+    const ts = new Date().toISOString()
+    const line = `[${ts}] [Reflection3] ${msg}\n`
+    // Fire-and-forget: do not await to avoid slowing down the plugin
+    ;(async () => {
+      if (!dirEnsured) {
+        try { await mkdir(join(directory, ".reflection"), { recursive: true }) } catch {}
+        dirEnsured = true
+      }
+      try { await appendFile(logPath, line) } catch {}
+    })()
+  }
+}
 
 async function loadReflectionPrompt(directory: string): Promise<string | null> {
   const candidates = ["reflection.md", "reflection.MD"]
@@ -995,12 +1019,14 @@ Return JSON only:
 }
 
 export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
+  initDebugLogger(directory)
   const judgeSessionIds = new Set<string>()
   const lastReflectedMsgId = new Map<string, string>()
   const activeReflections = new Set<string>()
   const recentlyAbortedSessions = new Map<string, number>()
 
   async function runReflection(sessionId: string): Promise<void> {
+      debug("runReflection called for session:", sessionId.slice(0, 8))
       if (activeReflections.has(sessionId)) return
       activeReflections.add(sessionId)
 
@@ -1045,6 +1071,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         const reflectionPrompt = customPrompt || buildSelfAssessmentPrompt(context, agents, lastAssistantText)
 
         await showToast(client, directory, "Requesting reflection self-assessment...", "info")
+        debug("Requesting reflection self-assessment")
 
         // Issue #98: Run self-assessment in a separate ephemeral session instead
         // of prompting the active agent session. Asking the active session to
@@ -1239,6 +1266,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
       return
     },
     event: async ({ event }: { event: { type: string; properties?: any } }) => {
+      debug("event received:", event.type)
       if (event.type === "session.error") {
         const props = (event as any).properties
         const sessionId = props?.sessionID
@@ -1250,6 +1278,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
       }
 
       if (event.type === "session.idle") {
+        debug("session.idle received")
         const sessionId = (event as any).properties?.sessionID
         if (!sessionId || typeof sessionId !== "string") return
 
