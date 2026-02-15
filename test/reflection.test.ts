@@ -353,7 +353,7 @@ describe("Reflection Plugin - Unit Tests", () => {
         if (msg.info?.role === "user") {
           for (const part of msg.parts || []) {
             if (part.type === "text" && part.text) {
-              if (part.text.includes("## Reflection:")) continue
+              if (part.text.includes("## Reflection-3:")) continue
               humanMessages.push(part.text)
               break
             }
@@ -438,7 +438,7 @@ describe("Reflection Plugin - Unit Tests", () => {
       const messages = [
         { info: { role: "user" }, parts: [{ type: "text", text: "Do something" }] },
         { info: { role: "assistant" }, parts: [{ type: "text", text: "Working..." }] },
-        { info: { role: "user" }, parts: [{ type: "text", text: "## Reflection: Task Incomplete\n\nPlease continue." }] },
+        { info: { role: "user" }, parts: [{ type: "text", text: "## Reflection-3: Task Incomplete\n\nPlease continue." }] },
         { info: { role: "assistant" }, parts: [{ type: "text", text: "Continuing..." }] },
         { info: { role: "user" }, parts: [{ type: "text", text: "Now also do this" }] },
         { info: { role: "assistant" }, parts: [{ type: "text", text: "Done!" }] },
@@ -447,7 +447,7 @@ describe("Reflection Plugin - Unit Tests", () => {
       const extracted = extractTaskAndResult(messages)
       assert.ok(extracted, "Should extract task and result")
       assert.strictEqual(extracted.humanMessages.length, 2, "Should only capture 2 non-reflection messages")
-      assert.ok(!extracted.humanMessages.some(m => m.includes("## Reflection:")), "Should not include reflection messages")
+      assert.ok(!extracted.humanMessages.some(m => m.includes("## Reflection-3:")), "Should not include reflection messages")
     })
 
     it("should detect research tasks from any human message", () => {
@@ -918,7 +918,7 @@ describe("Reflection Plugin - Unit Tests", () => {
         const messages = [
           { info: { role: "user" }, parts: [{ type: "text", text: "Implement auth" }] },
           { info: { role: "assistant" }, parts: [{ type: "text", text: "Working..." }] },
-          { info: { role: "user" }, parts: [{ type: "text", text: "## Reflection: Task Incomplete\n\nContinue" }] },
+          { info: { role: "user" }, parts: [{ type: "text", text: "## Reflection-3: Task Incomplete\n\nContinue" }] },
           { info: { role: "assistant" }, parts: [{ type: "text", text: "Continuing..." }] },
         ]
         
@@ -926,7 +926,7 @@ describe("Reflection Plugin - Unit Tests", () => {
         for (const msg of messages) {
           if (msg.info?.role === "user") {
             for (const part of msg.parts || []) {
-              if (part.type === "text" && part.text && !part.text.includes("## Reflection:")) {
+              if (part.type === "text" && part.text && !part.text.includes("## Reflection-3:")) {
                 humanMessages.push(part.text.slice(0, 300))
                 break
               }

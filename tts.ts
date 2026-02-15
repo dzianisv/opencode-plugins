@@ -209,7 +209,8 @@ async function playAudioFile(audioPath: string): Promise<void> {
 
 
 const SPEECH_LOCK_PATH = join(homedir(), ".config", "opencode", "speech.lock")
-const SPEECH_LOCK_TIMEOUT = 120000  // Max speech duration (2 minutes)
+const SPEECH_LOCK_TIMEOUT = 300000  // Max speech duration (5 minutes)
+const SPEECH_LOCK_HEARTBEAT_INTERVAL = 10000  // Refresh lock timestamp every 10s
 const SPEECH_QUEUE_DIR = join(homedir(), ".config", "opencode", "speech-queue")
 
 // Unique identifier for this process instance
@@ -482,6 +483,12 @@ interface SpeechTicket {
   sessionId: string
 }
 
+interface SpeechLock {
+  processId: string
+  ticketId: string
+  timestamp: number
+}
+
 async function ensureQueueDir(): Promise<void> {
   try {
     await mkdir(SPEECH_QUEUE_DIR, { recursive: true })
@@ -543,6 +550,17 @@ async function getQueuedTickets(): Promise<{ id: string; ticket: SpeechTicket }[
   }
 }
 
+function isProcessAlive(processId: string): boolean {
+  const pid = Number(processId.split("-")[0])
+  if (!Number.isFinite(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function isMyTurn(ticketId: string): Promise<boolean> {
   const tickets = await getQueuedTickets()
   if (tickets.length === 0) return false
@@ -572,7 +590,12 @@ async function acquireSpeechLock(ticketId: string): Promise<boolean> {
       // Lock exists - check if it's stale
       try {
         const content = await readFile(SPEECH_LOCK_PATH, "utf-8")
-        const lock = JSON.parse(content)
+        const lock = JSON.parse(content) as SpeechLock
+        const lockProcessId = typeof lock.processId === "string" ? lock.processId : null
+        if (lockProcessId && !isProcessAlive(lockProcessId)) {
+          await unlink(SPEECH_LOCK_PATH).catch(() => {})
+          return acquireSpeechLock(ticketId)
+        }
         if (Date.now() - lock.timestamp > SPEECH_LOCK_TIMEOUT) {
           // Stale lock, remove it and try again
           await unlink(SPEECH_LOCK_PATH).catch(() => {})
@@ -592,7 +615,7 @@ async function releaseSpeechLock(ticketId: string): Promise<void> {
   // Only release if we own the lock
   try {
     const content = await readFile(SPEECH_LOCK_PATH, "utf-8")
-    const lock = JSON.parse(content)
+    const lock = JSON.parse(content) as SpeechLock
     if (lock.processId === PROCESS_ID && lock.ticketId === ticketId) {
       await unlink(SPEECH_LOCK_PATH).catch(() => {})
     }
@@ -1493,7 +1516,10 @@ async function startCoquiServer(config: TTSConfig): Promise<boolean> {
 
 async function isCoquiAvailable(config: TTSConfig): Promise<boolean> {
   const installed = await setupCoqui()
-  if (!installed) return false
+  if (!installed) {
+    await ttsLog("Coqui TTS setup failed; falling back to OS TTS")
+    return false
+  }
   
   const device = config.coqui?.device || "cuda"
   if (device === "cpu" || device === "mps") return true
@@ -1846,6 +1872,7 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
 
     let generatedAudioPath: string | null = null
     let ticketId: string | null = null
+    let lockHeartbeat: ReturnType<typeof setInterval> | null = null
 
     try {
       const config = await loadConfig()
@@ -1873,6 +1900,17 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
       }
 
       const engine = await getEngine()
+      lockHeartbeat = setInterval(async () => {
+        if (!ticketId) return
+        try {
+          const content = await readFile(SPEECH_LOCK_PATH, "utf-8")
+          const lock = JSON.parse(content) as SpeechLock
+          if (lock.processId === PROCESS_ID && lock.ticketId === ticketId) {
+            lock.timestamp = Date.now()
+            await writeFile(SPEECH_LOCK_PATH, JSON.stringify(lock))
+          }
+        } catch {}
+      }, SPEECH_LOCK_HEARTBEAT_INTERVAL)
       
       // Save TTS data to .tts/ directory
       await saveTTSData(sessionId, {
@@ -1924,6 +1962,9 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
       }
 
     } finally {
+      if (lockHeartbeat) {
+        clearInterval(lockHeartbeat)
+      }
       // Clean up generated audio file
       if (generatedAudioPath) {
         await unlink(generatedAudioPath).catch(() => {})
