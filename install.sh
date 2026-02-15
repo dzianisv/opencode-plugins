@@ -13,6 +13,9 @@ BASE_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
 PLUGIN_DIR="${HOME}/.config/opencode/plugin"
 CONFIG_DIR="${HOME}/.config/opencode"
 PACKAGE_JSON="${CONFIG_DIR}/package.json"
+BIN_DIR="${HOME}/.local/bin"
+WORKTREE_BIN="${BIN_DIR}/opencode-worktree"
+WORKTREE_SCRIPT_URL="${BASE_URL}/scripts/opencode-worktree.ts"
 
 # Plugins to install
 PLUGINS=(
@@ -126,6 +129,17 @@ main() {
     fail "$failed plugin(s) failed to download. Check your network connection."
   fi
 
+  # Install opencode-worktree helper
+  echo
+  info "Installing opencode-worktree to ${WORKTREE_BIN}..."
+  mkdir -p "$BIN_DIR"
+  if curl -fsSL -o "$WORKTREE_BIN" "$WORKTREE_SCRIPT_URL"; then
+    chmod +x "$WORKTREE_BIN"
+    ok "opencode-worktree"
+  else
+    warn "Failed to download opencode-worktree"
+  fi
+
   # Set up dependencies
   echo
   info "Setting up dependencies..."
@@ -143,8 +157,10 @@ main() {
   for plugin in "${PLUGINS[@]}"; do
     echo "    • $plugin"
   done
+  echo "    • opencode-worktree"
   echo
   echo "  Restart OpenCode to activate the plugins."
+  echo "  Ensure ${BIN_DIR} is on your PATH to run opencode-worktree."
   echo
 }
 
