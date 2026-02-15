@@ -9,6 +9,7 @@ import {
   buildEscalatingFeedback,
   RoutingConfig
 } from "../reflection-3.test-helpers.ts"
+import { detectPlanningLoop } from "../reflection-3.ts"
 
 describe("reflection-3 unit", () => {
   it("detects task type from text", () => {
@@ -255,6 +256,30 @@ describe("reflection-3 unit", () => {
     assert.strictEqual(inferTaskType("Builds entities and relationships in knowledge graph for email"), "ops")
   })
 
+  it("classifies as coding when text has both research AND coding keywords (issue #115)", () => {
+    // The stuck session had text like "investigate ... fix ... issue ... error" — all present.
+    // research matched first, disabling all workflow gates, letting the task pass as "complete"
+    // even though the agent only read files and never made any code changes.
+    assert.strictEqual(inferTaskType("Investigate and fix the login bug"), "coding")
+    assert.strictEqual(inferTaskType("Analyze the error and implement a fix"), "coding")
+    assert.strictEqual(inferTaskType("Study the regression and create a patch"), "coding")
+    assert.strictEqual(inferTaskType("Evaluate the issue and update the handler"), "coding")
+  })
+
+  it("classifies as coding when text contains a GitHub issue URL with research keywords (issue #115)", () => {
+    // A GitHub issue URL + research keyword should resolve to coding, not research
+    assert.strictEqual(inferTaskType("Investigate https://github.com/VibeTechnologies/VibeWebAgent/issues/513"), "coding")
+    assert.strictEqual(inferTaskType("Analyze the problem at https://github.com/org/repo/issues/42"), "coding")
+    // A bare GitHub URL without research keywords is just "other" (no research to override)
+    assert.strictEqual(inferTaskType("https://github.com/org/repo/issues/513"), "other")
+  })
+
+  it("still classifies pure research text as research", () => {
+    assert.strictEqual(inferTaskType("Investigate performance characteristics"), "research")
+    assert.strictEqual(inferTaskType("Research best practices for caching"), "research")
+    assert.strictEqual(inferTaskType("Analyze the trade-offs between approaches"), "research")
+  })
+
   it("shouldContinue is true when agent has actionable work alongside needs_user_action", () => {
     const assessment = {
       status: "in_progress" as const,
@@ -340,6 +365,70 @@ describe("reflection-3 unit", () => {
 
     assert.strictEqual(analysis.complete, true)
     assert.strictEqual(analysis.missing.length, 0)
+  })
+
+  it("evaluateSelfAssessment marks complete when no requirements and high confidence (issue #115 precondition)", () => {
+    // This test documents the exact scenario from issue #115:
+    // When taskType was misclassified as "research", all requires* were false,
+    // so evaluateSelfAssessment found missing.length===0 and marked it complete.
+    // The fix is in inferTaskType (prefer coding), but this test verifies the
+    // evaluator behavior hasn't changed for legitimate research tasks.
+    const assessment = {
+      status: "complete" as const,
+      confidence: 0.95,
+      evidence: {}
+    }
+    const analysis = evaluateSelfAssessment(assessment, {
+      taskSummary: "Research caching strategies",
+      taskType: "research",
+      agentMode: "build",
+      humanMessages: ["Research caching strategies"],
+      toolsSummary: "(none)",
+      detectedSignals: [],
+      recentCommands: [],
+      pushedToDefaultBranch: false,
+      requiresTests: false,
+      requiresBuild: false,
+      requiresPR: false,
+      requiresCI: false,
+      requiresLocalTests: false,
+      requiresLocalTestsEvidence: false
+    })
+
+    // For a genuine research task with no requirements, this is correct behavior
+    assert.strictEqual(analysis.complete, true)
+    assert.strictEqual(analysis.missing.length, 0)
+  })
+
+  it("detectPlanningLoop catches sessions with only read operations (issue #115)", () => {
+    // Simulate the stuck session: 15+ tool calls, all reads, zero writes
+    const messages = [
+      {
+        info: { role: "assistant" },
+        parts: [
+          { type: "tool", tool: "github_issue_read", state: { input: {} } },
+          { type: "tool", tool: "task", state: { input: {} } },
+          { type: "tool", tool: "read", state: { input: {} } },
+          { type: "tool", tool: "read", state: { input: {} } },
+          { type: "tool", tool: "glob", state: { input: {} } },
+          { type: "tool", tool: "grep", state: { input: {} } },
+          { type: "tool", tool: "read", state: { input: {} } },
+          { type: "tool", tool: "read", state: { input: {} } },
+          { type: "tool", tool: "task", state: { input: {} } },
+          { type: "tool", tool: "webfetch", state: { input: {} } },
+          { type: "tool", tool: "read", state: { input: {} } },
+          { type: "tool", tool: "bash", state: { input: { command: "git log --oneline -5" } } },
+          { type: "tool", tool: "read", state: { input: {} } },
+          { type: "tool", tool: "read", state: { input: {} } },
+          { type: "tool", tool: "skill", state: { input: {} } }
+        ]
+      }
+    ]
+    const result = detectPlanningLoop(messages)
+    assert.strictEqual(result.detected, true)
+    assert.strictEqual(result.writeCount, 0)
+    assert.ok(result.readCount > 0)
+    assert.ok(result.totalTools >= 10)
   })
 })
 

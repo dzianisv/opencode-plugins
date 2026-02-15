@@ -64,15 +64,26 @@ export interface ReflectionAnalysis {
 }
 
 export function inferTaskType(text: string): TaskType {
-  if (/research|investigate|analyze|compare|evaluate|study/i.test(text)) return "research"
+  const hasResearch = /research|investigate|analyze|compare|evaluate|study/i.test(text)
+  const hasCodingAction = /\bfix\b|implement|add|create|build|feature|refactor|improve|update/i.test(text)
+  const hasCodingSignal = /\bbug\b|\berror\b|\bregression\b/i.test(text)
+  const hasGitHubIssue = /github\.com\/[^\s/]+\/[^\s/]+\/issues\/\d+/i.test(text)
+
+  // When text contains both research AND coding-action keywords (e.g. "investigate and fix this bug"),
+  // or references a GitHub issue URL alongside research terms, prefer coding —
+  // these are almost always coding tasks even if the description says "investigate".
+  // Note: coding-signal words (bug, error, regression) alone don't override research,
+  // because "investigate performance regressions" is legitimate research.
+  if (hasResearch && (hasCodingAction || hasGitHubIssue)) return "coding"
+
+  if (hasResearch) return "research"
   if (/docs?|readme|documentation/i.test(text)) return "docs"
   // Ops detection: explicit ops terms and personal-assistant / browser-automation patterns
   // Must be checked BEFORE coding to avoid "create filter" or "build entities" matching as coding
   if (/deploy|release|infra|ops|oncall|incident|runbook/i.test(text)) return "ops"
   if (/\bgmail\b|\bemail\b|\bfilter\b|\binbox\b|\bcalendar\b|\blinkedin\b|\brecruiter\b|\bbrowser\b/i.test(text)) return "ops"
   if (/\bclean\s*up\b|\borganize\b|\bconfigure\b|\bsetup\b|\bset\s*up\b|\binstall\b/i.test(text)) return "ops"
-  if (/fix|bug|issue|error|regression/i.test(text)) return "coding"
-  if (/implement|add|create|build|feature|refactor|improve|update/i.test(text)) return "coding"
+  if (hasCodingAction || hasCodingSignal) return "coding"
   return "other"
 }
 

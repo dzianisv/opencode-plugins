@@ -661,15 +661,26 @@ async function waitForResponse(client: any, sessionId: string): Promise<string |
 }
 
 function inferTaskType(text: string): TaskType {
-  if (/research|investigate|analyze|compare|evaluate|study/i.test(text)) return "research"
+  const hasResearch = /research|investigate|analyze|compare|evaluate|study/i.test(text)
+  const hasCodingAction = /\bfix\b|implement|add|create|build|feature|refactor|improve|update/i.test(text)
+  const hasCodingSignal = /\bbug\b|\berror\b|\bregression\b/i.test(text)
+  const hasGitHubIssue = /github\.com\/[^\s/]+\/[^\s/]+\/issues\/\d+/i.test(text)
+
+  // When text contains both research AND coding-action keywords (e.g. "investigate and fix this bug"),
+  // or references a GitHub issue URL alongside research terms, prefer coding —
+  // these are almost always coding tasks even if the description says "investigate".
+  // Note: coding-signal words (bug, error, regression) alone don't override research,
+  // because "investigate performance regressions" is legitimate research.
+  if (hasResearch && (hasCodingAction || hasGitHubIssue)) return "coding"
+
+  if (hasResearch) return "research"
   if (/docs?|readme|documentation/i.test(text)) return "docs"
   // Ops detection: explicit ops terms and personal-assistant / browser-automation patterns
   // Must be checked BEFORE coding to avoid "create filter" or "build entities" matching as coding
   if (/deploy|release|infra|ops|oncall|incident|runbook/i.test(text)) return "ops"
   if (/\bgmail\b|\bemail\b|\bfilter\b|\binbox\b|\bcalendar\b|\blinkedin\b|\brecruiter\b|\bbrowser\b/i.test(text)) return "ops"
   if (/\bclean\s*up\b|\borganize\b|\bconfigure\b|\bsetup\b|\bset\s*up\b|\binstall\b/i.test(text)) return "ops"
-  if (/fix|bug|issue|error|regression/i.test(text)) return "coding"
-  if (/implement|add|create|build|feature|refactor|improve|update/i.test(text)) return "coding"
+  if (hasCodingAction || hasCodingSignal) return "coding"
   return "other"
 }
 
@@ -919,7 +930,8 @@ Rules:
 - Tests cannot be skipped or marked as flaky/not important.
 - Direct pushes to main/master are not allowed; require a PR instead.
 - If stuck, propose an alternate approach.
-- If you need user action (auth, 2FA, credentials), list it in needs_user_action.`
+- If you need user action (auth, 2FA, credentials), list it in needs_user_action.
+- PLANNING LOOP CHECK: If the task requires code changes (fix, implement, add, create, build, refactor, update) but the "Tool Commands Run" section shows ONLY read operations (read, glob, grep, git log, git status, git diff, webfetch, task/explore) and NO write operations (edit, write, bash with build/test/commit, github_create_pull_request, etc.), then the task is NOT complete. Set status to "in_progress", set stuck to true, and list "Implement the actual code changes" in remaining_work. Analyzing and recommending changes is not the same as making them.`
 }
 
 function parseSelfAssessmentJson(text: string | null | undefined): SelfAssessment | null {
@@ -1122,6 +1134,7 @@ Rules:
 - If PR exists, CI checks must be verified and passing.
 - If user action is required (auth/2FA/credentials), set requires_human_action true.
 - If agent is stuck, require alternate approach and continued work.
+- PLANNING LOOP: If the task requires code changes (fix, implement, add, create, build, refactor) but the Tool Signals show ONLY read operations (read, glob, grep, git log/status/diff, webfetch) and NO write operations (edit, write, bash with build/test/commit, PR creation), set complete to false and add "Implement actual code changes" to missing. Analysis alone does not fulfill an implementation task.
 
 Return JSON only:
 {
