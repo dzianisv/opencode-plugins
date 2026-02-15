@@ -265,9 +265,13 @@ export function detectPlanningLoop(messages: any[]): {
 export function buildEscalatingFeedback(
   attemptCount: number,
   severity: string,
-  verdict: { feedback?: string; missing?: string[]; next_actions?: string[] },
+  verdict: { feedback?: string; missing?: string[]; next_actions?: string[] } | undefined | null,
   isPlanningLoop: boolean
 ): string {
+  const safeVerdict = verdict ?? {}
+  const missingItems = Array.isArray(safeVerdict.missing) ? safeVerdict.missing : []
+  const nextActionItems = Array.isArray(safeVerdict.next_actions) ? safeVerdict.next_actions : []
+  const feedbackStr = safeVerdict.feedback || ""
   if (isPlanningLoop) {
     return `${FEEDBACK_MARKER} STOP: Planning Loop Detected
 
@@ -286,23 +290,22 @@ Start coding NOW. No more planning.`
   }
 
   if (attemptCount <= 2) {
-    const missing = verdict.missing?.length
-      ? `\n### Missing\n${verdict.missing.map((m) => `- ${m}`).join("\n")}`
+    const missing = missingItems.length
+      ? `\n### Missing\n${missingItems.map((m) => `- ${m}`).join("\n")}`
       : ""
-    const nextActions = verdict.next_actions?.length
-      ? `\n### Next Actions\n${verdict.next_actions.map((a) => `- ${a}`).join("\n")}`
+    const nextActions = nextActionItems.length
+      ? `\n### Next Actions\n${nextActionItems.map((a) => `- ${a}`).join("\n")}`
       : ""
-    const feedbackText = verdict.feedback || ""
     return `${FEEDBACK_MARKER} Task Incomplete (${severity})
-${feedbackText}
+${feedbackStr}
 ${missing}
 ${nextActions}
 
 Please address these issues and continue.`
   }
 
-  const missingBrief = verdict.missing?.length
-    ? `Still missing: ${verdict.missing.slice(0, 3).join(", ")}.`
+  const missingBrief = missingItems.length
+    ? `Still missing: ${missingItems.slice(0, 3).join(", ")}.`
     : ""
   return `${FEEDBACK_MARKER} Still Incomplete (attempt ${attemptCount}/${MAX_ATTEMPTS})
 
@@ -1366,7 +1369,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         if (analysis.requiresHumanAction && !analysis.shouldContinue) {
           attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
-          const hint = analysis.missing[0] || "User action required"
+          const hint = (Array.isArray(analysis.missing) && analysis.missing[0]) || "User action required"
           await showToast(client, directory, `Action needed: ${hint}`, "warning")
           debug("Reflection requires human action (no agent-actionable work remaining)")
           return

@@ -76,6 +76,15 @@ For debug/diagnostic logging, write to log files instead:
 
 Test files (`test/*.ts`) may use `console.log` for test output.
 
+### Always run tests before finishing
+
+Before considering any task complete, you MUST:
+
+1. **Run unit tests**: `npm test` — all tests must pass.
+2. **Run prompt evals**: `npm run eval:judge`, `npm run eval:stuck`, `npm run eval:compression` — all evals must pass.
+3. If tests or evals fail, fix the issue and re-run until they pass.
+4. Never commit or create a PR with failing tests.
+
 ## References
 - `docs/reflection.md`
 - `docs/tts.md`
