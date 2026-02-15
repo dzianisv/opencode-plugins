@@ -224,7 +224,7 @@ tests:
           const json = output.match(/\{[\s\S]*\}/);
           if (!json) return false;
           const result = JSON.parse(json[0]);
-          return result.stuck === false && (result.reason === "complete" || result.shouldNudge === false);
+          return result.stuck === false && result.reason === "complete";
 
   - description: "Task done with verification - COMPLETE"
     vars:
@@ -297,6 +297,150 @@ tests:
           const json = output.match(/\{[\s\S]*\}/);
           if (!json) return false;
           const result = JSON.parse(json[0]);
-          return result.stuck === false || result.shouldNudge === false;
+          // time_since_activity=5 < 30s threshold: shouldNudge MUST be false
+          return result.shouldNudge === false;
+
+  # ============================================
+  # ADDITIONAL COVERAGE - Retry loops, long tools, ambiguous states
+  # ============================================
+
+  - description: "Agent in retry loop - retrying same failed command - GENUINELY_STUCK"
+    vars:
+      time_since_activity: "90"
+      message_completed: "true"
+      output_tokens: "350"
+      last_user_message: "Install the dependencies and run the build"
+      last_assistant_response: |
+        The build failed again. Let me try once more:
+        
+        ```
+        npm run build
+        ERROR: Module not found: 'lodash'
+        ```
+        
+        I already ran `npm install` three times but lodash still isn't resolving. Let me try `npm install lodash` directly...
+      tool_calls: |
+        bash: completed - exit code 1
+        bash: completed - exit code 1
+        bash: completed - exit code 1
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          // Agent is repeating the same failing action - genuinely stuck
+          return result.stuck === true && result.reason === "genuinely_stuck";
+
+  - description: "Long-running build tool - NOT stuck, just slow - WORKING"
+    vars:
+      time_since_activity: "150"
+      message_completed: "false"
+      output_tokens: "30"
+      last_user_message: "Build the Docker image for production"
+      last_assistant_response: "I'll build the production Docker image now. This may take a few minutes..."
+      tool_calls: "bash: running"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          // Tool is still running - agent is working, not stuck
+          // Even though 150s have passed, running tool takes priority
+          return result.reason === "working" && result.stuck === false;
+
+  - description: "Response ends with question mark but agent is thinking - ambiguous WORKING"
+    vars:
+      time_since_activity: "25"
+      message_completed: "false"
+      output_tokens: "80"
+      last_user_message: "Fix the CSS layout issue on the dashboard"
+      last_assistant_response: |
+        Looking at the dashboard CSS. The grid layout seems to break at smaller viewports. 
+        Should I use flexbox or CSS grid for the responsive layout?
+      tool_calls: "read: completed"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          // message_completed=false means agent is still generating
+          // time < 30s means shouldNudge must be false regardless
+          return result.shouldNudge === false;
+
+  - description: "Agent produced only planning tokens, no action yet - GENUINELY_STUCK"
+    vars:
+      time_since_activity: "80"
+      message_completed: "true"
+      output_tokens: "200"
+      last_user_message: "Implement the caching layer for API responses"
+      last_assistant_response: |
+        Let me think about the best approach for caching:
+        
+        **Considerations:**
+        - Redis vs in-memory cache
+        - TTL strategy per endpoint
+        - Cache invalidation patterns
+        - Memory limits
+        
+        I think Redis would be the best choice here because of its persistence and built-in TTL support. Let me start implementing...
+      tool_calls: "(none)"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          // Agent only planned/thought but never used any tools
+          // Said "let me start" but message is complete with no tool calls
+          return result.stuck === true && result.shouldNudge === true;
+
+  - description: "Rate limited agent - waiting is expected - WORKING"
+    vars:
+      time_since_activity: "45"
+      message_completed: "true"
+      output_tokens: "60"
+      last_user_message: "Search for all usages of the deprecated API"
+      last_assistant_response: |
+        I'm getting rate limited by the API. Waiting 30 seconds before retrying the search...
+      tool_calls: "bash: completed"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          // Agent explained they're rate limited and waiting - this is expected behavior
+          // The key behavior: do NOT nudge/interrupt an agent that's deliberately waiting
+          // The stuck classification itself is debatable, but shouldNudge must be false
+          return result.shouldNudge === false;
+
+  - description: "Negative test: stuck agent must NOT be classified as complete - GENUINELY_STUCK"
+    vars:
+      time_since_activity: "100"
+      message_completed: "true"
+      output_tokens: "150"
+      last_user_message: "Create the user registration API endpoint"
+      last_assistant_response: |
+        I'll create the registration endpoint. First, let me set up the route handler with validation:
+        
+        1. Email validation
+        2. Password hashing with bcrypt
+        3. Duplicate user check
+        4. JWT token generation
+        
+        Starting with the route definition...
+      tool_calls: "read: completed"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          // Agent listed steps and said "starting with..." but took no action
+          // Must NOT be classified as complete - this is genuinely stuck
+          return result.reason !== "complete" && result.stuck === true;
 
 outputPath: ./evals/results/stuck-detection-latest.json
