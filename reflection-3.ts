@@ -221,6 +221,9 @@ export function detectPlanningLoop(messages: any[]): {
   writeCount: number
   totalTools: number
 } {
+  if (!Array.isArray(messages)) {
+    return { detected: false, readCount: 0, writeCount: 0, totalTools: 0 }
+  }
   let readCount = 0
   let writeCount = 0
   let totalTools = 0
