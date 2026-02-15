@@ -22,6 +22,20 @@ async function reportError(err: unknown, context?: Record<string, string>): Prom
 
 const SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
 const FEEDBACK_MARKER = "## Reflection-3:"
+const MAX_ATTEMPTS = 5
+
+const JUDGE_BLOCKED_PATTERNS = [
+  /\bhaiku\b/i,
+  /\bmini\b/i,
+  /\bnano\b/i,
+  /\bflash\b/i,
+  /\bgpt-3\.5\b/i,
+  /\bllama-3\.1-8b\b/i,
+  /\bmixtral-8x7b\b/i,
+]
+
+const PLANNING_LOOP_MIN_TOOL_CALLS = 8
+const PLANNING_LOOP_WRITE_RATIO_THRESHOLD = 0.1
 
 type TaskType = "coding" | "docs" | "research" | "ops" | "other"
 type AgentMode = "plan" | "build" | "unknown"
@@ -136,6 +150,40 @@ function initDebugLogger(directory: string) {
   }
 }
 
+function isBlockedJudgeModel(modelSpec: string): boolean {
+  const normalized = modelSpec.toLowerCase()
+  return JUDGE_BLOCKED_PATTERNS.some((pattern) => pattern.test(normalized))
+}
+
+function stripJsonComments(input: string): string {
+  return input
+    .replace(/\/\*[^]*?\*\//g, "")
+    .replace(/(^|\s)\/\/.*$/gm, "$1")
+}
+
+async function loadPreferredModelSpec(directory: string): Promise<string | null> {
+  const candidates = [
+    join(directory, "opencode.json"),
+    join(directory, ".opencode", "opencode.json"),
+    join(homedir(), ".config", "opencode", "opencode.json"),
+    join(directory, "opencode.jsonc"),
+    join(directory, ".opencode", "opencode.jsonc"),
+    join(homedir(), ".config", "opencode", "opencode.jsonc"),
+  ]
+
+  for (const path of candidates) {
+    try {
+      const content = await readFile(path, "utf-8")
+      const parsed = JSON.parse(stripJsonComments(content))
+      const model = parsed?.model
+      if (typeof model === "string" && model.trim()) {
+        return model.trim()
+      }
+    } catch {}
+  }
+  return null
+}
+
 async function loadReflectionPrompt(directory: string): Promise<string | null> {
   const candidates = ["reflection.md", "reflection.MD"]
   for (const name of candidates) {
@@ -165,6 +213,102 @@ function getMessageSignature(msg: any): string {
   const time = msg.info?.time?.start || 0
   const textPart = msg.parts?.find((p: any) => p.type === "text")?.text?.slice(0, 20) || ""
   return `${role}:${time}:${textPart}`
+}
+
+export function detectPlanningLoop(messages: any[]): {
+  detected: boolean
+  readCount: number
+  writeCount: number
+  totalTools: number
+} {
+  let readCount = 0
+  let writeCount = 0
+  let totalTools = 0
+
+  for (const msg of messages) {
+    if (msg.info?.role !== "assistant") continue
+    for (const part of msg.parts || []) {
+      if (part.type !== "tool") continue
+      totalTools++
+
+      const toolName = (part.tool || "").toString().toLowerCase()
+      const input = part.state?.input || {}
+
+      if (["edit", "write", "apply_patch", "github_create_or_update_file", "github_push_files", "github_delete_file", "github_create_pull_request", "github_update_pull_request"].includes(toolName)) {
+        writeCount++
+        continue
+      }
+
+      if (toolName === "bash") {
+        const cmd = (input.command || input.cmd || "").toString()
+        if (/^\s*(npm|yarn|pnpm)\s+(run\s+)?(build|test|lint|fmt|format)\b/i.test(cmd) || /^\s*git\s+(add|commit|push|checkout|switch|merge|rebase)\b/i.test(cmd) || /^\s*(mkdir|rm|mv|cp)\b/i.test(cmd)) {
+          writeCount++
+        } else if (/^\s*git\s+(status|log|diff|show|branch|remote|tag)\b/i.test(cmd) || /^\s*(ls|cat|head|tail|find|grep|rg|wc|file)\b/i.test(cmd)) {
+          readCount++
+        }
+        continue
+      }
+
+      if (["read", "glob", "grep", "todowrite", "task", "webfetch", "knowledge-graph_search", "knowledge-graph_read", "knowledge-graph_open"].some((name) => toolName.startsWith(name)) || toolName.startsWith("context7_")) {
+        readCount++
+      }
+    }
+  }
+
+  const detected =
+    totalTools >= PLANNING_LOOP_MIN_TOOL_CALLS &&
+    (writeCount === 0 || writeCount / totalTools < PLANNING_LOOP_WRITE_RATIO_THRESHOLD)
+
+  return { detected, readCount, writeCount, totalTools }
+}
+
+export function buildEscalatingFeedback(
+  attemptCount: number,
+  severity: string,
+  verdict: { feedback?: string; missing?: string[]; next_actions?: string[] },
+  isPlanningLoop: boolean
+): string {
+  if (isPlanningLoop) {
+    return `${FEEDBACK_MARKER} STOP: Planning Loop Detected
+
+You have been reading files, checking git status, and creating todo lists without writing any code.
+
+DO NOT:
+- Run git status or git log again
+- Create another todo list
+- Read more files "for context"
+- Say "let me get right to work" without actually working
+
+DO NOW:
+Pick the FIRST item from your existing todo list and implement it. Open a file with Edit or Write and make changes. If you don't know where to start, create the simplest possible file first.
+
+Start coding NOW. No more planning.`
+  }
+
+  if (attemptCount <= 2) {
+    const missing = verdict.missing?.length
+      ? `\n### Missing\n${verdict.missing.map((m) => `- ${m}`).join("\n")}`
+      : ""
+    const nextActions = verdict.next_actions?.length
+      ? `\n### Next Actions\n${verdict.next_actions.map((a) => `- ${a}`).join("\n")}`
+      : ""
+    const feedbackText = verdict.feedback || ""
+    return `${FEEDBACK_MARKER} Task Incomplete (${severity})
+${feedbackText}
+${missing}
+${nextActions}
+
+Please address these issues and continue.`
+  }
+
+  const missingBrief = verdict.missing?.length
+    ? `Still missing: ${verdict.missing.slice(0, 3).join(", ")}.`
+    : ""
+  return `${FEEDBACK_MARKER} Still Incomplete (attempt ${attemptCount}/${MAX_ATTEMPTS})
+
+${missingBrief}
+
+You have been asked ${attemptCount} times to complete this task. Stop re-reading files or re-planning. Focus on the specific items above and implement them now. If something is blocking you, say what it is clearly.`
 }
 
 function getLastRelevantUserMessageId(messages: any[]): string | null {
@@ -367,7 +511,12 @@ async function classifyTaskForRoutingWithLLM(
   judgeSessionIds: Set<string>
 ): Promise<RoutingCategory | null> {
   const modelList = await loadReflectionModelList()
-  const attempts = modelList.length ? modelList : [""]
+  const preferredModel = await loadPreferredModelSpec(directory)
+  const attempts = modelList.length
+    ? modelList
+    : preferredModel && !isBlockedJudgeModel(preferredModel)
+      ? [preferredModel]
+      : [""]
 
   const prompt = `CLASSIFY TASK ROUTING\n\nYou are classifying a task into one routing category.\n\nTask summary:\n${context.taskSummary}\n\nTask type: ${context.taskType}\n\nRecent user messages:\n${context.humanMessages.slice(0, 4).join("\n\n")}\n\nChoose exactly one category from: backend, architecture, frontend, default.\nReturn JSON only:\n{\n  "category": "backend|architecture|frontend|default"\n}`
 
@@ -438,8 +587,15 @@ async function loadReflectionModelList(): Promise<string[]> {
   try {
     const content = await readFile(REFLECTION_CONFIG_PATH, "utf-8")
     const models = parseModelListFromYaml(content)
-    if (models.length) debug("Loaded reflection model list:", JSON.stringify(models))
-    return models
+    const filtered = models.filter((model) => {
+      if (isBlockedJudgeModel(model)) {
+        debug("Blocked weak reflection model:", model)
+        return false
+      }
+      return true
+    })
+    if (filtered.length) debug("Loaded reflection model list:", JSON.stringify(filtered))
+    return filtered
   } catch {
     return []
   }
@@ -919,7 +1075,12 @@ async function analyzeSelfAssessmentWithLLM(
   judgeSessionIds: Set<string>
 ): Promise<ReflectionAnalysis | null> {
   const modelList = await loadReflectionModelList()
-  const attempts = modelList.length ? modelList : [""]
+  const preferredModel = await loadPreferredModelSpec(directory)
+  const attempts = modelList.length
+    ? modelList
+    : preferredModel && !isBlockedJudgeModel(preferredModel)
+      ? [preferredModel]
+      : [""]
 
   const prompt = `ANALYZE REFLECTION-3
 
@@ -1024,6 +1185,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
   const lastReflectedMsgId = new Map<string, string>()
   const activeReflections = new Set<string>()
   const recentlyAbortedSessions = new Map<string, number>()
+  const attempts = new Map<string, number>()
 
   async function runReflection(sessionId: string): Promise<void> {
       debug("runReflection called for session:", sessionId.slice(0, 8))
@@ -1059,6 +1221,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         if (!lastUserMsgId) return
 
         const initialUserMsgId = lastUserMsgId
+        const attemptKey = `${sessionId}:${lastUserMsgId}`
         const lastReflectedId = lastReflectedMsgId.get(sessionId)
         if (lastUserMsgId === lastReflectedId) return
 
@@ -1078,7 +1241,12 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         // respond in JSON poisons its context, causing subsequent replies to be
         // JSON-only.
         const modelList = await loadReflectionModelList()
-        const assessmentAttempts = modelList.length ? modelList : [""]
+        const preferredModel = await loadPreferredModelSpec(directory)
+        const assessmentAttempts = modelList.length
+          ? modelList
+          : preferredModel && !isBlockedJudgeModel(preferredModel)
+            ? [preferredModel]
+            : [""]
 
         let selfAssessment: string | null = null
         for (const modelSpec of assessmentAttempts) {
@@ -1124,6 +1292,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         }
 
         if (!selfAssessment) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           return
         }
@@ -1133,6 +1302,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         // Check if user sent a new message or aborted during assessment
         const abortTime = recentlyAbortedSessions.get(sessionId)
         if (abortTime) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           return
         }
@@ -1148,6 +1318,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         }
         const currentUserMsgId = getLastRelevantUserMessageId(currentMessages || [])
         if (currentUserMsgId && currentUserMsgId !== initialUserMsgId) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, initialUserMsgId)
           return
         }
@@ -1161,6 +1332,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         }
 
         if (!analysis) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           await showToast(client, directory, "Reflection analysis failed", "warning")
           return
@@ -1184,6 +1356,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         await writeVerdictSignal(directory, sessionId, analysis.complete, analysis.severity)
 
         if (analysis.complete) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           await showToast(client, directory, `Task complete ✓ (${analysis.severity})`, "success")
           debug("Reflection complete")
@@ -1191,6 +1364,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         }
 
         if (analysis.requiresHumanAction && !analysis.shouldContinue) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           const hint = analysis.missing[0] || "User action required"
           await showToast(client, directory, `Action needed: ${hint}`, "warning")
@@ -1211,25 +1385,42 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         }
         const preFeedbackUserMsgId = getLastRelevantUserMessageId(preFeedbackMessages || [])
         if (preFeedbackUserMsgId && preFeedbackUserMsgId !== initialUserMsgId) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, initialUserMsgId)
           debug("User sent new message during analysis, skipping feedback")
           return
         }
         const preFeedbackAbort = recentlyAbortedSessions.get(sessionId)
         if (preFeedbackAbort) {
+          attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
           debug("Session aborted during analysis, skipping feedback")
           return
         }
 
-        const feedbackLines: string[] = []
-        feedbackLines.push(`${FEEDBACK_MARKER} Task incomplete.`)
-        if (analysis.reason) feedbackLines.push(`Reason: ${analysis.reason}`)
-        if (analysis.missing.length) feedbackLines.push(`Missing: ${analysis.missing.join("; ")}`)
-        if (analysis.nextActions.length) feedbackLines.push(`Next actions: ${analysis.nextActions.join("; ")}`)
+        const nextAttemptCount = (attempts.get(attemptKey) || 0) + 1
+        attempts.set(attemptKey, nextAttemptCount)
+        if (nextAttemptCount >= MAX_ATTEMPTS) {
+          lastReflectedMsgId.set(sessionId, lastUserMsgId)
+          await showToast(client, directory, `Max attempts (${MAX_ATTEMPTS}) reached`, "warning")
+          debug("Max attempts reached for", sessionId.slice(0, 8))
+          return
+        }
+
+        const loopCheck = detectPlanningLoop(preFeedbackMessages || messages)
+        const feedbackText = buildEscalatingFeedback(
+          nextAttemptCount,
+          analysis.severity || "MEDIUM",
+          {
+            feedback: analysis.reason || "Task incomplete",
+            missing: analysis.missing,
+            next_actions: analysis.nextActions
+          },
+          loopCheck.detected
+        )
 
         // Apply task-based model routing to feedback injection
-        const feedbackBody: any = { parts: [{ type: "text", text: feedbackLines.join("\n") }] }
+        const feedbackBody: any = { parts: [{ type: "text", text: feedbackText }] }
         if (routingModel) {
           feedbackBody.model = routingModel
           debug("Routing feedback to", routingCategory, "model:", JSON.stringify(routingModel))
