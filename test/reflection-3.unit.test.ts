@@ -11,6 +11,7 @@ import {
   parseModelSpec,
   getCrossReviewModelSpec,
   getGitHubCopilotModelForRouting,
+  detectActionLoop,
   RoutingConfig
 } from "../reflection-3.test-helpers.ts"
 import { detectPlanningLoop } from "../reflection-3.ts"
@@ -498,16 +499,19 @@ describe("buildEscalatingFeedback", () => {
     assert.ok(!result.includes("Some feedback"))
   })
 
-  it("escalates tone after attempt 2", () => {
+  it("escalates to final attempt message after attempt 2", () => {
     const verdict = { missing: ["Run tests", "Create PR", "Check CI", "Update docs"] }
     const result = buildEscalatingFeedback(3, "high", verdict, false)
-    assert.ok(result.includes("Still Incomplete"))
-    assert.ok(result.includes("attempt 3/5"))
+    assert.ok(result.includes("Final Attempt"))
+    assert.ok(result.includes("3/3"))
     // Should truncate to first 3 missing items
     assert.ok(result.includes("Run tests"))
     assert.ok(result.includes("Create PR"))
     assert.ok(result.includes("Check CI"))
     assert.ok(!result.includes("Update docs"))
+    // Should include give-up guidance
+    assert.ok(result.includes("LAST chance"))
+    assert.ok(result.includes("needs_user_action"))
   })
 
   it("handles verdict with empty arrays", () => {
@@ -523,6 +527,31 @@ describe("buildEscalatingFeedback", () => {
     const result = buildEscalatingFeedback(2, "medium", verdict, false)
     assert.ok(result.includes("Incomplete"))
     assert.ok(!result.includes("### Missing"))
+  })
+
+  it("returns action loop message when isActionLoop is true", () => {
+    const result = buildEscalatingFeedback(2, "high", null, false, true)
+    assert.ok(result.includes("Action Loop Detected"))
+    assert.ok(result.includes("repeating the same commands"))
+    assert.ok(result.includes("Do NOT re-run"))
+  })
+
+  it("action loop includes attempt count", () => {
+    const result = buildEscalatingFeedback(2, "high", null, false, true)
+    assert.ok(result.includes("2/3"))
+  })
+
+  it("action loop ignores verdict content", () => {
+    const verdict = { feedback: "Some feedback", missing: ["item"], next_actions: ["action"] }
+    const result = buildEscalatingFeedback(1, "high", verdict, false, true)
+    assert.ok(result.includes("Action Loop Detected"))
+    assert.ok(!result.includes("Some feedback"))
+  })
+
+  it("planning loop takes priority over action loop", () => {
+    const result = buildEscalatingFeedback(1, "high", null, true, true)
+    assert.ok(result.includes("Planning Loop Detected"))
+    assert.ok(!result.includes("Action Loop Detected"))
   })
 })
 
@@ -720,5 +749,152 @@ describe("GitHub Copilot model routing", () => {
   it("returns null for null/undefined input", () => {
     assert.strictEqual(getGitHubCopilotModelForRouting(null), null)
     assert.strictEqual(getGitHubCopilotModelForRouting(undefined), null)
+  })
+})
+
+describe("detectActionLoop", () => {
+  function makeToolMsg(tools: Array<{ tool: string; input?: any }>): any {
+    return {
+      info: { role: "assistant" },
+      parts: tools.map(t => ({
+        type: "tool",
+        tool: t.tool,
+        state: { input: t.input || {} }
+      }))
+    }
+  }
+
+  it("returns false for non-array input", () => {
+    const result = detectActionLoop(null as any)
+    assert.strictEqual(result.detected, false)
+  })
+
+  it("returns false for empty messages", () => {
+    const result = detectActionLoop([])
+    assert.strictEqual(result.detected, false)
+  })
+
+  it("returns false for too few commands", () => {
+    const messages = [makeToolMsg([
+      { tool: "bash", input: { command: "npm test" } },
+      { tool: "bash", input: { command: "npm run build" } }
+    ])]
+    const result = detectActionLoop(messages)
+    assert.strictEqual(result.detected, false)
+  })
+
+  it("detects repeated bash commands", () => {
+    const messages = [
+      makeToolMsg([{ tool: "bash", input: { command: "kubectl apply -f deploy.yaml" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "npm run eval:stripe" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "kubectl apply -f deploy.yaml" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "npm run eval:stripe" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "kubectl apply -f deploy.yaml" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "npm run eval:stripe" } }])
+    ]
+    const result = detectActionLoop(messages)
+    assert.strictEqual(result.detected, true)
+    assert.ok(result.repeatedCommands.length > 0)
+  })
+
+  it("ignores read-only tools (read, glob, grep, todowrite)", () => {
+    const messages = [
+      makeToolMsg([
+        { tool: "read", input: { path: "/file.ts" } },
+        { tool: "glob", input: { pattern: "**/*.ts" } },
+        { tool: "grep", input: { pattern: "foo" } },
+        { tool: "todowrite", input: { todos: [] } },
+        { tool: "bash", input: { command: "npm test" } },
+        { tool: "bash", input: { command: "npm run build" } }
+      ])
+    ]
+    const result = detectActionLoop(messages)
+    // Only 2 bash commands counted, below threshold
+    assert.strictEqual(result.detected, false)
+  })
+
+  it("does not flag diverse commands as a loop", () => {
+    const messages = [
+      makeToolMsg([{ tool: "bash", input: { command: "npm test" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "npm run build" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "git status" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "git add ." } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "git commit -m 'fix'" } }])
+    ]
+    const result = detectActionLoop(messages)
+    assert.strictEqual(result.detected, false)
+  })
+
+  it("normalizes timestamps in commands", () => {
+    const messages = [
+      makeToolMsg([{ tool: "bash", input: { command: "echo test_1771177929615" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "echo test_1771177931936" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "echo test_1771177933000" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "echo test_1771177935000" } }])
+    ]
+    const result = detectActionLoop(messages)
+    // All commands normalize to the same thing
+    assert.strictEqual(result.detected, true)
+  })
+
+  it("skips non-assistant messages", () => {
+    const messages = [
+      { info: { role: "user" }, parts: [{ type: "tool", tool: "bash", state: { input: { command: "npm test" } } }] },
+      { info: { role: "user" }, parts: [{ type: "tool", tool: "bash", state: { input: { command: "npm test" } } }] },
+      { info: { role: "user" }, parts: [{ type: "tool", tool: "bash", state: { input: { command: "npm test" } } }] },
+      { info: { role: "user" }, parts: [{ type: "tool", tool: "bash", state: { input: { command: "npm test" } } }] }
+    ]
+    const result = detectActionLoop(messages)
+    assert.strictEqual(result.detected, false)
+    assert.strictEqual(result.totalCommands, 0)
+  })
+})
+
+describe("buildSelfAssessmentPrompt attempt awareness", () => {
+  const baseContext = {
+    taskSummary: "Fix a bug",
+    taskType: "coding" as const,
+    agentMode: "build" as const,
+    requiresTests: false,
+    requiresBuild: false,
+    requiresPR: false,
+    requiresCI: false,
+    requiresLocalTests: false,
+    requiresLocalTestsEvidence: false,
+    pushedToDefaultBranch: false,
+    detectedSignals: [] as string[],
+    toolsSummary: "npm test: pass",
+    recentCommands: [],
+    humanMessages: [] as string[]
+  }
+
+  it("does not include reflection history on first attempt (attemptCount=0)", () => {
+    const result = buildSelfAssessmentPrompt(baseContext, "", undefined, 0)
+    assert.ok(!result.includes("Reflection History"))
+    assert.ok(!result.includes("reflection attempt"))
+  })
+
+  it("does not include reflection history when attemptCount is undefined", () => {
+    const result = buildSelfAssessmentPrompt(baseContext, "")
+    assert.ok(!result.includes("Reflection History"))
+  })
+
+  it("includes reflection history on second attempt", () => {
+    const result = buildSelfAssessmentPrompt(baseContext, "", undefined, 1)
+    assert.ok(result.includes("## Reflection History"))
+    assert.ok(result.includes("reflection attempt 2/3"))
+    assert.ok(result.includes("repeating the same actions"))
+    assert.ok(result.includes('"stuck": true'))
+  })
+
+  it("includes reflection history on third attempt", () => {
+    const result = buildSelfAssessmentPrompt(baseContext, "", undefined, 2)
+    assert.ok(result.includes("reflection attempt 3/3"))
+  })
+
+  it("includes loop-awareness rules", () => {
+    const result = buildSelfAssessmentPrompt(baseContext, "")
+    assert.ok(result.includes("repeating the same actions"))
+    assert.ok(result.includes("Do not retry the same failing approach"))
   })
 })
