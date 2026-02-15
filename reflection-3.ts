@@ -644,8 +644,9 @@ async function waitForResponse(client: any, sessionId: string): Promise<string |
   while (Date.now() - start < JUDGE_RESPONSE_TIMEOUT) {
     await new Promise(r => setTimeout(r, POLL_INTERVAL))
     try {
-      const { data: messages } = await client.session.messages({ path: { id: sessionId } })
-      const assistantMsg = [...(messages || [])].reverse().find((m: any) => m.info?.role === "assistant")
+      const { data } = await client.session.messages({ path: { id: sessionId } })
+      const messages = Array.isArray(data) ? data : []
+      const assistantMsg = [...messages].reverse().find((m: any) => m.info?.role === "assistant")
       if (!(assistantMsg?.info?.time as any)?.completed) continue
       for (const part of assistantMsg?.parts || []) {
         if (part.type === "text" && part.text) return part.text
@@ -1199,7 +1200,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         let messages: any[] | undefined
         try {
           const { data } = await client.session.messages({ path: { id: sessionId } })
-          messages = data
+          messages = Array.isArray(data) ? data : undefined
         } catch {
           debug("Session not found (likely deleted), skipping reflection:", sessionId.slice(0, 8))
           return
@@ -1313,7 +1314,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         let currentMessages: any[] | undefined
         try {
           const { data } = await client.session.messages({ path: { id: sessionId } })
-          currentMessages = data
+          currentMessages = Array.isArray(data) ? data : undefined
         } catch {
           debug("Session deleted during reflection, aborting:", sessionId.slice(0, 8))
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
@@ -1380,7 +1381,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         let preFeedbackMessages: any[] | undefined
         try {
           const { data } = await client.session.messages({ path: { id: sessionId } })
-          preFeedbackMessages = data
+          preFeedbackMessages = Array.isArray(data) ? data : undefined
         } catch {
           debug("Session deleted before feedback injection, aborting:", sessionId.slice(0, 8))
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
