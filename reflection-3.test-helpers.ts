@@ -310,6 +310,11 @@ export interface RoutingConfig {
   models: Record<RoutingCategory, string>
 }
 
+export interface ModelSpecParts {
+  providerID: string
+  modelID: string
+}
+
 
 export function parseRoutingFromYaml(content: string): RoutingConfig {
   const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
@@ -374,6 +379,27 @@ export function getRoutingModel(config: RoutingConfig, category: RoutingCategory
   const modelID = parts.slice(1).join("/") || ""
   if (!providerID || !modelID) return null
   return { providerID, modelID }
+}
+
+export function parseModelSpec(modelSpec: string | null | undefined): ModelSpecParts | null {
+  if (typeof modelSpec !== "string") return null
+  const trimmed = modelSpec.trim()
+  if (!trimmed) return null
+  const parts = trimmed.split("/")
+  if (parts.length < 2) return null
+  const providerID = parts[0] || ""
+  const modelID = parts.slice(1).join("/") || ""
+  if (!providerID || !modelID) return null
+  return { providerID, modelID }
+}
+
+export function getCrossReviewModelSpec(modelSpec: string | null | undefined): string | null {
+  const parsed = parseModelSpec(modelSpec)
+  if (!parsed) return null
+  const modelID = parsed.modelID.toLowerCase()
+  if (modelID === "claude-opus-4.6") return "github-copilot/gpt-5.2-codex"
+  if (modelID === "gpt-5.2-codex") return "github-copilot/claude-opus-4.6"
+  return null
 }
 
 const FEEDBACK_MARKER = "## Reflection-3:"
