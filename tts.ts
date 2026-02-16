@@ -1989,6 +1989,8 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
   // Markers used by reflection plugins in internal evaluation sessions.
   const INTERNAL_SESSION_MARKERS = [
     "ANALYZE REFLECTION-3",   // reflection-3 judge sessions
+    "SELF-ASSESS REFLECTION-3", // reflection-3 self-assessment sessions
+    "REVIEW REFLECTION-3 COMPLETION", // reflection-3 cross-model review sessions
     "CLASSIFY TASK ROUTING",  // reflection-3 task routing classifier
     "TASK VERIFICATION",      // legacy reflection judge sessions
     "You are a judge",        // legacy judge sessions

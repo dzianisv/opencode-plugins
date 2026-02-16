@@ -54,6 +54,22 @@ describe("isJudgeSession", () => {
     expect(isJudgeSession(messages)).toBe(true)
   })
 
+  it("detects reflection-3 self-assessment sessions (SELF-ASSESS REFLECTION-3)", () => {
+    const messages = [
+      msg("user", "SELF-ASSESS REFLECTION-3\n\nPlease evaluate your own work..."),
+      msg("assistant", '{"status": "complete", "confidence": 0.9}', { completed: true }),
+    ]
+    expect(isJudgeSession(messages)).toBe(true)
+  })
+
+  it("detects reflection-3 cross-model review sessions (REVIEW REFLECTION-3 COMPLETION)", () => {
+    const messages = [
+      msg("user", "REVIEW REFLECTION-3 COMPLETION\n\nYou are reviewing another model's completion verdict..."),
+      msg("assistant", "The self-assessment appears justified. No gaps found.", { completed: true }),
+    ]
+    expect(isJudgeSession(messages)).toBe(true)
+  })
+
   it("detects reflection-3 routing classifier sessions (CLASSIFY TASK ROUTING)", () => {
     const messages = [
       msg("user", "CLASSIFY TASK ROUTING\n\nYou are classifying a task into one routing category.\n\nTask summary: Fix the login bug"),
