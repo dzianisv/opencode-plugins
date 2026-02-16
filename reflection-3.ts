@@ -108,6 +108,11 @@ interface RoutingConfig {
   models: Record<RoutingCategory, string>
 }
 
+interface ModelSpecParts {
+  providerID: string
+  modelID: string
+}
+
 const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
   enabled: false,
   models: {
@@ -341,7 +346,7 @@ function isJudgeSession(sessionId: string, messages: any[], judgeSessionIds: Set
   if (judgeSessionIds.has(sessionId)) return true
   for (const msg of messages) {
     for (const part of msg.parts || []) {
-      if (part.type === "text" && (part.text?.includes("ANALYZE REFLECTION-3") || part.text?.includes("SELF-ASSESS REFLECTION-3"))) {
+      if (part.type === "text" && (part.text?.includes("ANALYZE REFLECTION-3") || part.text?.includes("SELF-ASSESS REFLECTION-3") || part.text?.includes("REVIEW REFLECTION-3 COMPLETION"))) {
         return true
       }
     }
@@ -508,6 +513,27 @@ function parseRoutingCategory(text: string | null | undefined): RoutingCategory 
   if (word === "backend" || word === "architecture" || word === "frontend" || word === "default") {
     return word
   }
+  return null
+}
+
+function parseModelSpec(modelSpec: string | null | undefined): ModelSpecParts | null {
+  if (typeof modelSpec !== "string") return null
+  const trimmed = modelSpec.trim()
+  if (!trimmed) return null
+  const parts = trimmed.split("/")
+  if (parts.length < 2) return null
+  const providerID = parts[0] || ""
+  const modelID = parts.slice(1).join("/") || ""
+  if (!providerID || !modelID) return null
+  return { providerID, modelID }
+}
+
+function getCrossReviewModelSpec(modelSpec: string | null | undefined): string | null {
+  const parsed = parseModelSpec(modelSpec)
+  if (!parsed) return null
+  const modelID = parsed.modelID.toLowerCase()
+  if (modelID === "claude-opus-4.6") return "github-copilot/gpt-5.2-codex"
+  if (modelID === "gpt-5.2-codex") return "github-copilot/claude-opus-4.6"
   return null
 }
 
@@ -1200,6 +1226,85 @@ Return JSON only:
   return null
 }
 
+async function runCrossModelReview(
+  client: any,
+  directory: string,
+  context: TaskContext,
+  selfAssessment: string,
+  analysis: ReflectionAnalysis,
+  lastAssistantText: string,
+  assessmentModelSpec: string | null,
+  judgeSessionIds: Set<string>
+): Promise<{ modelSpec: string; response: string } | null> {
+  const crossModelSpec = getCrossReviewModelSpec(assessmentModelSpec)
+  if (!crossModelSpec) return null
+
+  debug("Starting cross-model review session with model:", crossModelSpec)
+
+  let reviewSession: any
+  try {
+    const { data } = await client.session.create({ query: { directory } })
+    reviewSession = data
+  } catch {
+    debug("Failed to create cross-review session")
+    return null
+  }
+  if (!reviewSession?.id) return null
+  judgeSessionIds.add(reviewSession.id)
+
+  const prompt = `REVIEW REFLECTION-3 COMPLETION
+
+You are reviewing another model's completion verdict for an agent task.
+Provide a concise critique and reflection:
+- Does the self-assessment evidence justify completion?
+- Any missing workflow gates (tests/build/PR/CI)?
+- Any inconsistencies between tool signals and the agent's claim?
+- Provide a short reflection: what could have been stronger?
+
+## Task Summary
+${context.taskSummary}
+
+## Task Type
+${context.taskType}
+
+## Tool Signals
+${context.toolsSummary}
+
+## Agent Last Response
+${lastAssistantText.slice(0, 2000)}
+
+## Self-Assessment
+${selfAssessment.slice(0, 3000)}
+
+## Reflection Analysis Verdict
+${JSON.stringify(analysis, null, 2)}
+
+Return a short paragraph plus bullet list of any gaps.`
+
+  try {
+    const modelParts = parseModelSpec(crossModelSpec)
+    const body: any = { parts: [{ type: "text", text: prompt }] }
+    if (modelParts) body.model = modelParts
+
+    await client.session.promptAsync({
+      path: { id: reviewSession.id },
+      body
+    })
+
+    const response = await waitForResponse(client, reviewSession.id)
+    if (!response) return null
+    return { modelSpec: crossModelSpec, response }
+  } catch (e) {
+    reportError(e, { plugin: "reflection-3", op: "cross-review" })
+    return null
+  } finally {
+    try {
+      await client.session.delete({ path: { id: reviewSession.id }, query: { directory } })
+    } catch {}
+    judgeSessionIds.delete(reviewSession.id)
+  }
+}
+
 export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
   initDebugLogger(directory)
   const judgeSessionIds = new Set<string>()
@@ -1267,11 +1372,12 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
             ? [preferredModel]
             : [""]
 
-        let selfAssessment: string | null = null
-        for (const modelSpec of assessmentAttempts) {
-          let assessmentSession: any
-          try {
-            const { data } = await client.session.create({ query: { directory } })
+      let selfAssessment: string | null = null
+      let assessmentModelSpec: string | null = null
+      for (const modelSpec of assessmentAttempts) {
+        let assessmentSession: any
+        try {
+          const { data } = await client.session.create({ query: { directory } })
             assessmentSession = data
           } catch {
             debug("Failed to create self-assessment session")
@@ -1297,7 +1403,10 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
             })
 
             selfAssessment = await waitForResponse(client, assessmentSession.id)
-            if (selfAssessment) break
+            if (selfAssessment) {
+              assessmentModelSpec = modelSpec || null
+              break
+            }
           } catch (e: any) {
             debug("promptAsync failed (self-assessment):", e?.message || e)
             reportError(e, { plugin: "reflection-3", op: "prompt-self-assessment" })
@@ -1359,6 +1468,26 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
 
         debug("Reflection analysis completed")
 
+        let crossReview: { modelSpec: string; response: string } | null = null
+        if (analysis.complete) {
+          debug("Task complete, attempting cross-model review (assessmentModel:", assessmentModelSpec || "unknown", ")")
+          crossReview = await runCrossModelReview(
+            client,
+            directory,
+            context,
+            selfAssessment,
+            analysis,
+            lastAssistantText,
+            assessmentModelSpec,
+            judgeSessionIds
+          )
+          if (crossReview) {
+            debug("Cross-model review completed by", crossReview.modelSpec)
+          } else {
+            debug("Cross-model review skipped (no cross-model mapping or error)")
+          }
+        }
+
         // Compute routing early so it can be included in saved data
         const routingConfig = await loadRoutingConfig()
         const routingCategory = await classifyTaskForRoutingWithLLM(client, directory, context, judgeSessionIds)
@@ -1368,6 +1497,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           task: context.taskSummary,
           assessment: selfAssessment.slice(0, 4000),
           analysis,
+          crossReview,
           routing: routingModel ? { category: routingCategory, model: routingModel } : null,
           timestamp: new Date().toISOString()
         })

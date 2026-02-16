@@ -7,6 +7,8 @@ import {
   parseRoutingFromYaml,
   getRoutingModel,
   buildEscalatingFeedback,
+  parseModelSpec,
+  getCrossReviewModelSpec,
   RoutingConfig
 } from "../reflection-3.test-helpers.ts"
 import { detectPlanningLoop } from "../reflection-3.ts"
@@ -635,5 +637,30 @@ routing:
       }
       assert.strictEqual(getRoutingModel(config, "backend"), null)
     })
+  })
+})
+
+describe("cross-model review routing", () => {
+  it("parses model spec into provider/model parts", () => {
+    const parsed = parseModelSpec("github-copilot/claude-opus-4.6")
+    assert.deepStrictEqual(parsed, { providerID: "github-copilot", modelID: "claude-opus-4.6" })
+  })
+
+  it("returns null for invalid model specs", () => {
+    assert.strictEqual(parseModelSpec(""), null)
+    assert.strictEqual(parseModelSpec("just-a-name"), null)
+    assert.strictEqual(parseModelSpec(undefined), null)
+  })
+
+  it("selects cross-review model for opus", () => {
+    assert.strictEqual(getCrossReviewModelSpec("github-copilot/claude-opus-4.6"), "github-copilot/gpt-5.2-codex")
+  })
+
+  it("selects cross-review model for gpt-5.2-codex", () => {
+    assert.strictEqual(getCrossReviewModelSpec("github-copilot/gpt-5.2-codex"), "github-copilot/claude-opus-4.6")
+  })
+
+  it("returns null for unrelated models", () => {
+    assert.strictEqual(getCrossReviewModelSpec("github-copilot/gemini-3-pro-preview"), null)
   })
 })

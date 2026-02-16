@@ -115,6 +115,97 @@ Evaluates task completion after each agent response and provides feedback if wor
 4. **Verdict**: PASS → toast notification | FAIL → feedback injected into chat
 5. **Continuation**: Agent receives feedback and continues working
 
+### State Graph
+
+```
+session.idle fires
+    |
+    v
++---------------------------+
+| GUARD CHECKS              |
+| - Is judge/classifier?    |--yes--> SKIP
+| - Is plan mode?           |--yes--> SKIP
+| - Was ESC-aborted?        |--yes--> SKIP (10s cooldown)
+| - Same user msg already   |--yes--> SKIP
+|   reflected?              |
++----------+----------------+
+           | no
+           v
++---------------------------+
+| A) BUILD TASK CONTEXT     |
+| - Collect user messages   |
+| - Infer task type         |
+|   (coding/docs/research/  |
+|    ops/other)             |
+| - Detect repo signals     |
+|   (package.json scripts,  |
+|    test/ dir)             |
+| - Extract tool commands   |
+| - Determine workflow      |
+|   requirements            |
++----------+----------------+
+           v
++---------------------------+
+| B) SELF-ASSESSMENT        |
+| Request agent to produce  |
+| JSON with evidence:       |
+| - Did you complete task?  |
+| - Did you run tests?      |
+| - Did you create PR?      |
+| - Did CI pass?            |
+| - Are you stuck?          |
+| (runs in ephemeral        |
+|  session, not main)       |
++----------+----------------+
+           v
++---------------------------+
+| C) PARSE & EVALUATE      |
+| Parse JSON --success--> evaluateSelfAssessment()
+|            +--fail---> Judge LLM fallback
+|                        |
+| Workflow gate checks:  |
+| 1. Tests ran? Passed?  |
+|    Ran AFTER changes?  |
+|    Not skipped/flaky?  |
+| 2. Build ran? Passed?  |
+| 3. PR created? URL?    |
+|    Evidence (gh pr)?   |
+| 4. CI checked? Passed? |
+|    Evidence (gh pr     |
+|    checks)?            |
+| 5. No push to main?   |
+| 6. Planning loop check |
++----------+----------------+
+           v
++---------------------------+
+| D) VERDICT                |
+| Write .reflection/        |
+|   verdict_<session>.json  |
+|                           |
+| Three outcomes:           |
+| COMPLETE      --> Toast success, done
+| NEEDS USER    --> Toast warning, done
+| INCOMPLETE    --> Continue below
++----------+----------------+
+           | incomplete
+           v
++---------------------------+
+| E) FEEDBACK + ROUTING     |
+| - Classify task category  |
+|   (backend/arch/frontend) |
+| - Build escalating        |
+|   feedback (attempt N/5)  |
+| - Inject feedback into    |
+|   session (optionally     |
+|   with model routing)     |
+| - Agent continues work    |
++---------------------------+
+           |
+           v
+     (session.idle fires again --> loop back to top,
+      up to MAX_ATTEMPTS=5)
+```
+
 ### Features
 
 - **OpenCode Sessions API**: Uses OpenCode's session management to create isolated judge sessions
