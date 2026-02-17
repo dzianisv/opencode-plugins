@@ -290,6 +290,7 @@ describe("extractFinalResponse - Reflection message filtering", () => {
 // ============================================================================
 
 describe("Whisper Server - Integration Tests", () => {
+  jest.setTimeout(15000)
   /**
    * Helper to check if Whisper server is running
    */
@@ -435,6 +436,7 @@ describe("Whisper Server - Integration Tests", () => {
 // ============================================================================
 
 describe("TTS Dependencies - Availability Check", () => {
+  jest.setTimeout(15000)
   it("checks if faster-whisper can be imported", async () => {
     try {
       await execAsync('python3 -c "from faster_whisper import WhisperModel; print(\'ok\')"', { timeout: 10000 })
