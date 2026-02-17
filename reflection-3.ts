@@ -271,6 +271,11 @@ export function detectPlanningLoop(messages: any[]): {
   return { detected, readCount, writeCount, totalTools }
 }
 
+export function shouldApplyPlanningLoop(taskType: TaskType, loopDetected: boolean): boolean {
+  if (!loopDetected) return false
+  return taskType === "coding"
+}
+
 export function buildEscalatingFeedback(
   attemptCount: number,
   severity: string,
@@ -528,6 +533,19 @@ function parseModelSpec(modelSpec: string | null | undefined): ModelSpecParts | 
   return { providerID, modelID }
 }
 
+function getGitHubCopilotModelForRouting(modelSpec: string | null | undefined): string | null {
+  const parsed = parseModelSpec(modelSpec)
+  if (!parsed) return null
+  const providerID = parsed.providerID.toLowerCase()
+  const modelID = parsed.modelID.toLowerCase()
+  if (providerID === "github-copilot" || providerID === "github-copilot/free") {
+    if (modelID.includes("gpt-4.1") || modelID.includes("gpt-4o") || modelID.includes("gpt-4")) {
+      return "github-copilot/gpt-4.1"
+    }
+  }
+  return null
+}
+
 function getCrossReviewModelSpec(modelSpec: string | null | undefined): string | null {
   const parsed = parseModelSpec(modelSpec)
   if (!parsed) return null
@@ -545,11 +563,19 @@ async function classifyTaskForRoutingWithLLM(
 ): Promise<RoutingCategory | null> {
   const modelList = await loadReflectionModelList()
   const preferredModel = await loadPreferredModelSpec(directory)
-  const attempts = modelList.length
-    ? modelList
-    : preferredModel && !isBlockedJudgeModel(preferredModel)
-      ? [preferredModel]
-      : [""]
+  
+  let attempts: string[] = []
+  if (modelList.length) {
+    attempts = modelList
+  } else if (preferredModel) {
+    const routingModel = getGitHubCopilotModelForRouting(preferredModel)
+    if (routingModel && !isBlockedJudgeModel(routingModel)) {
+      attempts = [routingModel]
+    } else if (!isBlockedJudgeModel(preferredModel)) {
+      attempts = [preferredModel]
+    }
+  }
+  if (attempts.length === 0) attempts = [""]
 
   const prompt = `CLASSIFY TASK ROUTING\n\nYou are classifying a task into one routing category.\n\nTask summary:\n${context.taskSummary}\n\nTask type: ${context.taskType}\n\nRecent user messages:\n${context.humanMessages.slice(0, 4).join("\n\n")}\n\nChoose exactly one category from: backend, architecture, frontend, default.\nReturn JSON only:\n{\n  "category": "backend|architecture|frontend|default"\n}`
 
@@ -1557,6 +1583,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         }
 
         const loopCheck = detectPlanningLoop(preFeedbackMessages || messages)
+        const usePlanningLoopMessage = shouldApplyPlanningLoop(context.taskType, loopCheck.detected)
         const feedbackText = buildEscalatingFeedback(
           nextAttemptCount,
           analysis.severity || "MEDIUM",
@@ -1565,7 +1592,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
             missing: analysis.missing,
             next_actions: analysis.nextActions
           },
-          loopCheck.detected
+          usePlanningLoopMessage
         )
 
         // Apply task-based model routing to feedback injection

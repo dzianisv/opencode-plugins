@@ -18,10 +18,14 @@ Evaluate this AI agent session state. Return only JSON.
 
 Determine if the agent is stuck and needs a nudge to continue.
 
+First, check Tool Calls for any "running" or "pending" status. If found, return:
+{"stuck": false, "reason": "working"}
+
 ## Decision Priority (check in order):
 
 ### 1. WORKING (highest priority)
-- Tool status shows "running" or "pending" → reason: "working"
+- If Tool Calls contain "running" or "pending" anywhere, you MUST return:
+  {"stuck": false, "reason": "working"} (do not override this later)
 
 ### 2. COMPLETE (check before waiting_for_user)
 - Agent shows success indicators: "PASS", "passed", "completed", "done", "fixed", "verified"
@@ -29,6 +33,7 @@ Determine if the agent is stuck and needs a nudge to continue.
 - Agent's response indicates task fulfilled: "I've added", "I've fixed", "The X now works"
 - No pending work mentioned (no "Next I will...", "Still need to...")
 - IMPORTANT: If the user's task requires code changes (fix, implement, add, create, build, refactor), message_completed is true, and the Tool Calls show ONLY read operations (read, glob, grep, git log/status/diff, webfetch, task/explore) with NO write operations (edit, write, bash with build/test/commit, PR creation), the task is NOT complete — classify as genuinely_stuck with stuck=true. Analyzing or recommending changes is not the same as implementing them.
+- If this rule applies, do NOT return reason "complete".
 → reason: "complete"
 
 ### 3. WAITING FOR USER
