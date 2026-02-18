@@ -1221,7 +1221,7 @@ function evaluateSelfAssessment(assessment: SelfAssessment, context: TaskContext
     addMissing("Rethink approach", "Propose an alternate approach and continue")
   }
 
-  const explicitUserAction = needsUserAction.filter(item => /auth|2fa|credential|token|secret|permission|approve|merge|run|execute|access|provide|upload|share|login|invite/i.test(item))
+  const explicitUserAction = needsUserAction.filter(item => /auth|2fa|credential|token|secret|permission|approve|merge|access|provide|upload|share|login|invite/i.test(item))
   const requiresHumanAction = explicitUserAction.length > 0
   // Agent should continue if there are missing items beyond what only the user can do.
   // Even when user action is needed (e.g. "merge PR"), the agent may still have
@@ -1346,15 +1346,18 @@ Return JSON only:
       if (!jsonMatch) continue
 
       const verdict = JSON.parse(jsonMatch[0]) as any
-      return {
-        complete: !!verdict.complete,
-        shouldContinue: !verdict.requires_human_action && !verdict.complete,
-        reason: verdict.feedback || "Judge analysis completed",
-        missing: Array.isArray(verdict.missing) ? verdict.missing : [],
-        nextActions: Array.isArray(verdict.next_actions) ? verdict.next_actions : [],
-        requiresHumanAction: !!verdict.requires_human_action,
-        severity: verdict.severity || "MEDIUM"
-      }
+        const missing = Array.isArray(verdict.missing) ? verdict.missing : []
+        const requiresHumanAction = !!verdict.requires_human_action
+        const shouldContinue = !verdict.complete && (missing.length > 0 || !requiresHumanAction)
+        return {
+          complete: !!verdict.complete,
+          shouldContinue,
+          reason: verdict.feedback || "Judge analysis completed",
+          missing,
+          nextActions: Array.isArray(verdict.next_actions) ? verdict.next_actions : [],
+          requiresHumanAction,
+          severity: verdict.severity || "MEDIUM"
+        }
     } catch (e) {
       reportError(e, { plugin: "reflection-3", op: "judge-session" })
       continue

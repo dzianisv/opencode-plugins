@@ -345,7 +345,7 @@ describe("reflection-3 unit", () => {
     assert.strictEqual(analysis.shouldContinue, false)
   })
 
-  it("treats run-test request as user action", () => {
+  it("does not treat run-test request as user action", () => {
     const assessment = {
       status: "in_progress" as const,
       confidence: 0.6,
@@ -369,7 +369,7 @@ describe("reflection-3 unit", () => {
       requiresLocalTestsEvidence: true
     })
 
-    assert.strictEqual(analysis.requiresHumanAction, true)
+    assert.strictEqual(analysis.requiresHumanAction, false)
     assert.strictEqual(analysis.shouldContinue, true)
     assert.ok(analysis.missing.length > 0)
   })
