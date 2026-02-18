@@ -276,12 +276,13 @@ export function evaluateSelfAssessment(assessment: SelfAssessment, context: Task
     addMissing("Rethink approach", "Propose an alternate approach and continue")
   }
 
-  const requiresHumanAction = needsUserAction.length > 0
+  const explicitUserAction = needsUserAction.filter(item => /auth|2fa|credential|token|secret|permission|approve|merge|access|provide|upload|share|login|invite/i.test(item))
+  const requiresHumanAction = explicitUserAction.length > 0
   // Agent should continue if there are missing items beyond what only the user can do.
   // Even when user action is needed (e.g. "merge PR"), the agent may still have
   // actionable work (e.g. uncommitted changes, missing tests) it can complete first.
   const agentActionableMissing = missing.filter(item =>
-    !needsUserAction.some(ua => item.toLowerCase().includes(ua.toLowerCase()) || ua.toLowerCase().includes(item.toLowerCase()))
+    !explicitUserAction.some(ua => item.toLowerCase().includes(ua.toLowerCase()) || ua.toLowerCase().includes(item.toLowerCase()))
   )
   const shouldContinue = agentActionableMissing.length > 0 || (!requiresHumanAction && missing.length > 0)
   const complete = status === "complete" && missing.length === 0 && confidence >= 0.8 && !requiresHumanAction
