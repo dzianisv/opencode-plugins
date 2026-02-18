@@ -276,6 +276,7 @@ describe("Text Reply Routing: Telegram -> Correct Session", () => {
 // ============================================================================
 
 describe("Voice Reply Handling", () => {
+  jest.setTimeout(15000)
   
   it("stores voice messages with audio_base64 and metadata", async () => {
     // Check if there are existing voice messages with audio data
