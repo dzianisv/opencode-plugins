@@ -1096,7 +1096,7 @@ Rules:
 - Tests cannot be skipped or marked as flaky/not important.
 - Direct pushes to main/master are not allowed; require a PR instead.
 - If stuck, propose an alternate approach.
-- If you need user action (auth, 2FA, credentials), list it in needs_user_action.
+- If you need user action (auth, 2FA, credentials, access requests, uploads, approvals), list it in needs_user_action.
 - PLANNING LOOP CHECK: If the task requires code changes (fix, implement, add, create, build, refactor, update) but the "Tool Commands Run" section shows ONLY read operations (read, glob, grep, git log, git status, git diff, webfetch, task/explore) and NO write operations (edit, write, bash with build/test/commit, github_create_pull_request, etc.), then the task is NOT complete. Set status to "in_progress", set stuck to true, and list "Implement the actual code changes" in remaining_work. Analyzing and recommending changes is not the same as making them.
 - If you are repeating the same actions (deploy, test, build) without making progress, set "stuck": true.
 - Do not retry the same failing approach more than twice — try something different or report stuck.`
@@ -1221,12 +1221,13 @@ function evaluateSelfAssessment(assessment: SelfAssessment, context: TaskContext
     addMissing("Rethink approach", "Propose an alternate approach and continue")
   }
 
-  const requiresHumanAction = needsUserAction.length > 0
+  const explicitUserAction = needsUserAction.filter(item => /auth|2fa|credential|token|secret|permission|approve|merge|run|execute|access|provide|upload|share|login|invite/i.test(item))
+  const requiresHumanAction = explicitUserAction.length > 0
   // Agent should continue if there are missing items beyond what only the user can do.
   // Even when user action is needed (e.g. "merge PR"), the agent may still have
   // actionable work (e.g. uncommitted changes, missing tests) it can complete first.
   const agentActionableMissing = missing.filter(item =>
-    !needsUserAction.some(ua => item.toLowerCase().includes(ua.toLowerCase()) || ua.toLowerCase().includes(item.toLowerCase()))
+    !explicitUserAction.some(ua => item.toLowerCase().includes(ua.toLowerCase()) || ua.toLowerCase().includes(item.toLowerCase()))
   )
   const shouldContinue = agentActionableMissing.length > 0 || (!requiresHumanAction && missing.length > 0)
   const complete = status === "complete" && missing.length === 0 && confidence >= 0.8 && !requiresHumanAction
