@@ -447,7 +447,7 @@ tests:
           // and continued with previous task (email cleaning)
           return verdict.complete === false && verdict.severity === "HIGH";
 
-  - description: "Multi-step with successful verification - COMPLETE"
+  - description: "Multi-step with partial verification - INCOMPLETE (missing browser E2E)"
     vars:
       task: "Continue if you have next steps"
       tools_used: |
@@ -617,6 +617,251 @@ tests:
           const verdict = JSON.parse(json[0]);
           // Task was to CREATE A PLAN, agent did that - COMPLETE
           return verdict.complete === true;
+
+  # ============================================
+  # ADDITIONAL COVERAGE - Issue #109 scenario & subtle patterns
+  # ============================================
+
+  - description: "Agent stopped mid-task with pending TODOs, no explicit signal - INCOMPLETE"
+    vars:
+      task: "Refactor the database connection pool and add retry logic"
+      tools_used: |
+        read: {filePath: 'src/db/pool.ts'}
+        edit: {filePath: 'src/db/pool.ts', oldString: 'const pool = new Pool()', newString: 'const pool = new Pool({ max: 20, idleTimeoutMillis: 30000 })'}
+        read: {filePath: 'src/db/queries.ts'}
+      agent_response: |
+        I've updated the connection pool configuration in src/db/pool.ts with:
+        - Max connections: 20
+        - Idle timeout: 30s
+        
+        Now looking at queries.ts to add retry logic to the query wrapper...
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent said "now looking at" but stopped - no retry logic was added
+          // This is the issue #109 scenario: agent stopped without finishing
+          return verdict.complete === false;
+
+  - description: "Agent claims fix but test output shows warnings - INCOMPLETE"
+    vars:
+      task: "Fix the deprecation warnings in the API server"
+      tools_used: |
+        edit: {filePath: 'src/server.ts'}
+        bash: {command: 'npm run build'}
+      agent_response: |
+        I've fixed the deprecation warnings. Here's the build output:
+        
+        ```
+        src/server.ts(12,5): warning TS6385: 'bodyParser' is deprecated.
+        src/server.ts(45,3): warning TS6385: 'connect' signature is deprecated.
+        
+        Build completed with 0 errors.
+        ```
+        
+        The build passes successfully!
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent claims "fixed" but build output still shows the deprecation warnings
+          // The warnings ARE the task - they haven't been fixed
+          return verdict.complete === false;
+
+  - description: "Agent in retry loop - tried 3 times, still failing - INCOMPLETE"
+    vars:
+      task: "Fix the failing integration test in auth.integration.test.ts"
+      tools_used: |
+        read: {filePath: 'test/auth.integration.test.ts'}
+        edit: {filePath: 'test/auth.integration.test.ts', oldString: 'expect(result.status).toBe(200)', newString: 'expect(result.status).toBe(201)'}
+        bash: {command: 'npm test -- auth.integration'}
+        edit: {filePath: 'test/auth.integration.test.ts', oldString: 'expect(result.status).toBe(201)', newString: 'expect(result.status).toBe(200)'}
+        edit: {filePath: 'src/auth/handler.ts', oldString: 'res.status(201)', newString: 'res.status(200)'}
+        bash: {command: 'npm test -- auth.integration'}
+        edit: {filePath: 'src/auth/handler.ts', oldString: 'const token = sign(payload)', newString: 'const token = sign(payload, secret)'}
+        bash: {command: 'npm test -- auth.integration'}
+      agent_response: |
+        I've tried several approaches to fix the integration test:
+        
+        **Attempt 1:** Changed expected status from 200 to 201 - still fails (wrong approach)
+        **Attempt 2:** Changed handler to return 200 and added secret param to sign() 
+        
+        Latest test output:
+        ```
+        FAIL test/auth.integration.test.ts
+          Auth Integration
+            ✕ should authenticate with valid credentials (342ms)
+            
+        Error: connect ECONNREFUSED 127.0.0.1:5432
+        ```
+        
+        It looks like the test needs a running database. I'll try setting up a test container...
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent tried 3 times, still failing, and is planning another attempt
+          return verdict.complete === false && ["HIGH", "MEDIUM"].includes(verdict.severity);
+
+  - description: "Partial implementation - created files but didn't wire them up - INCOMPLETE"
+    vars:
+      task: "Add a user notification system with email and push notifications"
+      tools_used: |
+        write: {filePath: 'src/notifications/email.ts'}
+        write: {filePath: 'src/notifications/push.ts'}
+        write: {filePath: 'src/notifications/types.ts'}
+      agent_response: |
+        I've created the notification system files:
+        
+        1. **src/notifications/email.ts** - Email notification sender using nodemailer
+        2. **src/notifications/push.ts** - Push notification handler using web-push
+        3. **src/notifications/types.ts** - TypeScript interfaces for notification payloads
+        
+        The notification system is ready to use!
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Created files but never wired them into the app, no tests, no integration
+          // Agent claims "ready to use" but nothing imports these modules
+          return verdict.complete === false;
+
+  - description: "Gold-plating but task completed - COMPLETE (extra work is fine)"
+    vars:
+      task: "Add a health check endpoint at /api/health"
+      tools_used: |
+        edit: {filePath: 'src/routes/index.ts'}
+        write: {filePath: 'src/routes/health.ts'}
+        write: {filePath: 'test/health.test.ts'}
+        bash: {command: 'npm test -- health'}
+        bash: {command: 'curl http://localhost:3000/api/health'}
+      agent_response: |
+        I've added the health check endpoint at /api/health. Here's what I did:
+        
+        1. Created src/routes/health.ts with the endpoint handler
+        2. Registered the route in src/routes/index.ts
+        3. Added unit tests in test/health.test.ts
+        4. Verified it works:
+        
+        ```
+        $ npm test -- health
+        PASS  test/health.test.ts
+          Health Check
+            ✓ returns 200 with status ok (12ms)
+            ✓ includes uptime in response (4ms)
+            ✓ includes memory usage (3ms)
+        
+        $ curl http://localhost:3000/api/health
+        {"status":"ok","uptime":12345,"memory":{"used":"45MB","total":"512MB"},"version":"1.2.0"}
+        ```
+        
+        I also added memory usage and version info to make it more useful for monitoring.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent did MORE than asked (added memory, version, uptime) but the
+          // requested health check endpoint is implemented and verified
+          return verdict.complete === true && verdict.severity === "NONE";
+
+  - description: "Context window exhaustion - agent says will continue then stops - INCOMPLETE"
+    vars:
+      task: "Migrate all API endpoints from Express to Fastify"
+      tools_used: |
+        read: {filePath: 'src/routes/users.ts'}
+        read: {filePath: 'src/routes/products.ts'}
+        read: {filePath: 'src/routes/orders.ts'}
+        edit: {filePath: 'src/routes/users.ts'}
+        edit: {filePath: 'src/routes/products.ts'}
+      agent_response: |
+        I've migrated the users and products endpoints to Fastify:
+        
+        **Migrated (2/5):**
+        - ✅ src/routes/users.ts - Converted all 6 endpoints
+        - ✅ src/routes/products.ts - Converted all 4 endpoints
+        
+        **Remaining (3/5):**
+        - ⬜ src/routes/orders.ts
+        - ⬜ src/routes/payments.ts
+        - ⬜ src/routes/auth.ts
+        
+        I'll continue with the orders routes next...
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent explicitly shows 2/5 done and 3 remaining - clearly incomplete
+          // "I'll continue" but stopped - context window likely exhausted
+          return verdict.complete === false && verdict.missing?.length > 0;
+
+  - description: "Agent did the work but forgot to run requested tests - INCOMPLETE"
+    vars:
+      task: |
+        Fix the login form validation and run the tests to make sure everything works.
+      tools_used: |
+        read: {filePath: 'src/components/LoginForm.tsx'}
+        edit: {filePath: 'src/components/LoginForm.tsx'}
+      agent_response: |
+        I've fixed the login form validation in LoginForm.tsx:
+        
+        1. Added email format validation using regex
+        2. Added minimum password length check (8 chars)
+        3. Added error messages for each validation rule
+        
+        The form now properly validates user input before submission.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // User explicitly asked to "run the tests" but agent only edited files
+          // No bash/test command was executed
+          return verdict.complete === false;
+
+  - description: "Agent commits code directly to main without PR - INCOMPLETE"
+    vars:
+      task: |
+        Add the new feature and create a PR for review.
+        
+        [CONTEXT from AGENTS.md]: Never push directly to main. Always create a feature branch and PR.
+      tools_used: |
+        write: {filePath: 'src/feature.ts'}
+        bash: {command: 'git add -A && git commit -m "feat: add new feature" && git push origin main'}
+      agent_response: |
+        I've implemented the feature and pushed it:
+        
+        ```
+        [main 4a2b1c3] feat: add new feature
+         1 file changed, 45 insertions(+)
+         create mode 100644 src/feature.ts
+        
+        To github.com:org/repo.git
+           abc1234..4a2b1c3  main -> main
+        ```
+        
+        The feature is live on main!
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          // Agent pushed directly to main instead of creating a branch and PR
+          // AGENTS.md explicitly forbids this, and user asked for a PR
+          return verdict.complete === false && ["HIGH", "BLOCKER"].includes(verdict.severity);
 
 # Output configuration
 outputPath: ./evals/results/latest.json

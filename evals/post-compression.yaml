@@ -56,7 +56,7 @@ tests:
           const result = JSON.parse(json[0]);
           return result.action === "needs_github_update" && result.hasActiveGitWork === true;
 
-  - description: "PR created, should comment progress"
+  - description: "PR created with pending work, should update PR - NEEDS_GITHUB_UPDATE"
     vars:
       task_summary: "Implement feature #15 - user notifications"
       last_assistant_response: |
@@ -78,9 +78,10 @@ tests:
           const json = output.match(/\{[\s\S]*\}/);
           if (!json) return false;
           const result = JSON.parse(json[0]);
-          return result.action === "needs_github_update" || result.action === "continue_task";
+          // PR exists, work is ongoing, task not complete → needs_github_update
+          return result.action === "needs_github_update";
 
-  - description: "Issue work in progress"
+  - description: "Issue work in progress with known issue ref - NEEDS_GITHUB_UPDATE"
     vars:
       task_summary: "Investigate and fix the memory leak mentioned in issue #123"
       last_assistant_response: |
@@ -98,7 +99,8 @@ tests:
           const json = output.match(/\{[\s\S]*\}/);
           if (!json) return false;
           const result = JSON.parse(json[0]);
-          return result.action === "needs_github_update" || result.action === "continue_task";
+          // Issue ref present, actively working on it, task not complete → needs_github_update
+          return result.action === "needs_github_update";
 
   # ============================================
   # CONTINUE TASK - Normal work, just continue
@@ -299,5 +301,143 @@ tests:
           if (!json) return false;
           const result = JSON.parse(json[0]);
           return result.action === "task_complete" || result.action === "continue_task";
+
+  # ============================================
+  # ADDITIONAL COVERAGE - CI failures, debugging, multi-PR, secrets
+  # ============================================
+
+  - description: "PR with failing CI checks - should update PR with status - NEEDS_GITHUB_UPDATE"
+    vars:
+      task_summary: "Fix the lint errors and update PR #45 with clean CI"
+      last_assistant_response: |
+        I've fixed most of the lint errors. The CI is still running:
+        
+        **Fixed:**
+        - 12 unused import warnings
+        - 3 missing semicolons
+        - 1 any-type usage
+        
+        **Still failing:**
+        - ESLint rule `no-explicit-any` in src/utils/parser.ts line 89
+        
+        I pushed the fixes to the PR branch. Waiting for CI to re-run.
+      tools_used: "edit, bash, git push"
+      has_git_commands: "true"
+      has_pr_issue_ref: "true"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          // PR exists, CI still failing, work is ongoing → needs_github_update
+          return result.action === "needs_github_update";
+
+  - description: "Agent debugging test failures mid-stream - CONTINUE_TASK"
+    vars:
+      task_summary: "Fix the flaky test suite for the payment module"
+      last_assistant_response: |
+        Debugging the flaky tests. Found that the test depends on timing:
+        
+        ```
+        test/payment.test.ts:45
+        setTimeout(() => resolve(result), 100)
+        ```
+        
+        The 100ms timeout is racing against the assertion. I need to:
+        1. Replace setTimeout with proper async/await
+        2. Add retry logic for the database connection
+        
+        Working on replacing the timeout...
+      tools_used: "read, grep, edit"
+      has_git_commands: "false"
+      has_pr_issue_ref: "false"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          // No PR/issue ref, actively debugging, clear next steps → continue_task
+          return result.action === "continue_task";
+
+  - description: "Multiple PRs open, agent working on one - NEEDS_GITHUB_UPDATE"
+    vars:
+      task_summary: "Address review comments on PR #92 (auth refactor) and PR #95 (API docs)"
+      last_assistant_response: |
+        I've addressed the review comments on PR #92:
+        
+        - Renamed `validateToken` to `verifyAccessToken` per reviewer request
+        - Added missing JSDoc comments
+        - Fixed the edge case in token refresh
+        
+        Pushed changes to the auth-refactor branch. Now moving on to PR #95 for the API docs updates.
+      tools_used: "edit, bash, git push, gh pr view"
+      has_git_commands: "true"
+      has_pr_issue_ref: "true"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          // Multiple PRs in flight, work ongoing, just pushed to one → needs_github_update
+          return result.action === "needs_github_update";
+
+  - description: "Task blocked on missing secrets agent cannot obtain - NEEDS_CLARIFICATION"
+    vars:
+      task_summary: "Deploy the app to AWS using the CDK stack"
+      last_assistant_response: |
+        I tried to deploy but the CDK stack requires AWS credentials:
+        
+        ```
+        Error: Unable to resolve AWS account to use.
+        It must be either configured when you define your CDK Stack,
+        or through the environment.
+        ```
+        
+        I checked for .env files, AWS config (~/.aws/), and environment variables — none are set.
+        There's no way for me to generate or retrieve these credentials on my own.
+        I cannot proceed without the user providing AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
+        
+        Stopping here until credentials are provided.
+      tools_used: "bash"
+      has_git_commands: "false"
+      has_pr_issue_ref: "false"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          // Agent exhausted all options and is definitively blocked → needs_clarification
+          return result.action === "needs_clarification";
+
+  - description: "Force-push scenario, PR exists but history rewritten - NEEDS_GITHUB_UPDATE"
+    vars:
+      task_summary: "Rebase PR #78 onto latest main and force-push"
+      last_assistant_response: |
+        I've rebased the branch onto latest main and force-pushed:
+        
+        ```
+        git fetch origin main
+        git rebase origin/main
+        Successfully rebased and updated refs/heads/feature/user-dashboard
+        git push --force-with-lease origin feature/user-dashboard
+        ```
+        
+        The PR branch is now up to date with main. The CI should re-run on the new commits.
+      tools_used: "bash, git rebase, git push --force-with-lease"
+      has_git_commands: "true"
+      has_pr_issue_ref: "true"
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const result = JSON.parse(json[0]);
+          // Rebase + force-push done, PR exists, should update PR with rebase status
+          // Could also be task_complete since the rebase task itself is done
+          return result.action === "needs_github_update" || result.action === "task_complete";
 
 outputPath: ./evals/results/post-compression-latest.json
