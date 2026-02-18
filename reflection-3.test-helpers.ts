@@ -562,3 +562,65 @@ export function shouldApplyPlanningLoop(taskType: TaskType, loopDetected: boolea
   if (!loopDetected) return false
   return taskType === "coding"
 }
+
+const SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
+
+export function isPlanMode(messages: any[]): boolean {
+  // Check system/developer messages for plan mode indicators
+  const hasSystemPlanMode = messages.some((m: any) =>
+    (m.info?.role === "system" || m.info?.role === "developer") &&
+    m.parts?.some((p: any) =>
+      p.type === "text" &&
+      p.text &&
+      (p.text.includes("Plan Mode") ||
+        p.text.includes("plan mode ACTIVE") ||
+        p.text.includes("plan mode is active") ||
+        p.text.includes("read-only mode") ||
+        p.text.includes("READ-ONLY phase"))
+    )
+  )
+  if (hasSystemPlanMode) return true
+
+  // OpenCode injects plan mode as <system-reminder> inside user message parts.
+  // Check ALL text parts of ALL messages for plan mode system-reminder patterns.
+  for (const msg of messages) {
+    for (const part of msg.parts || []) {
+      if (part.type === "text" && part.text) {
+        const text = part.text
+        if (
+          text.includes("<system-reminder>") &&
+          (/plan mode/i.test(text) || /READ-ONLY phase/i.test(text))
+        ) {
+          return true
+        }
+      }
+    }
+  }
+
+  // Check the last non-reflection user message for plan-related keywords
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.info?.role === "user") {
+      let isReflection = false
+      const texts: string[] = []
+      for (const part of msg.parts || []) {
+        if (part.type === "text" && part.text) {
+          if (part.text.includes(SELF_ASSESSMENT_MARKER)) {
+            isReflection = true
+            break
+          }
+          texts.push(part.text)
+        }
+      }
+      if (!isReflection && texts.length > 0) {
+        for (const text of texts) {
+          if (/plan mode/i.test(text)) return true
+          if (/\b(create|make|draft|generate|propose|write|update)\b.{1,30}\bplan\b/i.test(text)) return true
+          if (/^plan\b/i.test(text.trim())) return true
+        }
+        return false
+      }
+    }
+  }
+  return false
+}

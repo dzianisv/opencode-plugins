@@ -12,6 +12,7 @@ import {
   getCrossReviewModelSpec,
   getGitHubCopilotModelForRouting,
   detectActionLoop,
+  isPlanMode,
   RoutingConfig
 } from "../reflection-3.test-helpers.ts"
 import { detectPlanningLoop } from "../reflection-3.ts"
