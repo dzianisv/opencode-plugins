@@ -7,8 +7,10 @@ import {
   parseRoutingFromYaml,
   getRoutingModel,
   buildEscalatingFeedback,
+  shouldApplyPlanningLoop,
   parseModelSpec,
   getCrossReviewModelSpec,
+  getGitHubCopilotModelForRouting,
   RoutingConfig
 } from "../reflection-3.test-helpers.ts"
 import { detectPlanningLoop } from "../reflection-3.ts"
@@ -432,6 +434,28 @@ describe("reflection-3 unit", () => {
     assert.ok(result.readCount > 0)
     assert.ok(result.totalTools >= 10)
   })
+
+  it("does not apply planning loop message for research tasks (issue #120)", () => {
+    const messages = [
+      {
+        info: { role: "assistant" },
+        parts: [
+          { type: "tool", tool: "read", state: { input: {} } },
+          { type: "tool", tool: "read", state: { input: {} } },
+          { type: "tool", tool: "glob", state: { input: {} } },
+          { type: "tool", tool: "grep", state: { input: {} } },
+          { type: "tool", tool: "bash", state: { input: { command: "git log --oneline -5" } } },
+          { type: "tool", tool: "read", state: { input: {} } },
+          { type: "tool", tool: "webfetch", state: { input: {} } },
+          { type: "tool", tool: "read", state: { input: {} } }
+        ]
+      }
+    ]
+    const loop = detectPlanningLoop(messages)
+    assert.strictEqual(loop.detected, true)
+    assert.strictEqual(shouldApplyPlanningLoop("research", loop.detected), false)
+    assert.strictEqual(shouldApplyPlanningLoop("coding", loop.detected), true)
+  })
 })
 
 describe("buildEscalatingFeedback", () => {
@@ -662,5 +686,39 @@ describe("cross-model review routing", () => {
 
   it("returns null for unrelated models", () => {
     assert.strictEqual(getCrossReviewModelSpec("github-copilot/gemini-3-pro-preview"), null)
+  })
+})
+
+describe("GitHub Copilot model routing", () => {
+  it("returns gpt-4.1 for github-copilot provider with gpt-4.1", () => {
+    assert.strictEqual(getGitHubCopilotModelForRouting("github-copilot/gpt-4.1"), "github-copilot/gpt-4.1")
+  })
+
+  it("returns gpt-4.1 for github-copilot provider with gpt-4o", () => {
+    assert.strictEqual(getGitHubCopilotModelForRouting("github-copilot/gpt-4o"), "github-copilot/gpt-4.1")
+  })
+
+  it("returns gpt-4.1 for github-copilot provider with gpt-4", () => {
+    assert.strictEqual(getGitHubCopilotModelForRouting("github-copilot/gpt-4"), "github-copilot/gpt-4.1")
+  })
+
+  it("returns gpt-4.1 for github-copilot/free provider with gpt-4.1", () => {
+    assert.strictEqual(getGitHubCopilotModelForRouting("github-copilot/free/gpt-4.1"), "github-copilot/gpt-4.1")
+  })
+
+  it("returns null for non-github-copilot providers", () => {
+    assert.strictEqual(getGitHubCopilotModelForRouting("openai/gpt-4.1"), null)
+    assert.strictEqual(getGitHubCopilotModelForRouting("anthropic/claude-opus-4.6"), null)
+  })
+
+  it("returns null for unrelated github-copilot models", () => {
+    assert.strictEqual(getGitHubCopilotModelForRouting("github-copilot/claude-opus-4.6"), null)
+    assert.strictEqual(getGitHubCopilotModelForRouting("github-copilot/gpt-5.2-codex"), null)
+    assert.strictEqual(getGitHubCopilotModelForRouting("github-copilot/gemini-3-pro-preview"), null)
+  })
+
+  it("returns null for null/undefined input", () => {
+    assert.strictEqual(getGitHubCopilotModelForRouting(null), null)
+    assert.strictEqual(getGitHubCopilotModelForRouting(undefined), null)
   })
 })

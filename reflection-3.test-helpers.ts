@@ -402,6 +402,19 @@ export function getCrossReviewModelSpec(modelSpec: string | null | undefined): s
   return null
 }
 
+export function getGitHubCopilotModelForRouting(modelSpec: string | null | undefined): string | null {
+  const parsed = parseModelSpec(modelSpec)
+  if (!parsed) return null
+  const providerID = parsed.providerID.toLowerCase()
+  const modelID = parsed.modelID.toLowerCase()
+  if (providerID === "github-copilot" || providerID === "github-copilot/free") {
+    if (modelID.includes("gpt-4.1") || modelID.includes("gpt-4o") || modelID.includes("gpt-4")) {
+      return "github-copilot/gpt-4.1"
+    }
+  }
+  return null
+}
+
 const FEEDBACK_MARKER = "## Reflection-3:"
 const MAX_ATTEMPTS = 5
 
@@ -454,5 +467,10 @@ Please address these issues and continue.`
 
 ${missingBrief}
 
-You have been asked ${attemptCount} times to complete this task. Stop re-reading files or re-planning. Focus on the specific items above and implement them now. If something is blocking you, say what it is clearly.`
+  You have been asked ${attemptCount} times to complete this task. Stop re-reading files or re-planning. Focus on the specific items above and implement them now. If something is blocking you, say what it is clearly.`
+}
+
+export function shouldApplyPlanningLoop(taskType: TaskType, loopDetected: boolean): boolean {
+  if (!loopDetected) return false
+  return taskType === "coding"
 }
