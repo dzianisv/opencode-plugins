@@ -11,6 +11,7 @@ import {
   parseModelSpec,
   getCrossReviewModelSpec,
   getGitHubCopilotModelForRouting,
+  detectActionLoop,
   isPlanMode,
   RoutingConfig
 } from "../reflection-3.test-helpers.ts"
@@ -499,16 +500,19 @@ describe("buildEscalatingFeedback", () => {
     assert.ok(!result.includes("Some feedback"))
   })
 
-  it("escalates tone after attempt 2", () => {
+  it("escalates to final attempt message after attempt 2", () => {
     const verdict = { missing: ["Run tests", "Create PR", "Check CI", "Update docs"] }
     const result = buildEscalatingFeedback(3, "high", verdict, false)
-    assert.ok(result.includes("Still Incomplete"))
-    assert.ok(result.includes("attempt 3/5"))
+    assert.ok(result.includes("Final Attempt"))
+    assert.ok(result.includes("3/3"))
     // Should truncate to first 3 missing items
     assert.ok(result.includes("Run tests"))
     assert.ok(result.includes("Create PR"))
     assert.ok(result.includes("Check CI"))
     assert.ok(!result.includes("Update docs"))
+    // Should include give-up guidance
+    assert.ok(result.includes("LAST chance"))
+    assert.ok(result.includes("needs_user_action"))
   })
 
   it("handles verdict with empty arrays", () => {
@@ -524,6 +528,31 @@ describe("buildEscalatingFeedback", () => {
     const result = buildEscalatingFeedback(2, "medium", verdict, false)
     assert.ok(result.includes("Incomplete"))
     assert.ok(!result.includes("### Missing"))
+  })
+
+  it("returns action loop message when isActionLoop is true", () => {
+    const result = buildEscalatingFeedback(2, "high", null, false, true)
+    assert.ok(result.includes("Action Loop Detected"))
+    assert.ok(result.includes("repeating the same commands"))
+    assert.ok(result.includes("Do NOT re-run"))
+  })
+
+  it("action loop includes attempt count", () => {
+    const result = buildEscalatingFeedback(2, "high", null, false, true)
+    assert.ok(result.includes("2/3"))
+  })
+
+  it("action loop ignores verdict content", () => {
+    const verdict = { feedback: "Some feedback", missing: ["item"], next_actions: ["action"] }
+    const result = buildEscalatingFeedback(1, "high", verdict, false, true)
+    assert.ok(result.includes("Action Loop Detected"))
+    assert.ok(!result.includes("Some feedback"))
+  })
+
+  it("planning loop takes priority over action loop", () => {
+    const result = buildEscalatingFeedback(1, "high", null, true, true)
+    assert.ok(result.includes("Planning Loop Detected"))
+    assert.ok(!result.includes("Action Loop Detected"))
   })
 })
 
@@ -724,193 +753,149 @@ describe("GitHub Copilot model routing", () => {
   })
 })
 
-describe("isPlanMode", () => {
-  // Helper to create a message with given role and text parts
-  function msg(role: string, ...texts: string[]) {
+describe("detectActionLoop", () => {
+  function makeToolMsg(tools: Array<{ tool: string; input?: any }>): any {
     return {
-      info: { role },
-      parts: texts.map(t => ({ type: "text", text: t }))
+      info: { role: "assistant" },
+      parts: tools.map(t => ({
+        type: "tool",
+        tool: t.tool,
+        state: { input: t.input || {} }
+      }))
     }
   }
 
-  describe("system/developer message detection", () => {
-    it("detects 'Plan Mode' in system message", () => {
-      const messages = [msg("system", "# Plan Mode - System Reminder")]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
-
-    it("detects 'plan mode ACTIVE' in developer message", () => {
-      const messages = [msg("developer", "CRITICAL: plan mode ACTIVE - you are in READ-ONLY phase")]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
-
-    it("detects 'read-only mode' in system message", () => {
-      const messages = [msg("system", "You are in read-only mode")]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
-
-    it("detects 'READ-ONLY phase' in system message", () => {
-      const messages = [msg("system", "you are in READ-ONLY phase")]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
-
-    it("detects 'plan mode is active' in system message", () => {
-      const messages = [msg("system", "plan mode is active. Do not edit files.")]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
+  it("returns false for non-array input", () => {
+    const result = detectActionLoop(null as any)
+    assert.strictEqual(result.detected, false)
   })
 
-  describe("system-reminder detection (OpenCode actual format)", () => {
-    it("detects default plan.txt system-reminder in user message", () => {
-      const reminder = `<system-reminder>
-# Plan Mode - System Reminder
-
-CRITICAL: Plan mode ACTIVE - you are in READ-ONLY phase. STRICTLY FORBIDDEN:
-ANY file edits, modifications, or system changes.
-</system-reminder>`
-      const messages = [msg("user", "Help me plan", reminder)]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
-
-    it("detects experimental plan mode system-reminder", () => {
-      const reminder = `<system-reminder>
-Plan mode is active. The user indicated that they do not want you to execute yet --
-you MUST NOT make any edits.
-</system-reminder>`
-      const messages = [msg("user", "Design the architecture", reminder)]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
-
-    it("detects plan mode system-reminder even in older messages", () => {
-      const reminder = `<system-reminder>
-Plan mode is active. READ-ONLY phase.
-</system-reminder>`
-      const messages = [
-        msg("user", "First message", reminder),
-        msg("assistant", "Here is my plan..."),
-        msg("user", "Thanks, looks good")
-      ]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
-
-    it("detects READ-ONLY phase in system-reminder", () => {
-      const reminder = `<system-reminder>
-CRITICAL: you are in READ-ONLY phase. Do not modify files.
-</system-reminder>`
-      const messages = [msg("user", "Analyze the code", reminder)]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
-
-    it("does NOT trigger on system-reminder without plan mode keywords", () => {
-      const reminder = `<system-reminder>
-You have access to these tools: read, write, edit.
-</system-reminder>`
-      const messages = [msg("user", "Fix the bug", reminder)]
-      assert.strictEqual(isPlanMode(messages), false)
-    })
-
-    it("does NOT trigger on plan mode keywords outside system-reminder", () => {
-      // The user says "plan mode" literally -> detected via user message check, not system-reminder
-      const messages = [msg("user", "Enable plan mode")]
-      assert.strictEqual(isPlanMode(messages), true) // detected via user keyword check
-    })
+  it("returns false for empty messages", () => {
+    const result = detectActionLoop([])
+    assert.strictEqual(result.detected, false)
   })
 
-  describe("user message keyword detection", () => {
-    it("detects 'plan mode' in user message (case insensitive)", () => {
-      const messages = [msg("user", "Switch to Plan Mode")]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
-
-    it("detects 'plan' at start of user message", () => {
-      const messages = [msg("user", "plan the architecture for the new feature")]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
-
-    it("detects 'create a plan' pattern", () => {
-      const messages = [msg("user", "create a plan for the refactoring")]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
-
-    it("detects 'write a plan' pattern", () => {
-      const messages = [msg("user", "write a detailed plan")]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
-
-    it("does NOT detect 'plan' in the middle of unrelated text", () => {
-      const messages = [msg("user", "Fix the airplane display bug")]
-      assert.strictEqual(isPlanMode(messages), false)
-    })
-
-    it("does NOT trigger on regular coding tasks", () => {
-      const messages = [msg("user", "Fix the login bug and add tests")]
-      assert.strictEqual(isPlanMode(messages), false)
-    })
+  it("returns false for too few commands", () => {
+    const messages = [makeToolMsg([
+      { tool: "bash", input: { command: "npm test" } },
+      { tool: "bash", input: { command: "npm run build" } }
+    ])]
+    const result = detectActionLoop(messages)
+    assert.strictEqual(result.detected, false)
   })
 
-  describe("reflection message handling", () => {
-    it("skips reflection messages when looking for user keywords", () => {
-      const reflectionMsg = {
-        info: { role: "user" },
-        parts: [{ type: "text", text: "## Reflection-3 Self-Assessment\nplan mode test" }]
-      }
-      const messages = [msg("user", "Fix the bug"), reflectionMsg]
-      assert.strictEqual(isPlanMode(messages), false)
-    })
-
-    it("checks non-reflection user message even after reflection message", () => {
-      const reflectionMsg = {
-        info: { role: "user" },
-        parts: [{ type: "text", text: "## Reflection-3 Self-Assessment\nsome assessment" }]
-      }
-      const messages = [msg("user", "Switch to plan mode"), reflectionMsg]
-      // Walks backward: skips reflectionMsg, finds "Switch to plan mode"
-      assert.strictEqual(isPlanMode(messages), true)
-    })
+  it("detects repeated bash commands", () => {
+    const messages = [
+      makeToolMsg([{ tool: "bash", input: { command: "kubectl apply -f deploy.yaml" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "npm run eval:stripe" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "kubectl apply -f deploy.yaml" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "npm run eval:stripe" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "kubectl apply -f deploy.yaml" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "npm run eval:stripe" } }])
+    ]
+    const result = detectActionLoop(messages)
+    assert.strictEqual(result.detected, true)
+    assert.ok(result.repeatedCommands.length > 0)
   })
 
-  describe("multiple text parts in a single message", () => {
-    it("checks all text parts, not just the last one", () => {
-      const messages = [{
-        info: { role: "user" },
-        parts: [
-          { type: "text", text: "plan mode please" },
-          { type: "text", text: "I want to think about this" }
-        ]
-      }]
-      assert.strictEqual(isPlanMode(messages), true)
-    })
+  it("ignores read-only tools (read, glob, grep, todowrite)", () => {
+    const messages = [
+      makeToolMsg([
+        { tool: "read", input: { path: "/file.ts" } },
+        { tool: "glob", input: { pattern: "**/*.ts" } },
+        { tool: "grep", input: { pattern: "foo" } },
+        { tool: "todowrite", input: { todos: [] } },
+        { tool: "bash", input: { command: "npm test" } },
+        { tool: "bash", input: { command: "npm run build" } }
+      ])
+    ]
+    const result = detectActionLoop(messages)
+    // Only 2 bash commands counted, below threshold
+    assert.strictEqual(result.detected, false)
   })
 
-  describe("edge cases", () => {
-    it("returns false for empty messages array", () => {
-      assert.strictEqual(isPlanMode([]), false)
-    })
+  it("does not flag diverse commands as a loop", () => {
+    const messages = [
+      makeToolMsg([{ tool: "bash", input: { command: "npm test" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "npm run build" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "git status" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "git add ." } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "git commit -m 'fix'" } }])
+    ]
+    const result = detectActionLoop(messages)
+    assert.strictEqual(result.detected, false)
+  })
 
-    it("returns false for messages with no parts", () => {
-      const messages = [{ info: { role: "user" } }]
-      assert.strictEqual(isPlanMode(messages), false)
-    })
+  it("normalizes timestamps in commands", () => {
+    const messages = [
+      makeToolMsg([{ tool: "bash", input: { command: "echo test_1771177929615" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "echo test_1771177931936" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "echo test_1771177933000" } }]),
+      makeToolMsg([{ tool: "bash", input: { command: "echo test_1771177935000" } }])
+    ]
+    const result = detectActionLoop(messages)
+    // All commands normalize to the same thing
+    assert.strictEqual(result.detected, true)
+  })
 
-    it("returns false for messages with empty text parts", () => {
-      const messages = [{ info: { role: "user" }, parts: [{ type: "text", text: "" }] }]
-      assert.strictEqual(isPlanMode(messages), false)
-    })
+  it("skips non-assistant messages", () => {
+    const messages = [
+      { info: { role: "user" }, parts: [{ type: "tool", tool: "bash", state: { input: { command: "npm test" } } }] },
+      { info: { role: "user" }, parts: [{ type: "tool", tool: "bash", state: { input: { command: "npm test" } } }] },
+      { info: { role: "user" }, parts: [{ type: "tool", tool: "bash", state: { input: { command: "npm test" } } }] },
+      { info: { role: "user" }, parts: [{ type: "tool", tool: "bash", state: { input: { command: "npm test" } } }] }
+    ]
+    const result = detectActionLoop(messages)
+    assert.strictEqual(result.detected, false)
+    assert.strictEqual(result.totalCommands, 0)
+  })
+})
 
-    it("returns false for assistant-only messages", () => {
-      const messages = [msg("assistant", "Here is the plan for the feature")]
-      assert.strictEqual(isPlanMode(messages), false)
-    })
+describe("buildSelfAssessmentPrompt attempt awareness", () => {
+  const baseContext = {
+    taskSummary: "Fix a bug",
+    taskType: "coding" as const,
+    agentMode: "build" as const,
+    requiresTests: false,
+    requiresBuild: false,
+    requiresPR: false,
+    requiresCI: false,
+    requiresLocalTests: false,
+    requiresLocalTestsEvidence: false,
+    pushedToDefaultBranch: false,
+    detectedSignals: [] as string[],
+    toolsSummary: "npm test: pass",
+    recentCommands: [],
+    humanMessages: [] as string[]
+  }
 
-    it("handles build-switch reminder (should NOT be plan mode)", () => {
-      const reminder = `<system-reminder>
-Your operational mode has changed from plan to build.
-You are no longer in read-only mode.
-</system-reminder>`
-      // "no longer in read-only mode" should not match — but "plan" + system-reminder exists
-      // The regex checks for "plan mode" (case insensitive) — "from plan to build" contains "plan" but NOT "plan mode"
-      const messages = [msg("user", "Now implement it", reminder)]
-      assert.strictEqual(isPlanMode(messages), false)
-    })
+  it("does not include reflection history on first attempt (attemptCount=0)", () => {
+    const result = buildSelfAssessmentPrompt(baseContext, "", undefined, 0)
+    assert.ok(!result.includes("Reflection History"))
+    assert.ok(!result.includes("reflection attempt"))
+  })
+
+  it("does not include reflection history when attemptCount is undefined", () => {
+    const result = buildSelfAssessmentPrompt(baseContext, "")
+    assert.ok(!result.includes("Reflection History"))
+  })
+
+  it("includes reflection history on second attempt", () => {
+    const result = buildSelfAssessmentPrompt(baseContext, "", undefined, 1)
+    assert.ok(result.includes("## Reflection History"))
+    assert.ok(result.includes("reflection attempt 2/3"))
+    assert.ok(result.includes("repeating the same actions"))
+    assert.ok(result.includes('"stuck": true'))
+  })
+
+  it("includes reflection history on third attempt", () => {
+    const result = buildSelfAssessmentPrompt(baseContext, "", undefined, 2)
+    assert.ok(result.includes("reflection attempt 3/3"))
+  })
+
+  it("includes loop-awareness rules", () => {
+    const result = buildSelfAssessmentPrompt(baseContext, "")
+    assert.ok(result.includes("repeating the same actions"))
+    assert.ok(result.includes("Do not retry the same failing approach"))
   })
 })
