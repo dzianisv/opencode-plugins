@@ -22,7 +22,7 @@ async function reportError(err: unknown, context?: Record<string, string>): Prom
 
 const SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
 const FEEDBACK_MARKER = "## Reflection-3:"
-const MAX_ATTEMPTS = 5
+const MAX_ATTEMPTS = 3
 
 const JUDGE_BLOCKED_PATTERNS = [
   /\bhaiku\b/i,
@@ -36,6 +36,8 @@ const JUDGE_BLOCKED_PATTERNS = [
 
 const PLANNING_LOOP_MIN_TOOL_CALLS = 8
 const PLANNING_LOOP_WRITE_RATIO_THRESHOLD = 0.1
+const ACTION_LOOP_MIN_COMMANDS = 4
+const ACTION_LOOP_REPETITION_THRESHOLD = 0.6
 
 type TaskType = "coding" | "docs" | "research" | "ops" | "other"
 type AgentMode = "plan" | "build" | "unknown"
@@ -276,11 +278,76 @@ export function shouldApplyPlanningLoop(taskType: TaskType, loopDetected: boolea
   return taskType === "coding"
 }
 
+/**
+ * Detects when the agent is repeating the same commands/actions without progress.
+ * Unlike detectPlanningLoop (read-heavy without writes), this catches action loops
+ * where the agent IS making write-like operations but repeating the same ones.
+ * Example: repeatedly re-deploying and re-running the same failing evaluation.
+ */
+export function detectActionLoop(messages: any[]): {
+  detected: boolean
+  repeatedCommands: string[]
+  totalCommands: number
+} {
+  if (!Array.isArray(messages)) {
+    return { detected: false, repeatedCommands: [], totalCommands: 0 }
+  }
+
+  const commands: string[] = []
+  for (const msg of messages) {
+    if (msg.info?.role !== "assistant") continue
+    for (const part of msg.parts || []) {
+      if (part.type !== "tool") continue
+      const toolName = (part.tool || "").toString().toLowerCase()
+      const input = part.state?.input || {}
+
+      if (toolName === "bash") {
+        const cmd = (input.command || input.cmd || "").toString().trim()
+        if (cmd) {
+          // Normalize: collapse whitespace and remove trailing timestamps/IDs
+          const normalized = cmd.replace(/\s+/g, " ").replace(/\d{10,}/g, "TIMESTAMP").toLowerCase()
+          commands.push(normalized)
+        }
+      } else if (toolName !== "read" && toolName !== "glob" && toolName !== "grep" && toolName !== "todowrite") {
+        // Track non-read tool calls by name + key input params
+        const key = `${toolName}:${JSON.stringify(input).slice(0, 100)}`
+        commands.push(key)
+      }
+    }
+  }
+
+  if (commands.length < ACTION_LOOP_MIN_COMMANDS) {
+    return { detected: false, repeatedCommands: [], totalCommands: commands.length }
+  }
+
+  // Count occurrences of each command
+  const counts = new Map<string, number>()
+  for (const cmd of commands) {
+    counts.set(cmd, (counts.get(cmd) || 0) + 1)
+  }
+
+  // Find commands repeated 3+ times
+  const repeatedCommands: string[] = []
+  let repeatedCount = 0
+  for (const [cmd, count] of counts) {
+    if (count >= 3) {
+      repeatedCommands.push(cmd)
+      repeatedCount += count
+    }
+  }
+
+  // Loop detected if repeated commands make up a significant fraction
+  const detected = repeatedCommands.length > 0 && repeatedCount / commands.length >= ACTION_LOOP_REPETITION_THRESHOLD
+
+  return { detected, repeatedCommands, totalCommands: commands.length }
+}
+
 export function buildEscalatingFeedback(
   attemptCount: number,
   severity: string,
   verdict: { feedback?: string; missing?: string[]; next_actions?: string[] } | undefined | null,
-  isPlanningLoop: boolean
+  isPlanningLoop: boolean,
+  isActionLoop?: boolean
 ): string {
   const safeVerdict = verdict ?? {}
   const missingItems = Array.isArray(safeVerdict.missing) ? safeVerdict.missing : []
@@ -303,6 +370,19 @@ Pick the FIRST item from your existing todo list and implement it. Open a file w
 Start coding NOW. No more planning.`
   }
 
+  if (isActionLoop) {
+    return `${FEEDBACK_MARKER} STOP: Action Loop Detected (attempt ${attemptCount}/${MAX_ATTEMPTS})
+
+You are repeating the same commands without making progress. Running the same deploy/test/build cycle again will produce the same result.
+
+STOP and do ONE of these:
+1. If the same test/eval keeps failing, analyze the failure output and fix the root cause before re-running.
+2. If you cannot fix the root cause, explain what is blocking you and ask the user for help.
+3. Try a completely different approach (e.g., test locally instead of via deployment).
+
+Do NOT re-run the same command hoping for a different result.`
+  }
+
   if (attemptCount <= 2) {
     const missing = missingItems.length
       ? `\n### Missing\n${missingItems.map((m) => `- ${m}`).join("\n")}`
@@ -321,11 +401,18 @@ Please address these issues and continue.`
   const missingBrief = missingItems.length
     ? `Still missing: ${missingItems.slice(0, 3).join(", ")}.`
     : ""
-  return `${FEEDBACK_MARKER} Still Incomplete (attempt ${attemptCount}/${MAX_ATTEMPTS})
+  return `${FEEDBACK_MARKER} Final Attempt (${attemptCount}/${MAX_ATTEMPTS})
 
 ${missingBrief}
 
-You have been asked ${attemptCount} times to complete this task. Stop re-reading files or re-planning. Focus on the specific items above and implement them now. If something is blocking you, say what it is clearly.`
+You have been asked ${attemptCount} times to complete this task. This is your LAST chance before reflection stops.
+
+If you cannot complete the remaining items:
+- Explain clearly what is blocking you
+- Set needs_user_action if you need user help
+- Try a different approach instead of repeating the same steps
+
+Do NOT re-read files or re-plan. Either implement the fix now or explain why you cannot.`
 }
 
 function getLastRelevantUserMessageId(messages: any[]): string | null {
@@ -931,7 +1018,7 @@ function extractLastAssistantText(messages: any[]): string {
   return ""
 }
 
-function buildSelfAssessmentPrompt(context: TaskContext, agents: string, lastAssistantText?: string): string {
+function buildSelfAssessmentPrompt(context: TaskContext, agents: string, lastAssistantText?: string, attemptCount?: number): string {
   const safeContext = {
     ...context,
     detectedSignals: Array.isArray(context.detectedSignals) ? context.detectedSignals : []
@@ -951,6 +1038,11 @@ function buildSelfAssessmentPrompt(context: TaskContext, agents: string, lastAss
     ? `\n## Agent's Last Response\n${lastAssistantText.slice(0, 4000)}\n`
     : ""
 
+  const currentAttempt = attemptCount || 0
+  const attemptSection = currentAttempt > 0
+    ? `\n## Reflection History\n- This is reflection attempt ${currentAttempt + 1}/${MAX_ATTEMPTS} for this task.\n- Previous reflections found the task incomplete.\n- If you are repeating the same actions without progress, set "stuck": true and explain what is blocking you.\n`
+    : ""
+
   return `SELF-ASSESS REFLECTION-3
 
 You are evaluating an agent's work against workflow requirements.
@@ -965,7 +1057,7 @@ Analyze the task context, the agent's last response, and the tool signals to det
 
 ## Tool Commands Run
 ${safeContext.toolsSummary}
-${assistantSection}
+${assistantSection}${attemptSection}
 ${agents ? `## Project Instructions\n${agents.slice(0, 800)}\n\n` : ""}Return JSON only:
 {
   "task_summary": "brief description of what was done",
@@ -1005,7 +1097,9 @@ Rules:
 - Direct pushes to main/master are not allowed; require a PR instead.
 - If stuck, propose an alternate approach.
 - If you need user action (auth, 2FA, credentials), list it in needs_user_action.
-- PLANNING LOOP CHECK: If the task requires code changes (fix, implement, add, create, build, refactor, update) but the "Tool Commands Run" section shows ONLY read operations (read, glob, grep, git log, git status, git diff, webfetch, task/explore) and NO write operations (edit, write, bash with build/test/commit, github_create_pull_request, etc.), then the task is NOT complete. Set status to "in_progress", set stuck to true, and list "Implement the actual code changes" in remaining_work. Analyzing and recommending changes is not the same as making them.`
+- PLANNING LOOP CHECK: If the task requires code changes (fix, implement, add, create, build, refactor, update) but the "Tool Commands Run" section shows ONLY read operations (read, glob, grep, git log, git status, git diff, webfetch, task/explore) and NO write operations (edit, write, bash with build/test/commit, github_create_pull_request, etc.), then the task is NOT complete. Set status to "in_progress", set stuck to true, and list "Implement the actual code changes" in remaining_work. Analyzing and recommending changes is not the same as making them.
+- If you are repeating the same actions (deploy, test, build) without making progress, set "stuck": true.
+- Do not retry the same failing approach more than twice — try something different or report stuck.`
 }
 
 function parseSelfAssessmentJson(text: string | null | undefined): SelfAssessment | null {
@@ -1403,7 +1497,8 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         const lastAssistantText = extractLastAssistantText(messages)
         const customPrompt = await loadReflectionPrompt(directory)
         const agents = await getAgentsFile(directory)
-        const reflectionPrompt = customPrompt || buildSelfAssessmentPrompt(context, agents, lastAssistantText)
+        const currentAttemptCount = attempts.get(attemptKey) || 0
+        const reflectionPrompt = customPrompt || buildSelfAssessmentPrompt(context, agents, lastAssistantText, currentAttemptCount)
 
         await showToast(client, directory, "Requesting reflection self-assessment...", "info")
         debug("Requesting reflection self-assessment")
@@ -1606,6 +1701,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
 
         const loopCheck = detectPlanningLoop(preFeedbackMessages || messages)
         const usePlanningLoopMessage = shouldApplyPlanningLoop(context.taskType, loopCheck.detected)
+        const actionLoopCheck = detectActionLoop(preFeedbackMessages || messages)
         const feedbackText = buildEscalatingFeedback(
           nextAttemptCount,
           analysis.severity || "MEDIUM",
@@ -1614,7 +1710,8 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
             missing: analysis.missing,
             next_actions: analysis.nextActions
           },
-          usePlanningLoopMessage
+          usePlanningLoopMessage,
+          actionLoopCheck.detected
         )
 
         // Apply task-based model routing to feedback injection
