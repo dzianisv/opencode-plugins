@@ -118,6 +118,93 @@ describe("reflection-3 unit", () => {
     assert.strictEqual(analysis.complete, false)
   })
 
+  it("treats non-human needs_user_action as agent-actionable work", () => {
+    const assessment = {
+      status: "in_progress" as const,
+      confidence: 0.4,
+      needs_user_action: ["Run tests", "Open PR and check CI"]
+    }
+    const analysis = evaluateSelfAssessment(assessment, {
+      taskSummary: "Implement feature",
+      taskType: "coding",
+      agentMode: "build",
+      humanMessages: ["Implement feature"],
+      toolsSummary: "(none)",
+      detectedSignals: [],
+      recentCommands: [],
+      pushedToDefaultBranch: false,
+      requiresTests: true,
+      requiresBuild: false,
+      requiresPR: true,
+      requiresCI: true,
+      requiresLocalTests: false,
+      requiresLocalTestsEvidence: false
+    })
+
+    assert.strictEqual(analysis.requiresHumanAction, false)
+    assert.strictEqual(analysis.shouldContinue, true)
+    assert.ok(analysis.missing.some((m: string) => m.toLowerCase().includes("run tests")))
+    assert.ok(analysis.nextActions.some((m: string) => m.toLowerCase().includes("run tests")))
+  })
+
+  it("keeps shouldContinue true when next_steps are actionable even if missing is empty", () => {
+    const assessment = {
+      status: "in_progress" as const,
+      confidence: 0.6,
+      remaining_work: [],
+      next_steps: ["Run npm test"],
+      needs_user_action: []
+    }
+    const analysis = evaluateSelfAssessment(assessment, {
+      taskSummary: "Run tests",
+      taskType: "coding",
+      agentMode: "build",
+      humanMessages: ["Run tests"],
+      toolsSummary: "(none)",
+      detectedSignals: [],
+      recentCommands: [],
+      pushedToDefaultBranch: false,
+      requiresTests: false,
+      requiresBuild: false,
+      requiresPR: false,
+      requiresCI: false,
+      requiresLocalTests: false,
+      requiresLocalTestsEvidence: false
+    })
+
+    assert.strictEqual(analysis.shouldContinue, true)
+    assert.strictEqual(analysis.requiresHumanAction, false)
+  })
+
+  it("treats human-only needs_user_action as blocking when sole work", () => {
+    const assessment = {
+      status: "waiting_for_user" as const,
+      confidence: 0.9,
+      remaining_work: [],
+      next_steps: [],
+      needs_user_action: ["Log in and approve OAuth consent"]
+    }
+    const analysis = evaluateSelfAssessment(assessment, {
+      taskSummary: "Connect OAuth",
+      taskType: "coding",
+      agentMode: "build",
+      humanMessages: ["Connect OAuth"],
+      toolsSummary: "(none)",
+      detectedSignals: [],
+      recentCommands: [],
+      pushedToDefaultBranch: false,
+      requiresTests: false,
+      requiresBuild: false,
+      requiresPR: false,
+      requiresCI: false,
+      requiresLocalTests: false,
+      requiresLocalTestsEvidence: false
+    })
+
+    assert.strictEqual(analysis.requiresHumanAction, true)
+    assert.strictEqual(analysis.shouldContinue, false)
+  })
+
   it("detects PR requirement from text", () => {
     const signals = "Create a PR for this fix"
     const context = {
@@ -286,12 +373,12 @@ describe("reflection-3 unit", () => {
     assert.strictEqual(inferTaskType("Analyze the trade-offs between approaches"), "research")
   })
 
-  it("shouldContinue is true when agent has actionable work alongside needs_user_action", () => {
+  it("shouldContinue is true when agent has actionable work alongside human-only needs_user_action", () => {
     const assessment = {
       status: "in_progress" as const,
       confidence: 0.5,
       remaining_work: ["Commit and push uncommitted changes"],
-      needs_user_action: ["Merge the PR"],
+      needs_user_action: ["Provide API key"],
       evidence: { tests: { ran: false } }
     }
     const analysis = evaluateSelfAssessment(assessment, {

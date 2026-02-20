@@ -18,7 +18,7 @@
 
 import { describe, it, before, after } from "node:test"
 import assert from "node:assert"
-import { mkdir, rm, cp, readdir, readFile, writeFile } from "fs/promises"
+import { mkdir, rm, cp, readdir, readFile, writeFile, access } from "fs/promises"
 import { spawn, type ChildProcess } from "child_process"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
@@ -41,6 +41,67 @@ const TELEGRAM_PLUGIN_PATH = join(__dirname, "../telegram.ts")
 const AGENT_MODEL = process.env.OPENCODE_MODEL || "github-copilot/gpt-4o"
 const TIMEOUT = 600_000 // 10 minutes for full test
 const POLL_INTERVAL = 3_000
+const DEFAULT_OPENCODE_BIN = "/Users/engineer/.opencode/bin/opencode"
+
+async function resolveOpencodeBinary(): Promise<string> {
+  if (process.env.OPENCODE_BIN) return process.env.OPENCODE_BIN
+  try {
+    await access(DEFAULT_OPENCODE_BIN)
+    return DEFAULT_OPENCODE_BIN
+  } catch {
+    return "opencode"
+  }
+}
+
+async function writeReflectionPrompt(dir: string, content: string): Promise<void> {
+  await writeFile(join(dir, "reflection.md"), content)
+}
+
+async function clearReflectionPrompt(dir: string): Promise<void> {
+  await rm(join(dir, "reflection.md"), { force: true })
+}
+
+async function clearReflectionArtifacts(dir: string): Promise<void> {
+  const reflectionDir = join(dir, ".reflection")
+  try {
+    const files = await readdir(reflectionDir)
+    await Promise.all(
+      files
+        .filter((file) => file.endsWith(".json") || file.endsWith(".log"))
+        .map((file) => rm(join(reflectionDir, file), { force: true }))
+    )
+  } catch {}
+}
+
+async function waitForReflectionAnalysis(dir: string, sessionId: string, timeoutMs = 120_000): Promise<any> {
+  const prefix = sessionId.slice(0, 8)
+  const reflectionDir = join(dir, ".reflection")
+  const start = Date.now()
+  let lastError: unknown
+
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const files = await readdir(reflectionDir)
+      const matches = files.filter((file) => file.startsWith(`${prefix}_`) && file.endsWith(".json"))
+      if (matches.length > 0) {
+        const latest = matches
+          .map((file) => ({ file, ts: Number(file.split("_")[1]?.split(".")[0] || 0) }))
+          .sort((a, b) => a.ts - b.ts)
+          .pop()
+        if (latest?.file) {
+          const raw = await readFile(join(reflectionDir, latest.file), "utf-8")
+          const parsed = JSON.parse(raw)
+          if (parsed?.analysis) return parsed
+        }
+      }
+    } catch (err) {
+      lastError = err
+    }
+    await new Promise(r => setTimeout(r, 1000))
+  }
+
+  throw new Error(`Timed out waiting for reflection analysis (${prefix})${lastError ? `: ${String(lastError)}` : ""}`)
+}
 
 interface TestResult {
   sessionId: string
@@ -223,6 +284,7 @@ Return JSON only:
 describe("reflection + telegram plugin E2E evaluation", { timeout: TIMEOUT + 60_000 }, () => {
   const testDir = "/tmp/opencode-reflection-3-eval"
   const port = 3300
+  const altPort = 3301
   let server: ChildProcess | null = null
   let client: OpencodeClient
   let testResult: TestResult
@@ -238,7 +300,10 @@ describe("reflection + telegram plugin E2E evaluation", { timeout: TIMEOUT + 60_
     console.log(`[setup] dir=${testDir} model=${AGENT_MODEL}`)
     console.log(`[setup] plugins: reflection-3.ts, telegram.ts`)
 
-    server = spawn("opencode", ["serve", "--port", String(port)], {
+    const opencodeBin = await resolveOpencodeBinary()
+    console.log(`[setup] opencode bin: ${opencodeBin}`)
+
+    server = spawn(opencodeBin, ["serve", "--port", String(port)], {
       cwd: testDir,
       stdio: ["ignore", "pipe", "pipe"],
       env: {
@@ -255,7 +320,25 @@ describe("reflection + telegram plugin E2E evaluation", { timeout: TIMEOUT + 60_
       directory: testDir
     })
 
-    const ready = await waitForServer(port, 30_000)
+    let ready = await waitForServer(port, 30_000)
+    if (!ready) {
+      console.warn(`[setup] port ${port} failed, retrying on ${altPort}`)
+      server?.kill("SIGTERM")
+      await new Promise(r => setTimeout(r, 2000))
+      server = spawn(opencodeBin, ["serve", "--port", String(altPort)], {
+        cwd: testDir,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          REFLECTION_DEBUG: "1"
+        }
+      })
+      client = createOpencodeClient({
+        baseUrl: `http://localhost:${altPort}`,
+        directory: testDir
+      })
+      ready = await waitForServer(altPort, 30_000)
+    }
     if (!ready) throw new Error("Server failed to start")
     console.log("[setup] server ready")
   })
@@ -411,6 +494,81 @@ Requirements:
     assert.ok(testResult.messages.length >= 2, "Should have at least 2 messages")
   })
 
+  it("continues when missing steps remain even with user action present", async () => {
+    const customPrompt = `SELF-ASSESS REFLECTION-3
+
+You MUST output exactly the JSON below, with the same field values. Do not add commentary.
+{
+  "task_summary": "test",
+  "task_type": "bugfix",
+  "status": "in_progress",
+  "confidence": 0.4,
+  "evidence": { "tests": { "ran": false } },
+  "remaining_work": ["Run tests"],
+  "next_steps": ["npm test"],
+  "needs_user_action": ["Merge the PR"],
+  "stuck": false,
+  "alternate_approach": ""
+}`
+
+    await clearReflectionArtifacts(testDir)
+    await writeReflectionPrompt(testDir, customPrompt)
+    try {
+      const { data: session } = await client.session.create({})
+      if (!session?.id) throw new Error("Failed to create session")
+
+      await client.session.promptAsync({
+        path: { id: session.id },
+        body: { parts: [{ type: "text", text: "Update docs and run tests" }] }
+      })
+
+      const analysisData = await waitForReflectionAnalysis(testDir, session.id)
+      const analysis = analysisData.analysis
+      assert.strictEqual(analysis.requiresHumanAction, false)
+      assert.strictEqual(analysis.shouldContinue, true)
+      assert.ok(analysis.missing?.length > 0)
+    } finally {
+      await clearReflectionPrompt(testDir)
+    }
+  })
+
+  it("stops only when user action is the sole blocker", async () => {
+    const customPrompt = `SELF-ASSESS REFLECTION-3
+
+You MUST output exactly the JSON below, with the same field values. Do not add commentary.
+{
+  "task_summary": "test",
+  "task_type": "bugfix",
+  "status": "waiting_for_user",
+  "confidence": 0.9,
+  "evidence": {},
+  "remaining_work": [],
+  "next_steps": [],
+  "needs_user_action": ["Provide API key"],
+  "stuck": false,
+  "alternate_approach": ""
+}`
+
+    await clearReflectionArtifacts(testDir)
+    await writeReflectionPrompt(testDir, customPrompt)
+    try {
+      const { data: session } = await client.session.create({})
+      if (!session?.id) throw new Error("Failed to create session")
+
+      await client.session.promptAsync({
+        path: { id: session.id },
+        body: { parts: [{ type: "text", text: "Configure the API" }] }
+      })
+
+      const analysisData = await waitForReflectionAnalysis(testDir, session.id)
+      const analysis = analysisData.analysis
+      assert.strictEqual(analysis.requiresHumanAction, true)
+      assert.strictEqual(analysis.shouldContinue, false)
+    } finally {
+      await clearReflectionPrompt(testDir)
+    }
+  })
+
   it("telegram extractFinalResponse filters reflection artifacts from session messages", async () => {
     const messages = testResult.messages
 
@@ -555,4 +713,5 @@ Requirements:
       console.log(`[warn] evaluation score ${evaluationResult.score}/5 is below threshold (3)`)
     }
   })
+
 })
