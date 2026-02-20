@@ -1,9 +1,11 @@
 # OpenCode Plugins
 <img width="1428" height="926" alt="Screenshot 2026-02-08 at 09 13 26" src="https://github.com/user-attachments/assets/1f507538-be9e-43a4-a1da-cb328e8e1878" />
+
+## @reflection-3.ts - push opencode agent to reflect on the task, useful for continuous interrupted runs
 <img width="1472" height="972" alt="image" src="https://github.com/user-attachments/assets/40f3a752-4b84-4151-93f4-2614330ac653" />
-@reflection-3.ts - push opencode agent to reflect on the task, useful for continuous interrupted runs
+
+## @telegram.ts - integrates with Telegram over [t.me/OpencodeMgrBot](@OpenCodeMgrBot) bot
 <img width="1019" height="734" alt="image" src="https://github.com/user-attachments/assets/6f120c14-dba5-431b-a458-0f51f360f561" />
-@telegram.ts - integrates with Telegram over [t.me/OpencodeMgrBot](@OpenCodeMgrBot) bot
 @tts.ts - uses coqui TTS to read the opencode agent response. Useful to run a few agents on macOS and be notified when one finishes a task. 
 
 
