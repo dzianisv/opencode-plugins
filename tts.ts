@@ -9,11 +9,16 @@
  * 
  * Toggle TTS on/off:
  *   /tts       - toggle
- *   /tts on    - enable
+ *   /tts on    - enable (short mode)
  *   /tts off   - disable
+ *   /tts short - short mode (task summary only)
+ *   /tts long  - long mode (full response)
  * 
- * Configure engine in ~/.config/opencode/tts.json:
- *   { "enabled": true, "engine": "coqui", "coqui": { "model": "bark" } }
+ * Short mode: "Task completed in [directory]: [short summary]"
+ * Long mode: Full assistant response spoken
+ * 
+ * Configure in ~/.config/opencode/tts.json:
+ *   { "enabled": true, "mode": "short", "engine": "coqui", "coqui": { "model": "bark" } }
  * 
  * Or set environment variables:
  *   TTS_DISABLED=1     - disable TTS
@@ -232,8 +237,11 @@ type TTSEngine = "coqui" | "chatterbox" | "os"
 // - jenny: Jenny voice model
 type CoquiModel = "bark" | "xtts_v2" | "tortoise" | "vits" | "vctk_vits" | "jenny"
 
+type TTSMode = "short" | "long"
+
 interface TTSConfig {
   enabled?: boolean
+  mode?: TTSMode
   engine?: TTSEngine
   // OS TTS options (macOS/Linux)
   os?: {
@@ -389,6 +397,7 @@ async function loadConfig(): Promise<TTSConfig> {
   } catch {
     return { 
       enabled: true, 
+      mode: "short",
       engine: "coqui",
       coqui: {
         model: "vctk_vits",
@@ -451,6 +460,17 @@ async function isEnabled(): Promise<boolean> {
   if (process.env.TTS_DISABLED === "1") return false
   const config = await loadConfig()
   return config.enabled !== false
+}
+
+async function getMode(): Promise<TTSMode> {
+  const config = await loadConfig()
+  return config.mode || "short"
+}
+
+async function setMode(mode: TTSMode): Promise<void> {
+  const config = await loadConfig()
+  config.mode = mode
+  await saveConfig(config)
 }
 
 /**
@@ -1700,26 +1720,27 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
   
   // Tool definition for TTS control - allows the LLM to toggle/control TTS
   const ttsControlTool = {
-    description: 'Control text-to-speech settings. Use this tool to enable, disable, or check TTS status.',
+    description: 'Control text-to-speech settings. Use this tool to enable, disable, set mode, or check TTS status.',
     args: {
-      action: z.enum(["on", "off", "toggle", "status"]).describe("Action to perform: 'on' to enable, 'off' to disable, 'toggle' to flip state, 'status' to check current state")
+      action: z.enum(["on", "off", "short", "long", "toggle", "status"]).describe("Action to perform: 'on' to enable (short mode), 'off' to disable, 'short' for short mode, 'long' for full response, 'toggle' to flip state, 'status' to check current state")
     },
-    async execute(args: { action: "on" | "off" | "toggle" | "status" }): Promise<string> {
+    async execute(args: { action: "on" | "off" | "short" | "long" | "toggle" | "status" }): Promise<string> {
       const { action } = args
       
       if (action === "on") {
+        await setMode("short")
         await setTTSEnabled(true)
         await client.tui.publish({
           body: {
             type: "toast",
             toast: {
               title: "TTS Enabled",
-              description: "Text-to-speech is now ON",
+              description: "Text-to-speech is now ON (short mode)",
               severity: "success"
             }
           } as any
         })
-        return "TTS has been enabled. Text-to-speech will now read responses aloud."
+        return "TTS has been enabled in short mode. Only task summaries will be spoken."
       } else if (action === "off") {
         await setTTSEnabled(false)
         await client.tui.publish({
@@ -1733,6 +1754,34 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
           } as any
         })
         return "TTS has been disabled. Text-to-speech is now muted."
+      } else if (action === "short") {
+        await setMode("short")
+        await setTTSEnabled(true)
+        await client.tui.publish({
+          body: {
+            type: "toast",
+            toast: {
+              title: "TTS Short Mode",
+              description: "Short mode enabled - task summary only",
+              severity: "success"
+            }
+          } as any
+        })
+        return "TTS is now in short mode. Only task summaries will be spoken."
+      } else if (action === "long") {
+        await setMode("long")
+        await setTTSEnabled(true)
+        await client.tui.publish({
+          body: {
+            type: "toast",
+            toast: {
+              title: "TTS Long Mode",
+              description: "Long mode enabled - full response",
+              severity: "success"
+            }
+          } as any
+        })
+        return "TTS is now in long mode. Full responses will be spoken."
       } else if (action === "toggle") {
         const newState = await toggleTTS()
         await client.tui.publish({
@@ -1749,17 +1798,18 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
       } else {
         // status
         const enabled = await isEnabled()
+        const mode = await getMode()
         await client.tui.publish({
           body: {
             type: "toast",
             toast: {
               title: "TTS Status",
-              description: enabled ? "TTS is ON" : "TTS is OFF (muted)",
+              description: enabled ? `TTS is ON (${mode} mode)` : "TTS is OFF (muted)",
               severity: "info"
             }
           } as any
         })
-        return enabled ? "TTS is currently enabled." : "TTS is currently disabled (muted)."
+        return enabled ? `TTS is currently enabled (${mode} mode).` : "TTS is currently disabled (muted)."
       }
     }
   }
@@ -1852,7 +1902,50 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
       .trim()
   }
 
-  async function speak(text: string, sessionId: string, modelID?: string, sessionDirectory?: string): Promise<void> {
+  function extractDirectoryName(dirPath: string): string {
+    if (!dirPath) return "unknown"
+    const parts = dirPath.split(/[/\\]/)
+    return parts[parts.length - 1] || parts[parts.length - 2] || "project"
+  }
+
+  function extractUserTask(messages: any[]): string {
+    for (const msg of messages) {
+      if (msg.info?.role === "user") {
+        for (const part of msg.parts || []) {
+          if (part.type === "text" && part.text) {
+            const text = part.text
+            if (!text.includes("REFLECTION") && !text.includes("SELF-ASSESS")) {
+              return text.slice(0, 500)
+            }
+          }
+        }
+      }
+    }
+    return ""
+  }
+
+  function extractFirstSentence(text: string): string {
+    const cleaned = cleanTextForSpeech(text)
+    const sentences = cleaned.split(/[.!?]+/)
+    const first = sentences[0]?.trim()
+    return first && first.length > 10 ? first.slice(0, 100) : cleaned.slice(0, 100)
+  }
+
+  async function summarizeForShortMode(
+    taskDescription: string,
+    outcome: string,
+    directoryName: string,
+    debugLog: (msg: string) => Promise<void>
+  ): Promise<string> {
+    const cleanedOutcome = cleanTextForSpeech(outcome)
+    const firstSentence = extractFirstSentence(cleanedOutcome)
+    
+    const dirName = extractDirectoryName(directoryName)
+    await debugLog(`Short mode: ${dirName}: ${firstSentence}`)
+    return `Task completed in ${dirName}: ${firstSentence}`
+  }
+
+  async function speak(text: string, sessionId: string, modelID?: string, sessionDirectory?: string, messages?: any[]): Promise<void> {
     // Use session-specific directory if provided, otherwise fall back to plugin directory
     // This is important for worktrees - the plugin may be loaded in one directory but
     // the session may belong to a different worktree directory
@@ -1860,9 +1953,20 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
     const cleaned = cleanTextForSpeech(text)
     if (!cleaned) return
 
-    const toSpeak = cleaned.length > MAX_SPEECH_LENGTH
-      ? cleaned.slice(0, MAX_SPEECH_LENGTH) + "... message truncated."
-      : cleaned
+    // Check mode and generate appropriate text to speak
+    const mode = await getMode()
+    let toSpeak: string
+
+    if (mode === "short") {
+      const taskDesc = messages ? extractUserTask(messages) : ""
+      const dirName = extractDirectoryName(targetDirectory)
+      toSpeak = await summarizeForShortMode(taskDesc, cleaned, dirName, debugLog)
+    } else {
+      // Long mode - speak full response
+      toSpeak = cleaned.length > MAX_SPEECH_LENGTH
+        ? cleaned.slice(0, MAX_SPEECH_LENGTH) + "... message truncated."
+        : cleaned
+    }
 
     // Check if TTS is still enabled before waiting in queue
     if (!(await isEnabled())) {
@@ -2033,13 +2137,14 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
         const arg = (input.arguments || "").trim().toLowerCase()
         
         if (arg === "on" || arg === "enable") {
+          await setMode("short")
           await setTTSEnabled(true)
           await client.tui.publish({
             body: {
               type: "toast",
               toast: {
                 title: "TTS Enabled",
-                description: "Text-to-speech is now ON",
+                description: "Text-to-speech is now ON (short mode)",
                 severity: "success"
               }
             } as any
@@ -2056,14 +2161,41 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
               }
             } as any
           })
+        } else if (arg === "short") {
+          await setMode("short")
+          await setTTSEnabled(true)
+          await client.tui.publish({
+            body: {
+              type: "toast",
+              toast: {
+                title: "TTS Short Mode",
+                description: "Short mode enabled - task summary only",
+                severity: "success"
+              }
+            } as any
+          })
+        } else if (arg === "long") {
+          await setMode("long")
+          await setTTSEnabled(true)
+          await client.tui.publish({
+            body: {
+              type: "toast",
+              toast: {
+                title: "TTS Long Mode",
+                description: "Long mode enabled - full response",
+                severity: "success"
+              }
+            } as any
+          })
         } else if (arg === "status") {
           const enabled = await isEnabled()
+          const mode = await getMode()
           await client.tui.publish({
             body: {
               type: "toast",
               toast: {
                 title: "TTS Status",
-                description: enabled ? "TTS is ON" : "TTS is OFF (muted)",
+                description: enabled ? `TTS is ON (${mode} mode)` : "TTS is OFF (muted)",
                 severity: "info"
               }
             } as any
@@ -2222,7 +2354,7 @@ export const TTSPlugin: Plugin = async ({ client, directory }) => {
           if (finalResponse) {
             shouldKeepInSet = true
             await debugLog(`Speaking now...`)
-            await speak(finalResponse, sessionId, modelID, sessionDirectory)
+            await speak(finalResponse, sessionId, modelID, sessionDirectory, messages)
             await debugLog(`Speech complete`)
           }
         } catch (e: any) {
