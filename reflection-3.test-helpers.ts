@@ -169,6 +169,41 @@ export function parseSelfAssessmentJson(text: string | null | undefined): SelfAs
   }
 }
 
+const HUMAN_ONLY_ACTION_PATTERNS: RegExp[] = [
+  /\b(auth|authentication|oauth|2fa|mfa|captcha|otp|one[- ]time)\b/i,
+  /\b(log ?in|sign ?in|verification code|passcode)\b/i,
+  /\b(api key|secret|token|credential|access key|session cookie)\b/i,
+  /\b(permission|consent|approve|approval|access request|request access|grant access|invite)\b/i,
+  /\bupload\b/i
+]
+
+const AGENT_ACTION_PATTERNS: RegExp[] = [
+  /\b(run|re-?run|execute|test|build|compile|lint|format|commit|push|merge|pr|ci|check)\b/i,
+  /\b(gh|npm|node|python|bash|curl|script)\b/i,
+  /\b(edit|write|update|fix|implement|add|remove|change|create|open|verify|capture|screenshot|record)\b/i
+]
+
+function isHumanOnlyAction(item: string): boolean {
+  const text = item.trim()
+  if (!text) return false
+  const hasHuman = HUMAN_ONLY_ACTION_PATTERNS.some(pattern => pattern.test(text))
+  const hasAgent = AGENT_ACTION_PATTERNS.some(pattern => pattern.test(text))
+  return hasHuman && !hasAgent
+}
+
+function splitActionItems(items: string[]): { humanOnly: string[]; agentActionable: string[] } {
+  const humanOnly: string[] = []
+  const agentActionable: string[] = []
+  for (const raw of items) {
+    if (typeof raw !== "string") continue
+    const item = raw.trim()
+    if (!item) continue
+    if (isHumanOnlyAction(item)) humanOnly.push(item)
+    else agentActionable.push(item)
+  }
+  return { humanOnly, agentActionable }
+}
+
 export function evaluateSelfAssessment(assessment: SelfAssessment, context: TaskContext): ReflectionAnalysis {
   const safeContext: TaskContext = {
     taskSummary: context?.taskSummary || "",
@@ -207,6 +242,14 @@ export function evaluateSelfAssessment(assessment: SelfAssessment, context: Task
 
   if (remaining.length) {
     for (const item of remaining) addMissing(item)
+  }
+
+  const { humanOnly: humanNeeds, agentActionable: agentNeeds } = splitActionItems(needsUserAction)
+  if (agentNeeds.length) {
+    for (const item of agentNeeds) {
+      addMissing(item)
+      if (!nextActions.includes(item)) nextActions.push(item)
+    }
   }
 
   if (safeContext.requiresTests) {
@@ -276,30 +319,17 @@ export function evaluateSelfAssessment(assessment: SelfAssessment, context: Task
     addMissing("Rethink approach", "Propose an alternate approach and continue")
   }
 
-  const requiresHumanAction = needsUserAction.length > 0
-  // Agent should continue if there are missing items beyond what only the user can do.
-  // Even when user action is needed (e.g. "merge PR"), the agent may still have
-  // actionable work (e.g. uncommitted changes, missing tests) it can complete first.
-  const agentActionableMissing = missing.filter(item =>
-    !needsUserAction.some(ua => item.toLowerCase().includes(ua.toLowerCase()) || ua.toLowerCase().includes(item.toLowerCase()))
-  )
-  const shouldContinue = agentActionableMissing.length > 0 || (!requiresHumanAction && missing.length > 0)
+  const humanOnlyNextSteps = (assessment.next_steps || []).filter(item => isHumanOnlyAction(item))
+  const requiresHumanAction = humanNeeds.length > 0 || humanOnlyNextSteps.length > 0 || missing.some(isHumanOnlyAction) || nextActions.some(isHumanOnlyAction)
   const complete = status === "complete" && missing.length === 0 && confidence >= 0.8 && !requiresHumanAction
 
   let severity: ReflectionAnalysis["severity"] = "NONE"
-  if (missing.some(item => /test|build/i.test(item))) severity = "HIGH"
-  else if (missing.some(item => /CI|check/i.test(item))) severity = "MEDIUM"
-  else if (missing.length > 0) severity = "LOW"
+  const severityItems = missing.length > 0 ? missing : nextActions
+  if (severityItems.some(item => /test|build/i.test(item))) severity = "HIGH"
+  else if (severityItems.some(item => /CI|check/i.test(item))) severity = "MEDIUM"
+  else if (severityItems.length > 0) severity = "LOW"
 
-  if (requiresHumanAction && missing.length === 0) severity = "LOW"
-
-  const reason = complete
-    ? "Self-assessment confirms completion with required evidence"
-    : requiresHumanAction
-      ? "User action required before continuing"
-      : missing.length
-        ? "Missing required workflow steps"
-        : "Task not confirmed complete"
+  if (requiresHumanAction && missing.length === 0 && nextActions.length === 0) severity = "LOW"
 
   if (assessment.next_steps?.length) {
     for (const step of assessment.next_steps) {
@@ -307,7 +337,26 @@ export function evaluateSelfAssessment(assessment: SelfAssessment, context: Task
     }
   }
 
-  return { complete, shouldContinue, reason, missing, nextActions, requiresHumanAction, severity }
+  const actionableMissing = missing.filter(item => !isHumanOnlyAction(item))
+  const finalActionableNextActions = nextActions.filter(item => !isHumanOnlyAction(item))
+  const finalShouldContinue = actionableMissing.length > 0 || finalActionableNextActions.length > 0
+  const finalReason = complete
+    ? "Self-assessment confirms completion with required evidence"
+    : requiresHumanAction && !finalShouldContinue
+      ? "User action required before continuing"
+      : missing.length || finalActionableNextActions.length
+        ? "Missing required workflow steps"
+        : "Task not confirmed complete"
+
+  return {
+    complete,
+    shouldContinue: finalShouldContinue,
+    reason: finalReason,
+    missing,
+    nextActions,
+    requiresHumanAction,
+    severity
+  }
 }
 
 export type RoutingCategory = "backend" | "architecture" | "frontend" | "default"
@@ -566,6 +615,7 @@ export function shouldApplyPlanningLoop(taskType: TaskType, loopDetected: boolea
 const SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
 
 export function isPlanMode(messages: any[]): boolean {
+  if (!Array.isArray(messages)) return false
   // Check system/developer messages for plan mode indicators
   const hasSystemPlanMode = messages.some((m: any) =>
     (m.info?.role === "system" || m.info?.role === "developer") &&

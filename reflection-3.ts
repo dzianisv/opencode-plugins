@@ -447,6 +447,7 @@ function isJudgeSession(sessionId: string, messages: any[], judgeSessionIds: Set
 }
 
 export function isPlanMode(messages: any[]): boolean {
+  if (!Array.isArray(messages)) return false
   // Check system/developer messages for plan mode indicators
   const hasSystemPlanMode = messages.some((m: any) =>
     (m.info?.role === "system" || m.info?.role === "developer") &&
@@ -1096,7 +1097,7 @@ Rules:
 - Tests cannot be skipped or marked as flaky/not important.
 - Direct pushes to main/master are not allowed; require a PR instead.
 - If stuck, propose an alternate approach.
-- If you need user action (auth, 2FA, credentials), list it in needs_user_action.
+- If you need user action (auth, 2FA, credentials, access requests, uploads, approvals), list it in needs_user_action.
 - PLANNING LOOP CHECK: If the task requires code changes (fix, implement, add, create, build, refactor, update) but the "Tool Commands Run" section shows ONLY read operations (read, glob, grep, git log, git status, git diff, webfetch, task/explore) and NO write operations (edit, write, bash with build/test/commit, github_create_pull_request, etc.), then the task is NOT complete. Set status to "in_progress", set stuck to true, and list "Implement the actual code changes" in remaining_work. Analyzing and recommending changes is not the same as making them.
 - If you are repeating the same actions (deploy, test, build) without making progress, set "stuck": true.
 - Do not retry the same failing approach more than twice — try something different or report stuck.`
@@ -1112,6 +1113,41 @@ function parseSelfAssessmentJson(text: string | null | undefined): SelfAssessmen
     reportError(e, { plugin: "reflection-3", op: "parse-self-assessment" })
     return null
   }
+}
+
+const HUMAN_ONLY_ACTION_PATTERNS: RegExp[] = [
+  /\b(auth|authentication|oauth|2fa|mfa|captcha|otp|one[- ]time)\b/i,
+  /\b(log ?in|sign ?in|verification code|passcode)\b/i,
+  /\b(api key|secret|token|credential|access key|session cookie)\b/i,
+  /\b(permission|consent|approve|approval|access request|request access|grant access|invite)\b/i,
+  /\bupload\b/i
+]
+
+const AGENT_ACTION_PATTERNS: RegExp[] = [
+  /\b(run|re-?run|execute|test|build|compile|lint|format|commit|push|merge|pr|ci|check)\b/i,
+  /\b(gh|npm|node|python|bash|curl|script)\b/i,
+  /\b(edit|write|update|fix|implement|add|remove|change|create|open|verify|capture|screenshot|record)\b/i
+]
+
+function isHumanOnlyAction(item: string): boolean {
+  const text = item.trim()
+  if (!text) return false
+  const hasHuman = HUMAN_ONLY_ACTION_PATTERNS.some(pattern => pattern.test(text))
+  const hasAgent = AGENT_ACTION_PATTERNS.some(pattern => pattern.test(text))
+  return hasHuman && !hasAgent
+}
+
+function splitActionItems(items: string[]): { humanOnly: string[]; agentActionable: string[] } {
+  const humanOnly: string[] = []
+  const agentActionable: string[] = []
+  for (const raw of items) {
+    if (typeof raw !== "string") continue
+    const item = raw.trim()
+    if (!item) continue
+    if (isHumanOnlyAction(item)) humanOnly.push(item)
+    else agentActionable.push(item)
+  }
+  return { humanOnly, agentActionable }
 }
 
 function evaluateSelfAssessment(assessment: SelfAssessment, context: TaskContext): ReflectionAnalysis {
@@ -1152,6 +1188,14 @@ function evaluateSelfAssessment(assessment: SelfAssessment, context: TaskContext
 
   if (remaining.length) {
     for (const item of remaining) addMissing(item)
+  }
+
+  const { humanOnly: humanNeeds, agentActionable: agentNeeds } = splitActionItems(needsUserAction)
+  if (agentNeeds.length) {
+    for (const item of agentNeeds) {
+      addMissing(item)
+      if (!nextActions.includes(item)) nextActions.push(item)
+    }
   }
 
   if (safeContext.requiresTests) {
@@ -1221,30 +1265,17 @@ function evaluateSelfAssessment(assessment: SelfAssessment, context: TaskContext
     addMissing("Rethink approach", "Propose an alternate approach and continue")
   }
 
-  const requiresHumanAction = needsUserAction.length > 0
-  // Agent should continue if there are missing items beyond what only the user can do.
-  // Even when user action is needed (e.g. "merge PR"), the agent may still have
-  // actionable work (e.g. uncommitted changes, missing tests) it can complete first.
-  const agentActionableMissing = missing.filter(item =>
-    !needsUserAction.some(ua => item.toLowerCase().includes(ua.toLowerCase()) || ua.toLowerCase().includes(item.toLowerCase()))
-  )
-  const shouldContinue = agentActionableMissing.length > 0 || (!requiresHumanAction && missing.length > 0)
+  const humanOnlyNextSteps = (assessment.next_steps || []).filter(item => isHumanOnlyAction(item))
+  const requiresHumanAction = humanNeeds.length > 0 || humanOnlyNextSteps.length > 0 || missing.some(isHumanOnlyAction) || nextActions.some(isHumanOnlyAction)
   const complete = status === "complete" && missing.length === 0 && confidence >= 0.8 && !requiresHumanAction
 
   let severity: ReflectionAnalysis["severity"] = "NONE"
-  if (missing.some(item => /test|build/i.test(item))) severity = "HIGH"
-  else if (missing.some(item => /CI|check/i.test(item))) severity = "MEDIUM"
-  else if (missing.length > 0) severity = "LOW"
+  const severityItems = missing.length > 0 ? missing : nextActions
+  if (severityItems.some(item => /test|build/i.test(item))) severity = "HIGH"
+  else if (severityItems.some(item => /CI|check/i.test(item))) severity = "MEDIUM"
+  else if (severityItems.length > 0) severity = "LOW"
 
-  if (requiresHumanAction && missing.length === 0) severity = "LOW"
-
-  const reason = complete
-    ? "Self-assessment confirms completion with required evidence"
-    : requiresHumanAction
-      ? "User action required before continuing"
-      : missing.length
-        ? "Missing required workflow steps"
-        : "Task not confirmed complete"
+  if (requiresHumanAction && missing.length === 0 && nextActions.length === 0) severity = "LOW"
 
   if (assessment.next_steps?.length) {
     for (const step of assessment.next_steps) {
@@ -1252,7 +1283,26 @@ function evaluateSelfAssessment(assessment: SelfAssessment, context: TaskContext
     }
   }
 
-  return { complete, shouldContinue, reason, missing, nextActions, requiresHumanAction, severity }
+  const actionableMissing = missing.filter(item => !isHumanOnlyAction(item))
+  const finalActionableNextActions = nextActions.filter(item => !isHumanOnlyAction(item))
+  const finalShouldContinue = actionableMissing.length > 0 || finalActionableNextActions.length > 0
+  const finalReason = complete
+    ? "Self-assessment confirms completion with required evidence"
+    : requiresHumanAction && !finalShouldContinue
+      ? "User action required before continuing"
+      : missing.length || finalActionableNextActions.length
+        ? "Missing required workflow steps"
+        : "Task not confirmed complete"
+
+  return {
+    complete,
+    shouldContinue: finalShouldContinue,
+    reason: finalReason,
+    missing,
+    nextActions,
+    requiresHumanAction,
+    severity
+  }
 }
 
 async function analyzeSelfAssessmentWithLLM(
@@ -1345,13 +1395,21 @@ Return JSON only:
       if (!jsonMatch) continue
 
       const verdict = JSON.parse(jsonMatch[0]) as any
+      const missing = Array.isArray(verdict.missing) ? verdict.missing : []
+      const humanOnlyMissing = missing.filter((item: string) => isHumanOnlyAction(item))
+      const actionableMissing = missing.filter((item: string) => !isHumanOnlyAction(item))
+      const actionableNextActions = Array.isArray(verdict.next_actions)
+        ? verdict.next_actions.filter((item: string) => typeof item === "string" && !isHumanOnlyAction(item))
+        : []
+      const shouldContinue = !verdict.complete && (actionableMissing.length > 0 || actionableNextActions.length > 0)
+      const requiresHumanAction = !!verdict.requires_human_action || humanOnlyMissing.length > 0
       return {
         complete: !!verdict.complete,
-        shouldContinue: !verdict.requires_human_action && !verdict.complete,
+        shouldContinue,
         reason: verdict.feedback || "Judge analysis completed",
-        missing: Array.isArray(verdict.missing) ? verdict.missing : [],
+        missing,
         nextActions: Array.isArray(verdict.next_actions) ? verdict.next_actions : [],
-        requiresHumanAction: !!verdict.requires_human_action,
+        requiresHumanAction,
         severity: verdict.severity || "MEDIUM"
       }
     } catch (e) {

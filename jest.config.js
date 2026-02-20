@@ -1,7 +1,7 @@
 export default {
   preset: 'ts-jest/presets/default-esm',
   testEnvironment: 'node',
-  testMatch: ['**/test/**/*.test.ts'],
+  testMatch: ['**/*.test.ts'],
   testPathIgnorePatterns: ['/node_modules/', 'session-fork-directory.test.ts', 'e2e.test.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   moduleNameMapper: {

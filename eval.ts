@@ -24,7 +24,8 @@ const MODEL = process.env.OPENCODE_MODEL || "github-copilot/gpt-4o"
 const PORT = 7654
 const TIMEOUT = 300_000        // 5 minutes max per task
 const POLL_INTERVAL = 3_000    // Check every 3 seconds
-const STABLE_POLLS_REQUIRED = 5  // Need 5 stable polls (15s of no new messages)
+const STABLE_POLLS_REQUIRED = 3  // Stable polls before stopping
+const MAX_WAIT_AFTER_OUTPUT = 20_000
 
 // Test cases for evaluation
 interface TestCase {
@@ -174,7 +175,10 @@ async function runTask(
     // Poll until stable - must wait for assistant to have parts
     let lastMsgCount = 0
     let lastAssistantParts = 0
+    let lastAssistantCount = 0
     let stableCount = 0
+    let firstAssistantOutput = ""
+    let firstAssistantCapturedAt: number | null = null
 
     while (Date.now() - start < TIMEOUT) {
       await new Promise(r => setTimeout(r, POLL_INTERVAL))
@@ -189,15 +193,25 @@ async function runTask(
       const assistantMsgs = (messages || []).filter((m: any) => m.info?.role === "assistant")
       const lastAssistant = assistantMsgs[assistantMsgs.length - 1]
       const assistantParts = lastAssistant?.parts?.length || 0
-      
+      const assistantCount = assistantMsgs.length
+
       console.log(`[${testCase.id}] Polling: ${msgCount} messages, assistant parts=${assistantParts}, stable=${stableCount}`)
+
+      if (!firstAssistantOutput && assistantMsgs.length > 0) {
+        const candidate = extractTextContent(lastAssistant)
+        if (candidate) {
+          firstAssistantOutput = candidate
+          firstAssistantCapturedAt = Date.now()
+        }
+      }
       
       // Only consider stable if:
       // 1. We have at least 2 messages (user + assistant)
       // 2. The assistant message has at least 1 part
       // 3. Both message count AND part count are stable
       const isStable = msgCount === lastMsgCount && 
-                       assistantParts === lastAssistantParts && 
+                       assistantParts === lastAssistantParts &&
+                       assistantCount === lastAssistantCount &&
                        msgCount >= 2 && 
                        assistantParts > 0
       
@@ -208,6 +222,11 @@ async function runTask(
         stableCount = 0
         lastMsgCount = msgCount
         lastAssistantParts = assistantParts
+        lastAssistantCount = assistantCount
+      }
+
+      if (firstAssistantCapturedAt && Date.now() - firstAssistantCapturedAt > MAX_WAIT_AFTER_OUTPUT) {
+        break
       }
     }
 
@@ -241,7 +260,7 @@ async function runTask(
       const assistantMsgs = messages.filter((m: any) => m.info?.role === "assistant")
       if (assistantMsgs.length > 0) {
         const lastAssistant = assistantMsgs[assistantMsgs.length - 1]
-        result.agentOutput = extractTextContent(lastAssistant)
+        result.agentOutput = firstAssistantOutput || extractTextContent(lastAssistant)
         console.log(`[${testCase.id}] Agent output length: ${result.agentOutput.length}`)
       }
 
