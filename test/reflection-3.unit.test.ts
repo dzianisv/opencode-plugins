@@ -118,6 +118,93 @@ describe("reflection-3 unit", () => {
     assert.strictEqual(analysis.complete, false)
   })
 
+  it("treats non-human needs_user_action as agent-actionable work", () => {
+    const assessment = {
+      status: "in_progress" as const,
+      confidence: 0.4,
+      needs_user_action: ["Run tests", "Open PR and check CI"]
+    }
+    const analysis = evaluateSelfAssessment(assessment, {
+      taskSummary: "Implement feature",
+      taskType: "coding",
+      agentMode: "build",
+      humanMessages: ["Implement feature"],
+      toolsSummary: "(none)",
+      detectedSignals: [],
+      recentCommands: [],
+      pushedToDefaultBranch: false,
+      requiresTests: true,
+      requiresBuild: false,
+      requiresPR: true,
+      requiresCI: true,
+      requiresLocalTests: false,
+      requiresLocalTestsEvidence: false
+    })
+
+    assert.strictEqual(analysis.requiresHumanAction, false)
+    assert.strictEqual(analysis.shouldContinue, true)
+    assert.ok(analysis.missing.some((m: string) => m.toLowerCase().includes("run tests")))
+    assert.ok(analysis.nextActions.some((m: string) => m.toLowerCase().includes("run tests")))
+  })
+
+  it("keeps shouldContinue true when next_steps are actionable even if missing is empty", () => {
+    const assessment = {
+      status: "in_progress" as const,
+      confidence: 0.6,
+      remaining_work: [],
+      next_steps: ["Run npm test"],
+      needs_user_action: []
+    }
+    const analysis = evaluateSelfAssessment(assessment, {
+      taskSummary: "Run tests",
+      taskType: "coding",
+      agentMode: "build",
+      humanMessages: ["Run tests"],
+      toolsSummary: "(none)",
+      detectedSignals: [],
+      recentCommands: [],
+      pushedToDefaultBranch: false,
+      requiresTests: false,
+      requiresBuild: false,
+      requiresPR: false,
+      requiresCI: false,
+      requiresLocalTests: false,
+      requiresLocalTestsEvidence: false
+    })
+
+    assert.strictEqual(analysis.shouldContinue, true)
+    assert.strictEqual(analysis.requiresHumanAction, false)
+  })
+
+  it("treats human-only needs_user_action as blocking when sole work", () => {
+    const assessment = {
+      status: "waiting_for_user" as const,
+      confidence: 0.9,
+      remaining_work: [],
+      next_steps: [],
+      needs_user_action: ["Log in and approve OAuth consent"]
+    }
+    const analysis = evaluateSelfAssessment(assessment, {
+      taskSummary: "Connect OAuth",
+      taskType: "coding",
+      agentMode: "build",
+      humanMessages: ["Connect OAuth"],
+      toolsSummary: "(none)",
+      detectedSignals: [],
+      recentCommands: [],
+      pushedToDefaultBranch: false,
+      requiresTests: false,
+      requiresBuild: false,
+      requiresPR: false,
+      requiresCI: false,
+      requiresLocalTests: false,
+      requiresLocalTestsEvidence: false
+    })
+
+    assert.strictEqual(analysis.requiresHumanAction, true)
+    assert.strictEqual(analysis.shouldContinue, false)
+  })
+
   it("detects PR requirement from text", () => {
     const signals = "Create a PR for this fix"
     const context = {
@@ -286,12 +373,12 @@ describe("reflection-3 unit", () => {
     assert.strictEqual(inferTaskType("Analyze the trade-offs between approaches"), "research")
   })
 
-  it("shouldContinue is true when agent has actionable work alongside needs_user_action", () => {
+  it("shouldContinue is true when agent has actionable work alongside human-only needs_user_action", () => {
     const assessment = {
       status: "in_progress" as const,
       confidence: 0.5,
       remaining_work: ["Commit and push uncommitted changes"],
-      needs_user_action: ["Merge the PR"],
+      needs_user_action: ["Provide API key"],
       evidence: { tests: { ran: false } }
     }
     const analysis = evaluateSelfAssessment(assessment, {
@@ -343,6 +430,35 @@ describe("reflection-3 unit", () => {
 
     assert.strictEqual(analysis.requiresHumanAction, true)
     assert.strictEqual(analysis.shouldContinue, false)
+  })
+
+  it("does not treat run-test request as user action", () => {
+    const assessment = {
+      status: "in_progress" as const,
+      confidence: 0.6,
+      remaining_work: ["Run tests", "Create PR"],
+      needs_user_action: ["Run tests"]
+    }
+    const analysis = evaluateSelfAssessment(assessment, {
+      taskSummary: "Implement feature",
+      taskType: "coding",
+      agentMode: "build",
+      humanMessages: ["Implement feature"],
+      toolsSummary: "(none)",
+      detectedSignals: [],
+      recentCommands: [],
+      pushedToDefaultBranch: false,
+      requiresTests: true,
+      requiresBuild: false,
+      requiresPR: true,
+      requiresCI: true,
+      requiresLocalTests: true,
+      requiresLocalTestsEvidence: true
+    })
+
+    assert.strictEqual(analysis.requiresHumanAction, false)
+    assert.strictEqual(analysis.shouldContinue, true)
+    assert.ok(analysis.missing.length > 0)
   })
 
   it("ops tasks do not require PR or CI", () => {
@@ -897,5 +1013,196 @@ describe("buildSelfAssessmentPrompt attempt awareness", () => {
     const result = buildSelfAssessmentPrompt(baseContext, "")
     assert.ok(result.includes("repeating the same actions"))
     assert.ok(result.includes("Do not retry the same failing approach"))
+  })
+})
+
+describe("isPlanMode", () => {
+  // Helper to create a message with given role and text parts
+  function msg(role: string, ...texts: string[]) {
+    return {
+      info: { role },
+      parts: texts.map(t => ({ type: "text", text: t }))
+    }
+  }
+
+  describe("system/developer message detection", () => {
+    it("detects 'Plan Mode' in system message", () => {
+      const messages = [msg("system", "# Plan Mode - System Reminder")]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+
+    it("detects 'plan mode ACTIVE' in developer message", () => {
+      const messages = [msg("developer", "CRITICAL: plan mode ACTIVE - you are in READ-ONLY phase")]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+
+    it("detects 'read-only mode' in system message", () => {
+      const messages = [msg("system", "You are in read-only mode")]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+
+    it("detects 'READ-ONLY phase' in system message", () => {
+      const messages = [msg("system", "you are in READ-ONLY phase")]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+
+    it("detects 'plan mode is active' in system message", () => {
+      const messages = [msg("system", "plan mode is active. Do not edit files.")]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+  })
+
+  describe("system-reminder detection (OpenCode actual format)", () => {
+    it("detects default plan.txt system-reminder in user message", () => {
+      const reminder = `<system-reminder>
+ # Plan Mode - System Reminder
+ 
+ CRITICAL: Plan mode ACTIVE - you are in READ-ONLY phase. STRICTLY FORBIDDEN:
+ ANY file edits, modifications, or system changes.
+ </system-reminder>`
+      const messages = [msg("user", "Help me plan", reminder)]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+
+    it("detects experimental plan mode system-reminder", () => {
+      const reminder = `<system-reminder>
+ Plan mode is active. The user indicated that they do not want you to execute yet --
+ you MUST NOT make any edits.
+ </system-reminder>`
+      const messages = [msg("user", "Design the architecture", reminder)]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+
+    it("detects plan mode system-reminder even in older messages", () => {
+      const reminder = `<system-reminder>
+ Plan mode is active. READ-ONLY phase.
+ </system-reminder>`
+      const messages = [
+        msg("user", "First message", reminder),
+        msg("assistant", "Here is my plan..."),
+        msg("user", "Thanks, looks good")
+      ]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+
+    it("detects READ-ONLY phase in system-reminder", () => {
+      const reminder = `<system-reminder>
+ CRITICAL: you are in READ-ONLY phase. Do not modify files.
+ </system-reminder>`
+      const messages = [msg("user", "Analyze the code", reminder)]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+
+    it("does NOT trigger on system-reminder without plan mode keywords", () => {
+      const reminder = `<system-reminder>
+ You have access to these tools: read, write, edit.
+ </system-reminder>`
+      const messages = [msg("user", "Fix the bug", reminder)]
+      assert.strictEqual(isPlanMode(messages), false)
+    })
+
+    it("does NOT trigger on plan mode keywords outside system-reminder", () => {
+      // The user says "plan mode" literally -> detected via user message check, not system-reminder
+      const messages = [msg("user", "Enable plan mode")]
+      assert.strictEqual(isPlanMode(messages), true) // detected via user keyword check
+    })
+  })
+
+  describe("user message keyword detection", () => {
+    it("detects 'plan mode' in user message (case insensitive)", () => {
+      const messages = [msg("user", "Switch to Plan Mode")]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+
+    it("detects 'plan' at start of user message", () => {
+      const messages = [msg("user", "plan the architecture for the new feature")]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+
+    it("detects 'create a plan' pattern", () => {
+      const messages = [msg("user", "create a plan for the refactoring")]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+
+    it("detects 'write a plan' pattern", () => {
+      const messages = [msg("user", "write a detailed plan")]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+
+    it("does NOT detect 'plan' in the middle of unrelated text", () => {
+      const messages = [msg("user", "Fix the airplane display bug")]
+      assert.strictEqual(isPlanMode(messages), false)
+    })
+
+    it("does NOT trigger on regular coding tasks", () => {
+      const messages = [msg("user", "Fix the login bug and add tests")]
+      assert.strictEqual(isPlanMode(messages), false)
+    })
+  })
+
+  describe("reflection message handling", () => {
+    it("skips reflection messages when looking for user keywords", () => {
+      const reflectionMsg = {
+        info: { role: "user" },
+        parts: [{ type: "text", text: "## Reflection-3 Self-Assessment\nplan mode test" }]
+      }
+      const messages = [msg("user", "Fix the bug"), reflectionMsg]
+      assert.strictEqual(isPlanMode(messages), false)
+    })
+
+    it("checks non-reflection user message even after reflection message", () => {
+      const reflectionMsg = {
+        info: { role: "user" },
+        parts: [{ type: "text", text: "## Reflection-3 Self-Assessment\nsome assessment" }]
+      }
+      const messages = [msg("user", "Switch to plan mode"), reflectionMsg]
+      // Walks backward: skips reflectionMsg, finds "Switch to plan mode"
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+  })
+
+  describe("multiple text parts in a single message", () => {
+    it("checks all text parts, not just the last one", () => {
+      const messages = [{
+        info: { role: "user" },
+        parts: [
+          { type: "text", text: "plan mode please" },
+          { type: "text", text: "I want to think about this" }
+        ]
+      }]
+      assert.strictEqual(isPlanMode(messages), true)
+    })
+  })
+
+  describe("edge cases", () => {
+    it("returns false for empty messages array", () => {
+      assert.strictEqual(isPlanMode([]), false)
+    })
+
+    it("returns false for messages with no parts", () => {
+      const messages = [{ info: { role: "user" } }]
+      assert.strictEqual(isPlanMode(messages), false)
+    })
+
+    it("returns false for messages with empty text parts", () => {
+      const messages = [{ info: { role: "user" }, parts: [{ type: "text", text: "" }] }]
+      assert.strictEqual(isPlanMode(messages), false)
+    })
+
+    it("returns false for assistant-only messages", () => {
+      const messages = [msg("assistant", "Here is the plan for the feature")]
+      assert.strictEqual(isPlanMode(messages), false)
+    })
+
+    it("handles build-switch reminder (should NOT be plan mode)", () => {
+      const reminder = `<system-reminder>
+ Your operational mode has changed from plan to build.
+ You are no longer in read-only mode.
+ </system-reminder>`
+      // "no longer in read-only mode" should not match — but "plan" + system-reminder exists
+      // The regex checks for "plan mode" (case insensitive) — "from plan to build" contains "plan" but NOT "plan mode"
+      const messages = [msg("user", "Now implement it", reminder)]
+      assert.strictEqual(isPlanMode(messages), false)
+    })
   })
 })

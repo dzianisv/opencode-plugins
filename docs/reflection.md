@@ -12,7 +12,7 @@ Evaluates agent task completion and enforces workflow requirements using a self-
 - If self-assessment parsing fails, fall back to a judge session and parse a JSON verdict.
 - Write verdict signals to `.reflection/verdict_<session>.json` for TTS/Telegram gating.
 - Persist reflection analysis data to `.reflection/<session>_<timestamp>.json`.
-- Provide feedback only when incomplete; show a toast when complete or when user action is required.
+- Provide feedback only when incomplete; show a toast when complete or when only human action remains.
 
 ## Configuration
 Reflection models are configured in `~/.config/opencode/reflection.yaml`.
@@ -56,8 +56,8 @@ The agent must return JSON with evidence and status, including:
 
 ## Decision Outcomes
 - Complete -> toast success, write verdict signal.
-- Requires human action -> toast warning, no follow-up prompt.
-- Incomplete -> push feedback into the session with next steps.
+- Requires human action only -> toast warning, no follow-up prompt.
+- Incomplete or mixed (human action + agent steps) -> push feedback into the session with next steps.
 
 ## System Design Diagram
 ```mermaid

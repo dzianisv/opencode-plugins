@@ -139,6 +139,38 @@ tests:
           const verdict = JSON.parse(json[0]);
           return verdict.complete === false && (verdict.missing?.length > 0 || verdict.next_actions?.length > 0);
 
+  - description: "Agent asked user to run tests - INCOMPLETE without human action"
+    vars:
+      task: "Run the unit tests and make sure they pass"
+      tools_used: |
+        edit: {filePath: 'src/utils.ts'}
+      agent_response: |
+        I updated the implementation, but I didn't run the tests.
+        Please run `npm test` and confirm the results.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === false && verdict.requires_human_action === false;
+
+  - description: "API key required - INCOMPLETE with human action"
+    vars:
+      task: "Configure the Stripe integration"
+      tools_used: |
+        read: {filePath: 'config/stripe.ts'}
+      agent_response: |
+        I need you to provide the Stripe API key from the dashboard to continue.
+        Once you share it, I can finish wiring the integration.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === false && verdict.requires_human_action === true;
+
   - description: "Build fails - INCOMPLETE with HIGH severity"
     vars:
       task: "Add the new feature and make sure the build passes"
@@ -358,6 +390,22 @@ tests:
           // The agent COULD run these commands, it just chose not to
           // requires_human_action should be false (or undefined)
           return verdict.complete === false && !verdict.requires_human_action;
+
+  - description: "Needs user action plus agent steps - INCOMPLETE but continue"
+    vars:
+      task: "Finish the release and publish the package"
+      tools_used: |
+        bash: {command: 'npm test'}
+      agent_response: |
+        I still need to run tests and update the changelog.
+        Please approve the release in the dashboard once I finish.
+    assert:
+      - type: javascript
+        value: |
+          const json = output.match(/\{[\s\S]*\}/);
+          if (!json) return false;
+          const verdict = JSON.parse(json[0]);
+          return verdict.complete === false && verdict.requires_human_action === false;
 
   # ============================================
   # REAL SESSION PATTERNS - From production sessions
