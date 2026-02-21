@@ -32,6 +32,7 @@ First, check Tool Calls for any "running" or "pending" status. If found, return:
 - Agent shows test results with "passed" or "✓"  
 - Agent's response indicates task fulfilled: "I've added", "I've fixed", "The X now works"
 - No pending work mentioned (no "Next I will...", "Still need to...")
+- Use ONLY when there is evidence of completion. If the response is purely a plan or question, do not return "complete".
 - IMPORTANT: If the user's task requires code changes (fix, implement, add, create, build, refactor), message_completed is true, and the Tool Calls show ONLY read operations (read, glob, grep, git log/status/diff, webfetch, task/explore) with NO write operations (edit, write, bash with build/test/commit, PR creation), the task is NOT complete — classify as genuinely_stuck with stuck=true. Analyzing or recommending changes is not the same as implementing them.
 - If this rule applies, do NOT return reason "complete".
 → reason: "complete"
