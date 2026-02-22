@@ -56,8 +56,20 @@ jobs:
       - name: Create results directory
         run: mkdir -p evals/results
 
+      - name: Detect Azure secrets
+        id: azure_secrets
+        env:
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
+        run: |
+          if [ -n "$AZURE_OPENAI_API_KEY" ] && [ -n "$AZURE_OPENAI_BASE_URL" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Run Judge Evaluation
-        if: ${{ (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'judge' || github.event_name == 'pull_request') && secrets.AZURE_OPENAI_API_KEY != '' && secrets.AZURE_OPENAI_BASE_URL != '' }}
+        if: ${{ steps.azure_secrets.outputs.available == 'true' && (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'judge' || github.event_name == 'pull_request') }}
         env:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
           # Must be the base host, e.g. https://vibebrowser-dev.openai.azure.com
@@ -66,7 +78,7 @@ jobs:
         run: npm run eval:judge -- --no-progress-bar -o evals/results/judge-results.json
 
       - name: Run Stuck Detection Evaluation
-        if: ${{ (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'stuck') && secrets.AZURE_OPENAI_API_KEY != '' && secrets.AZURE_OPENAI_BASE_URL != '' }}
+        if: ${{ steps.azure_secrets.outputs.available == 'true' && (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'stuck') }}
         env:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
           AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
@@ -74,7 +86,7 @@ jobs:
         run: npm run eval:stuck -- --no-progress-bar -o evals/results/stuck-results.json
 
       - name: Run Post-Compression Evaluation
-        if: ${{ (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'compression') && secrets.AZURE_OPENAI_API_KEY != '' && secrets.AZURE_OPENAI_BASE_URL != '' }}
+        if: ${{ steps.azure_secrets.outputs.available == 'true' && (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'compression') }}
         env:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
           AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
@@ -82,7 +94,7 @@ jobs:
         run: npm run eval:compression -- --no-progress-bar -o evals/results/compression-results.json
 
       - name: Run Agent Evaluation
-        if: ${{ (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'agent') && secrets.AZURE_OPENAI_API_KEY != '' && secrets.AZURE_OPENAI_BASE_URL != '' }}
+        if: ${{ steps.azure_secrets.outputs.available == 'true' && (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'agent') }}
         env:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
           AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
