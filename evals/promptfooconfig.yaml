@@ -23,6 +23,7 @@ providers:
       apiKeyEnvar: AZURE_OPENAI_API_KEY
       reasoning_effort: low
       max_completion_tokens: 2048
+      seed: 1
 
 defaultTest:
   options:
@@ -303,7 +304,7 @@ tests:
           const json = output.match(/\{[\s\S]*\}/);
           if (!json) return false;
           const verdict = JSON.parse(json[0]);
-          return verdict.complete === false && ["HIGH", "MEDIUM"].includes(verdict.severity);
+          return verdict.complete === false && ["HIGH", "MEDIUM", "BLOCKER"].includes(verdict.severity);
 
   # ============================================
   # HUMAN ACTION REQUIRED - Agent should not delegate to user

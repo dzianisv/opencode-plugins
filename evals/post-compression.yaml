@@ -23,6 +23,7 @@ providers:
       apiKeyEnvar: AZURE_OPENAI_API_KEY
       reasoning_effort: low
       max_completion_tokens: 2048
+      seed: 1
 
 defaultTest:
   options:
