@@ -85,6 +85,16 @@ Before considering any task complete, you MUST:
 3. If tests or evals fail, fix the issue and re-run until they pass.
 4. Never commit or create a PR with failing tests.
 
+Promptfoo evals write logs and a SQLite database to a config directory. In this environment,
+`~/.promptfoo` may be read-only. Use a writable local config directory and disable WAL/telemetry:
+
+```bash
+PROMPTFOO_CONFIG_DIR=$PWD/.promptfoo \
+PROMPTFOO_DISABLE_WAL_MODE=1 \
+PROMPTFOO_DISABLE_TELEMETRY=1 \
+npm run eval:judge
+```
+
 ## References
 - `docs/reflection.md`
 - `docs/tts.md`

@@ -26,6 +26,9 @@ First, check Tool Calls for any "running" or "pending" status. If found, return:
 ### 1. WORKING (highest priority)
 - If Tool Calls contain "running" or "pending" anywhere, you MUST return:
   {"stuck": false, "reason": "working"} (do not override this later)
+- If the agent explicitly says it's waiting for a timer/backoff/rate limit to clear
+  (e.g., "waiting 30 seconds", "rate limited, retrying soon"), treat this as working
+  and set shouldNudge = false.
 
 ### 2. COMPLETE (check before waiting_for_user)
 - Agent shows success indicators: "PASS", "passed", "completed", "done", "fixed", "verified"

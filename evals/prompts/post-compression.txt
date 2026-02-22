@@ -26,6 +26,8 @@ Return this if ANY of these are true:
 - last_assistant_response is "(no response found)" or empty
 - You cannot determine what the agent was actually doing
 - Context is too degraded to make an informed decision
+- Agent is blocked on missing credentials/secrets or external access the user must provide
+  (e.g., API keys, AWS creds, OAuth consent, 2FA, account access)
 
 ### 2. TASK_COMPLETE
 Return this if:
