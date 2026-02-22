@@ -31,6 +31,10 @@ jobs:
   evaluate:
     name: Run Prompt Evaluations
     runs-on: ubuntu-latest
+    env:
+      PROMPTFOO_CONFIG_DIR: ${{ github.workspace }}/.promptfoo
+      PROMPTFOO_DISABLE_WAL_MODE: "1"
+      PROMPTFOO_DISABLE_TELEMETRY: "1"
     
     steps:
       - name: Checkout code
@@ -43,7 +47,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Create results directory
         run: mkdir -p evals/results
@@ -52,27 +56,29 @@ jobs:
         if: ${{ github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'judge' || github.event_name == 'pull_request' }}
         env:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          # Must be the base host, e.g. https://vibebrowser-dev.openai.azure.com
+          AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
+          AZURE_OPENAI_API_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
         run: npm run eval:judge -- --no-progress-bar -o evals/results/judge-results.json
-        continue-on-error: true
 
       - name: Run Stuck Detection Evaluation
         if: ${{ github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'stuck' }}
         env:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
+          AZURE_OPENAI_API_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
         run: npm run eval:stuck -- --no-progress-bar -o evals/results/stuck-results.json
-        continue-on-error: true
 
       - name: Run Post-Compression Evaluation
         if: ${{ github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'compression' }}
         env:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
+          AZURE_OPENAI_API_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
         run: npm run eval:compression -- --no-progress-bar -o evals/results/compression-results.json
-        continue-on-error: true
 
       - name: Upload Evaluation Results
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: eval-results
@@ -80,6 +86,7 @@ jobs:
           retention-days: 30
 
       - name: Generate Summary
+        if: ${{ always() }}
         run: |
           echo "## Prompt Evaluation Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
