@@ -4,10 +4,13 @@ prompts:
   - file://prompts/agent-evaluation.txt
 
 providers:
-  - id: azureopenai:chat:gpt-4.1-mini
-    label: azure-gpt-4o-mini
+  - id: azureopenai:chat:gpt-5
+    label: azure-gpt-5
     config:
-      apiHost: eastus.api.cognitive.microsoft.com
+      apiVersion: 2024-02-15-preview
+      apiKeyEnvar: AZURE_OPENAI_API_KEY
+      reasoning_effort: low
+      max_completion_tokens: 2048
 
 defaultTest:
   options:
