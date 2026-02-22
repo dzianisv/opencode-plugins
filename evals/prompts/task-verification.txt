@@ -25,6 +25,10 @@ This is a CODING/ACTION task (unless the task explicitly mentions "research only
 - LOW: cosmetic / non-impacting
 - NONE: no issues
 
+### Security Severity Override
+If the agent identifies ANY security vulnerability (e.g., plaintext passwords, auth bypass, injection risk, data exposure),
+severity MUST be "BLOCKER" and complete MUST be false.
+
 ### Coding Task Rules
 1. All explicitly requested functionality implemented
 2. Tests run and pass (if tests were requested or exist)
@@ -101,6 +105,10 @@ When human action is truly required (OAuth consent, 2FA, API key retrieval, manu
 - Set severity: MEDIUM (blocked but not the agent's fault)
 - Add specific description of what user needs to do in feedback
 - Add "User must provide [token/key/code]" to missing array
+
+If the agent still has executable steps to do (tests, builds, edits, publish) and only
+mentions a future human approval step, treat requires_human_action as false because the
+agent is not blocked yet.
 
 When agent CAN do the work but chose to give instructions instead:
 - Set complete: false
