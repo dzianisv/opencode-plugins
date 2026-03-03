@@ -122,9 +122,57 @@ When the task is determined incomplete, the plugin constructs escalating feedbac
 
 Optionally, the feedback can be **model-routed**: a lightweight LLM classifier categorizes the task as `backend`, `architecture`, `frontend`, or `default`, and the feedback prompt is sent with a model override matching the task category. This allows routing architecture problems to Claude, backend tasks to GPT, and frontend work to Gemini.
 
-### 4.8 Cross-Model Review
+### 4.8 Cross-Model Architecture
 
-When a task is assessed as complete, an optional **cross-model review** requests a different model (e.g., if Claude assessed, GPT reviews, and vice versa) to critique the verdict. This provides an independent check against model-specific blind spots.
+The logical extension of self-reflection is **cross-model review**. No matter how rigorous the prompt, a model reviewing its own work shares the same tokenizer biases, reasoning blind spots, and context window limitations as the "author" model. True reliability requires an adversarial or orthogonal review process.
+
+We are currently prototyping a `CrossReview` plugin architecture that implements a "Committee of Agents":
+
+1.  **Author (Claude-4.6-Opus):** Responsible for architecture, implementation, and initial self-assessment.
+2.  **Reviewer (GPT-5.3-Codex):** A distinct model that receives the diff and the task description. Its prompt is optimized for logic verification and edge-case detection. It does not see the Author's reasoning chain, only the output.
+3.  **Auditor (MiniMax-M2.5):** A specialized, high-context model focused purely on security (e.g., secret leaks, injection vulnerabilities) and specification compliance.
+
+#### Plugin Architecture Example
+
+The architecture relies on the `SessionManager` to spawn parallel, isolated context windows for each reviewer:
+
+```typescript
+interface ReviewSession {
+  role: 'author' | 'reviewer' | 'auditor';
+  modelId: string;
+  verdict?: ReviewVerdict;
+}
+
+class CrossReviewOrchestrator {
+  async runReview(task: Task, diff: string): Promise<Consensus> {
+    // 1. Author (already done in main session)
+    const authorVerdict = await this.getSelfAssessment(task);
+
+    // 2. Spawn Reviewer (GPT-5.3)
+    const reviewerSession = await this.sessionManager.create({
+      model: 'gpt-5.3-codex',
+      systemPrompt: PROMPTS.CODE_REVIEWER
+    });
+    const reviewerVerdict = await reviewerSession.analyze(diff);
+
+    // 3. Spawn Auditor (MiniMax-M2.5)
+    const auditorSession = await this.sessionManager.create({
+      model: 'minimax-m2.5',
+      systemPrompt: PROMPTS.SECURITY_AUDITOR
+    });
+    const auditorVerdict = await auditorSession.analyze(diff);
+
+    // 4. Synthesize
+    return this.consensusEngine.merge([
+      authorVerdict,
+      reviewerVerdict,
+      auditorVerdict
+    ]);
+  }
+}
+```
+
+If the Reviewer or Auditor dissents (e.g., Claude thinks it's done, but MiniMax finds a regex DoS vulnerability), the plugin injects the dissenting opinion back into the Author's session as a high-priority "Code Review Comment," blocking completion until resolved. This mirrors a human engineering team's workflow: code is not merged until independent reviewers approve.
 
 ### 4.9 Artifacts
 
