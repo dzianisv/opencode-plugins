@@ -30,7 +30,9 @@ Notes:
 - If all models fail or time out, reflection returns a failure verdict.
 
 Custom prompt override:
-- Place `reflection.md` in the workspace root.
+- Place `.reflection.md` in the workspace root (highest priority).
+- `reflection.md` (and `reflection.MD`) remain supported for backward compatibility.
+- Runtime precedence is: file override (`.reflection.md` > `reflection.md`/`reflection.MD`) > `set_reflection` tool guidance > default generated reflection prompt.
 
 Debug logging:
 - `REFLECTION_DEBUG=1`
@@ -53,6 +55,17 @@ The agent must return JSON with evidence and status, including:
 - `pr.created`, `pr.url`, `pr.ci_status`, `pr.checked`
 - `remaining_work`, `next_steps`, `needs_user_action`
 - `stuck`, `alternate_approach`
+
+## `set_reflection` tool
+
+Use `set_reflection` for difficult/complex tasks to provide reflection guidance with a concrete plan/checklist (for example: required evidence, verification steps, and done criteria).
+
+- The guidance is applied at runtime when no file override exists.
+- The same guidance influences:
+  - self-assessment prompt generation
+  - judge fallback analysis prompt
+  - cross-review prompt context
+- Clear tool guidance by calling `set_reflection` with `clear: true`.
 
 ## Decision Outcomes
 - Complete -> toast success, write verdict signal.

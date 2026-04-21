@@ -158,6 +158,37 @@ Rules:
 - Do not retry the same failing approach more than twice — try something different or report stuck.`
 }
 
+export function buildToolReflectionGuidanceSection(toolReflectionPrompt: string | null): string {
+  if (!toolReflectionPrompt) return ""
+  return `\n## Tool Reflection Guidance\n${toolReflectionPrompt.slice(0, 4000)}\n`
+}
+
+export function resolveReflectionPromptPrecedence(
+  filePrompt: string | null,
+  toolReflectionPrompt: string | null,
+  defaultPrompt: string
+): { prompt: string; source: "file" | "tool" | "default"; effectiveToolReflectionPrompt: string | null } {
+  if (filePrompt) {
+    return {
+      prompt: filePrompt,
+      source: "file",
+      effectiveToolReflectionPrompt: null
+    }
+  }
+  if (toolReflectionPrompt) {
+    return {
+      prompt: `${defaultPrompt}${buildToolReflectionGuidanceSection(toolReflectionPrompt)}`,
+      source: "tool",
+      effectiveToolReflectionPrompt: toolReflectionPrompt
+    }
+  }
+  return {
+    prompt: defaultPrompt,
+    source: "default",
+    effectiveToolReflectionPrompt: null
+  }
+}
+
 export function parseSelfAssessmentJson(text: string | null | undefined): SelfAssessment | null {
   if (typeof text !== "string") return null
   const jsonMatch = text.match(/\{[\s\S]*\}/)
