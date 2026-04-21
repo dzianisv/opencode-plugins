@@ -193,7 +193,7 @@ async function loadPreferredModelSpec(directory: string): Promise<string | null>
 }
 
 async function loadReflectionPrompt(directory: string): Promise<string | null> {
-  const candidates = ["reflection.md", "reflection.MD"]
+  const candidates = [".reflection.md", ".reflection.MD", "reflection.md", "reflection.MD"]
   for (const name of candidates) {
     try {
       const reflectionPath = join(directory, name)
@@ -203,6 +203,37 @@ async function loadReflectionPrompt(directory: string): Promise<string | null> {
     } catch {}
   }
   return null
+}
+
+function buildToolReflectionGuidanceSection(toolReflectionPrompt: string | null): string {
+  if (!toolReflectionPrompt) return ""
+  return `\n## Tool Reflection Guidance\n${toolReflectionPrompt.slice(0, 4000)}\n`
+}
+
+function resolveReflectionPrompt(
+  filePrompt: string | null,
+  toolReflectionPrompt: string | null,
+  defaultPrompt: string
+): { prompt: string; source: "file" | "tool" | "default"; effectiveToolReflectionPrompt: string | null } {
+  if (filePrompt) {
+    return {
+      prompt: filePrompt,
+      source: "file",
+      effectiveToolReflectionPrompt: null
+    }
+  }
+  if (toolReflectionPrompt) {
+    return {
+      prompt: `${defaultPrompt}${buildToolReflectionGuidanceSection(toolReflectionPrompt)}`,
+      source: "tool",
+      effectiveToolReflectionPrompt: toolReflectionPrompt
+    }
+  }
+  return {
+    prompt: defaultPrompt,
+    source: "default",
+    effectiveToolReflectionPrompt: null
+  }
 }
 
 async function getAgentsFile(directory: string): Promise<string> {
@@ -1019,7 +1050,13 @@ function extractLastAssistantText(messages: any[]): string {
   return ""
 }
 
-function buildSelfAssessmentPrompt(context: TaskContext, agents: string, lastAssistantText?: string, attemptCount?: number): string {
+function buildSelfAssessmentPrompt(
+  context: TaskContext,
+  agents: string,
+  lastAssistantText?: string,
+  attemptCount?: number,
+  toolReflectionPrompt?: string | null
+): string {
   const safeContext = {
     ...context,
     detectedSignals: Array.isArray(context.detectedSignals) ? context.detectedSignals : []
@@ -1043,6 +1080,7 @@ function buildSelfAssessmentPrompt(context: TaskContext, agents: string, lastAss
   const attemptSection = currentAttempt > 0
     ? `\n## Reflection History\n- This is reflection attempt ${currentAttempt + 1}/${MAX_ATTEMPTS} for this task.\n- Previous reflections found the task incomplete.\n- If you are repeating the same actions without progress, set "stuck": true and explain what is blocking you.\n`
     : ""
+  const toolGuidanceSection = buildToolReflectionGuidanceSection(toolReflectionPrompt || null)
 
   return `SELF-ASSESS REFLECTION-3
 
@@ -1059,6 +1097,7 @@ Analyze the task context, the agent's last response, and the tool signals to det
 ## Tool Commands Run
 ${safeContext.toolsSummary}
 ${assistantSection}${attemptSection}
+${toolGuidanceSection}
 ${agents ? `## Project Instructions\n${agents.slice(0, 800)}\n\n` : ""}Return JSON only:
 {
   "task_summary": "brief description of what was done",
@@ -1310,7 +1349,8 @@ async function analyzeSelfAssessmentWithLLM(
   directory: string,
   context: TaskContext,
   selfAssessment: string,
-  judgeSessionIds: Set<string>
+  judgeSessionIds: Set<string>,
+  toolReflectionPrompt?: string | null
 ): Promise<ReflectionAnalysis | null> {
   const modelList = await loadReflectionModelList()
   const preferredModel = await loadPreferredModelSpec(directory)
@@ -1342,6 +1382,7 @@ ${context.toolsSummary}
 
 ## Agent Self-Assessment
 ${selfAssessment.slice(0, 4000)}
+${buildToolReflectionGuidanceSection(toolReflectionPrompt || null)}
 
 Rules:
 - If tests are required, agent must confirm tests ran AFTER latest changes and passed.
@@ -1434,7 +1475,8 @@ async function runCrossModelReview(
   analysis: ReflectionAnalysis,
   lastAssistantText: string,
   assessmentModelSpec: string | null,
-  judgeSessionIds: Set<string>
+  judgeSessionIds: Set<string>,
+  toolReflectionPrompt?: string | null
 ): Promise<{ modelSpec: string; response: string } | null> {
   const crossModelSpec = getCrossReviewModelSpec(assessmentModelSpec)
   if (!crossModelSpec) return null
@@ -1475,6 +1517,7 @@ ${lastAssistantText.slice(0, 2000)}
 
 ## Self-Assessment
 ${selfAssessment.slice(0, 3000)}
+${buildToolReflectionGuidanceSection(toolReflectionPrompt || null)}
 
 ## Reflection Analysis Verdict
 ${JSON.stringify(analysis, null, 2)}
@@ -1512,6 +1555,51 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
   const activeReflections = new Set<string>()
   const recentlyAbortedSessions = new Map<string, number>()
   const attempts = new Map<string, number>()
+  let toolReflectionPrompt: string | null = null
+
+  const setReflectionDescription = "Use this for difficult or complex tasks to set reflection guidance with a plan/checklist. Provide concrete steps and verification checks so reflection can validate completion quality and catch missed work."
+  const executeSetReflection = async (args: { guidance?: string; clear?: boolean }) => {
+    if (args.clear) {
+      toolReflectionPrompt = null
+      return "Cleared tool-provided reflection guidance. Reflection now uses file override (.reflection.md/reflection.md) or default prompt."
+    }
+    const guidance = (args.guidance || "").trim()
+    if (!guidance) {
+      if (!toolReflectionPrompt) {
+        return "No tool-provided reflection guidance is set."
+      }
+      return `Current tool-provided reflection guidance:\n${toolReflectionPrompt}`
+    }
+    toolReflectionPrompt = guidance
+    return "Set tool-provided reflection guidance for this runtime. It will be used when no .reflection.md/reflection.md file override exists."
+  }
+
+  let setReflectionTool: any = null
+  try {
+    const { tool } = await import("@opencode-ai/plugin/tool")
+    setReflectionTool = tool({
+      description: setReflectionDescription,
+      args: {
+        guidance: tool.schema.string().optional().describe("Reflection guidance. Include a concise plan/checklist for complex work and evidence expectations."),
+        clear: tool.schema.boolean().optional().describe("Set true to clear the current tool-provided reflection guidance.")
+      },
+      execute: executeSetReflection
+    })
+  } catch {
+    try {
+      const { z } = await import("zod")
+      setReflectionTool = {
+        description: setReflectionDescription,
+        args: {
+          guidance: z.string().optional().describe("Reflection guidance. Include a concise plan/checklist for complex work and evidence expectations."),
+          clear: z.boolean().optional().describe("Set true to clear the current tool-provided reflection guidance.")
+        },
+        execute: executeSetReflection
+      }
+    } catch {
+      setReflectionTool = null
+    }
+  }
 
   async function runReflection(sessionId: string): Promise<void> {
       debug("runReflection called for session:", sessionId.slice(0, 8))
@@ -1556,10 +1644,18 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         const customPrompt = await loadReflectionPrompt(directory)
         const agents = await getAgentsFile(directory)
         const currentAttemptCount = attempts.get(attemptKey) || 0
-        const reflectionPrompt = customPrompt || buildSelfAssessmentPrompt(context, agents, lastAssistantText, currentAttemptCount)
+        const defaultReflectionPrompt = buildSelfAssessmentPrompt(
+          context,
+          agents,
+          lastAssistantText,
+          currentAttemptCount
+        )
+        const resolvedPrompt = resolveReflectionPrompt(customPrompt, toolReflectionPrompt, defaultReflectionPrompt)
+        const reflectionPrompt = resolvedPrompt.prompt
+        const effectiveToolReflectionPrompt = resolvedPrompt.effectiveToolReflectionPrompt
 
         await showToast(client, directory, "Requesting reflection self-assessment...", "info")
-        debug("Requesting reflection self-assessment")
+        debug("Requesting reflection self-assessment (source:", resolvedPrompt.source, ")")
 
         // Issue #98: Run self-assessment in a separate ephemeral session instead
         // of prompting the active agent session. Asking the active session to
@@ -1657,7 +1753,14 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         if (parsedAssessment) {
           analysis = evaluateSelfAssessment(parsedAssessment, context)
         } else {
-          analysis = await analyzeSelfAssessmentWithLLM(client, directory, context, selfAssessment, judgeSessionIds)
+          analysis = await analyzeSelfAssessmentWithLLM(
+            client,
+            directory,
+            context,
+            selfAssessment,
+            judgeSessionIds,
+            effectiveToolReflectionPrompt
+          )
         }
 
         if (!analysis) {
@@ -1680,7 +1783,8 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
             analysis,
             lastAssistantText,
             assessmentModelSpec,
-            judgeSessionIds
+            judgeSessionIds,
+            effectiveToolReflectionPrompt
           )
           if (crossReview) {
             debug("Cross-model review completed by", crossReview.modelSpec)
@@ -1809,6 +1913,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
     config: async (_config) => {
       return
     },
+    tool: setReflectionTool ? { set_reflection: setReflectionTool } : undefined,
     event: async ({ event }: { event: { type: string; properties?: any } }) => {
       debug("event received:", event.type)
       if (event.type === "session.error") {

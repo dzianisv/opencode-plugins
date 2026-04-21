@@ -13,6 +13,8 @@ import {
   getGitHubCopilotModelForRouting,
   detectActionLoop,
   isPlanMode,
+  buildToolReflectionGuidanceSection,
+  resolveReflectionPromptPrecedence,
   RoutingConfig
 } from "../reflection-3.test-helpers.ts"
 import { detectPlanningLoop } from "../reflection-3.ts"
@@ -55,6 +57,43 @@ describe("reflection-3 unit", () => {
     assert.ok(prompt.includes("Local tests required"))
     assert.ok(prompt.includes("Direct pushes"))
     assert.ok(prompt.includes("Provide a PR URL"))
+  })
+
+  it("includes tool reflection guidance in resolved reflection prompt", () => {
+    const basePrompt = buildSelfAssessmentPrompt({
+      taskSummary: "Implement feature",
+      taskType: "coding",
+      agentMode: "build",
+      humanMessages: ["Implement feature"],
+      toolsSummary: "(none)",
+      detectedSignals: [],
+      recentCommands: [],
+      pushedToDefaultBranch: false,
+      requiresTests: true,
+      requiresBuild: false,
+      requiresPR: false,
+      requiresCI: false,
+      requiresLocalTests: true,
+      requiresLocalTestsEvidence: true
+    }, "")
+    const guidance = "Reflection checklist:\n1. Verify changed files\n2. Verify tests after changes"
+    const resolved = resolveReflectionPromptPrecedence(null, guidance, basePrompt)
+    assert.strictEqual(resolved.source, "tool")
+    assert.ok(resolved.prompt.includes("## Tool Reflection Guidance"))
+    assert.ok(resolved.prompt.includes("Reflection checklist"))
+    assert.ok(buildToolReflectionGuidanceSection(guidance).includes("Verify tests after changes"))
+  })
+
+  it("applies precedence: file override beats tool reflection override", () => {
+    const resolved = resolveReflectionPromptPrecedence(
+      "FILE REFLECTION OVERRIDE",
+      "TOOL REFLECTION OVERRIDE",
+      "DEFAULT REFLECTION PROMPT"
+    )
+    assert.strictEqual(resolved.source, "file")
+    assert.strictEqual(resolved.prompt, "FILE REFLECTION OVERRIDE")
+    assert.strictEqual(resolved.effectiveToolReflectionPrompt, null)
+    assert.ok(!resolved.prompt.includes("TOOL REFLECTION OVERRIDE"))
   })
 
   it("evaluates missing tests and build requirements", () => {
