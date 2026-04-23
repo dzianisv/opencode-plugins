@@ -210,7 +210,7 @@ function buildToolReflectionGuidanceSection(toolReflectionPrompt: string | null)
   return `\n## Tool Reflection Guidance\n${toolReflectionPrompt.slice(0, 4000)}\n`
 }
 
-function resolveReflectionPrompt(
+function resolveReflectionPromptPrecedence(
   filePrompt: string | null,
   toolReflectionPrompt: string | null,
   defaultPrompt: string
@@ -1054,8 +1054,7 @@ function buildSelfAssessmentPrompt(
   context: TaskContext,
   agents: string,
   lastAssistantText?: string,
-  attemptCount?: number,
-  toolReflectionPrompt?: string | null
+  attemptCount?: number
 ): string {
   const safeContext = {
     ...context,
@@ -1080,8 +1079,6 @@ function buildSelfAssessmentPrompt(
   const attemptSection = currentAttempt > 0
     ? `\n## Reflection History\n- This is reflection attempt ${currentAttempt + 1}/${MAX_ATTEMPTS} for this task.\n- Previous reflections found the task incomplete.\n- If you are repeating the same actions without progress, set "stuck": true and explain what is blocking you.\n`
     : ""
-  const toolGuidanceSection = buildToolReflectionGuidanceSection(toolReflectionPrompt || null)
-
   return `SELF-ASSESS REFLECTION-3
 
 You are evaluating an agent's work against workflow requirements.
@@ -1097,7 +1094,6 @@ Analyze the task context, the agent's last response, and the tool signals to det
 ## Tool Commands Run
 ${safeContext.toolsSummary}
 ${assistantSection}${attemptSection}
-${toolGuidanceSection}
 ${agents ? `## Project Instructions\n${agents.slice(0, 800)}\n\n` : ""}Return JSON only:
 {
   "task_summary": "brief description of what was done",
@@ -1571,7 +1567,9 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
       return `Current tool-provided reflection guidance:\n${toolReflectionPrompt}`
     }
     toolReflectionPrompt = guidance
-    return "Set tool-provided reflection guidance for this runtime. It will be used when no .reflection.md/reflection.md file override exists."
+    const msg = "Set tool-provided reflection guidance for this runtime. It will be used when no .reflection.md/reflection.md file override exists."
+    if (guidance.length > 4000) return `${msg}\n\nNote: guidance exceeds 4000 chars and will be truncated when applied to reflection prompts.`
+    return msg
   }
 
   let setReflectionTool: any = null
@@ -1650,7 +1648,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           lastAssistantText,
           currentAttemptCount
         )
-        const resolvedPrompt = resolveReflectionPrompt(customPrompt, toolReflectionPrompt, defaultReflectionPrompt)
+        const resolvedPrompt = resolveReflectionPromptPrecedence(customPrompt, toolReflectionPrompt, defaultReflectionPrompt)
         const reflectionPrompt = resolvedPrompt.prompt
         const effectiveToolReflectionPrompt = resolvedPrompt.effectiveToolReflectionPrompt
 
