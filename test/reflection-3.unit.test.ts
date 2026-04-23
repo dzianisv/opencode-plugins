@@ -96,6 +96,39 @@ describe("reflection-3 unit", () => {
     assert.ok(!resolved.prompt.includes("TOOL REFLECTION OVERRIDE"))
   })
 
+  describe("set_reflection tool helpers", () => {
+    it("buildToolReflectionGuidanceSection(null) => empty string", () => {
+      assert.strictEqual(buildToolReflectionGuidanceSection(null), "")
+    })
+
+    it("buildToolReflectionGuidanceSection(\"\") => empty string", () => {
+      assert.strictEqual(buildToolReflectionGuidanceSection(""), "")
+    })
+
+    it("wraps guidance in section header", () => {
+      const section = buildToolReflectionGuidanceSection("Check tests and CI")
+      assert.ok(section.startsWith("\n## Tool Reflection Guidance\n"))
+      assert.ok(section.includes("Check tests and CI"))
+    })
+
+    it("truncates guidance at 4000 chars", () => {
+      const longGuidance = "x".repeat(5000)
+      const section = buildToolReflectionGuidanceSection(longGuidance)
+      assert.ok(section.startsWith("\n## Tool Reflection Guidance\n"))
+      assert.ok(section.endsWith("\n"))
+      const body = section.replace("\n## Tool Reflection Guidance\n", "").slice(0, -1)
+      assert.strictEqual(body.length, 4000)
+      assert.strictEqual(body, "x".repeat(4000))
+    })
+
+    it("resolveReflectionPromptPrecedence returns default when no file/tool guidance", () => {
+      const resolved = resolveReflectionPromptPrecedence(null, null, "DEFAULT REFLECTION PROMPT")
+      assert.strictEqual(resolved.source, "default")
+      assert.strictEqual(resolved.prompt, "DEFAULT REFLECTION PROMPT")
+      assert.strictEqual(resolved.effectiveToolReflectionPrompt, null)
+    })
+  })
+
   it("evaluates missing tests and build requirements", () => {
     const assessment = {
       status: "complete" as const,
