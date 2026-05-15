@@ -31,7 +31,8 @@
     "eval:agent": "node scripts/run-promptfoo.mjs -c agent-evaluation.yaml",
     "eval:e2e": "npx tsx eval.ts",
     "eval:view": "npx promptfoo view --latest",
-    "worktree": "bun scripts/opencode-worktree.ts"
+    "worktree": "bun scripts/opencode-worktree.ts",
+    "install:auto-review": "mkdir -p ~/.config/opencode/plugin && cp packages/auto-review/auto-review.ts ~/.config/opencode/plugin/ && cd ~/.config/opencode && bun install"
   },
   "keywords": [
     "opencode",

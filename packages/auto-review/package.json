@@ -1,0 +1,22 @@
+{
+  "name": "opencode-auto-review",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "OpenCode plugin that automatically reviews work after task completion using a different model",
+  "main": "auto-review.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./server": "./index.ts"
+  },
+  "keywords": ["opencode", "plugin", "auto-review", "code-review", "ai"],
+  "author": "dzianisv",
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.1.48",
+    "@opencode-ai/sdk": "latest",
+    "typescript": "^5.0.0"
+  }
+}
