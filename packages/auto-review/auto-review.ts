@@ -1,11 +1,36 @@
-import { appendFile, mkdir } from "fs/promises"
-import { join } from "path"
+import { appendFile, mkdir, readFile } from "fs/promises"
+import { join, dirname } from "path"
+import { homedir } from "os"
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
+
+// Config file: ~/.config/opencode/plugin/auto-review.json
+// {
+//   "model": "github-copilot/gpt-5.5",
+//   "reasoning": "xhigh",
+//   "minToolCalls": 3,
+//   "debug": true
+// }
+type AutoReviewConfig = {
+  model?: string
+  reasoning?: string
+  minToolCalls?: number
+  debug?: boolean
+}
+
+async function loadConfig(): Promise<AutoReviewConfig> {
+  const configPath = join(homedir(), ".config", "opencode", "plugin", "auto-review.json")
+  try {
+    const raw = await readFile(configPath, "utf-8")
+    return JSON.parse(raw) as AutoReviewConfig
+  } catch {
+    return {}
+  }
+}
+
+const configPromise = loadConfig()
 
 const ABORT_COOLDOWN = 10_000
 const ABORT_RACE_DELAY = 1_500
-const MIN_TOOL_CALLS = 3
-const AUTO_REVIEW_DEBUG = process.env.AUTO_REVIEW_DEBUG === "1"
 
 const REVIEW_MARKERS = [
   "AUTO-REVIEW",
@@ -53,8 +78,8 @@ type ModelSpec = {
 
 let debug: (...args: unknown[]) => void = () => {}
 
-function initDebugLogger(directory: string): void {
-  if (!AUTO_REVIEW_DEBUG) return
+function initDebugLogger(directory: string, enabled: boolean): void {
+  if (!enabled) return
   const logDir = join(directory, ".reflection")
   const logPath = join(logDir, "debug.log")
   let dirReady = false
@@ -123,30 +148,42 @@ function resolveWorkModel(lastAssistant: SessionMessage | undefined): ModelSpec 
   return null
 }
 
-function inferReviewModels(workModel: ModelSpec | null): ModelSpec[] {
+function inferReviewModels(workModel: ModelSpec | null, availableModels: ModelSpec[]): ModelSpec[] {
   const workSpec = formatModelSpec(workModel).toLowerCase()
-  const baseCandidates = [
-    "github-copilot/claude-opus-4.6",
-    "github-copilot/gpt-5.2-codex",
-    "github-copilot/claude-sonnet-4.6",
-  ]
-  const preferred =
-    workModel && workModel.modelID.toLowerCase().includes("claude")
-      ? "github-copilot/gpt-5.2-codex"
-      : workModel && workModel.modelID.toLowerCase().includes("gpt")
-        ? "github-copilot/claude-opus-4.6"
-        : workModel &&
-            (workModel.modelID.toLowerCase().includes("gemini") ||
-              workModel.modelID.toLowerCase().includes("llama") ||
-              workModel.modelID.toLowerCase().includes("deepseek"))
-          ? "github-copilot/claude-opus-4.6"
-          : null
-  const orderedCandidates = preferred ? [preferred, ...baseCandidates] : baseCandidates
 
-  return orderedCandidates
-    .filter((candidate, index, all) => candidate.toLowerCase() !== workSpec && all.indexOf(candidate) === index)
-    .map((candidate) => parseModelSpec(candidate))
-    .filter((candidate): candidate is ModelSpec => Boolean(candidate))
+  // Prefer a different model family for cross-review
+  const isClaude = (m: ModelSpec) => m.modelID.toLowerCase().includes("claude")
+  const isGpt = (m: ModelSpec) => m.modelID.toLowerCase().includes("gpt") || m.modelID.toLowerCase().includes("codex")
+  const isGemini = (m: ModelSpec) => m.modelID.toLowerCase().includes("gemini")
+
+  // Sort candidates: prefer different family, then by capability (opus > sonnet > others)
+  const candidates = availableModels
+    .filter((m) => formatModelSpec(m).toLowerCase() !== workSpec)
+    .filter((m) => !m.modelID.toLowerCase().includes("haiku") && !m.modelID.toLowerCase().includes("flash"))
+
+  const differentFamily = candidates.filter((m) => {
+    if (workModel && isClaude(workModel)) return !isClaude(m)
+    if (workModel && isGpt(workModel)) return !isGpt(m)
+    if (workModel && isGemini(workModel)) return !isGemini(m)
+    return true
+  })
+
+  const sameFamily = candidates.filter((m) => !differentFamily.includes(m))
+
+  // Prefer opus/strong models first
+  const rank = (m: ModelSpec) => {
+    const id = m.modelID.toLowerCase()
+    if (id.includes("opus")) return 0
+    if (id.includes("codex")) return 1
+    if (id.includes("sonnet")) return 2
+    if (id.includes("pro")) return 3
+    return 4
+  }
+
+  differentFamily.sort((a, b) => rank(a) - rank(b))
+  sameFamily.sort((a, b) => rank(a) - rank(b))
+
+  return [...differentFamily, ...sameFamily]
 }
 
 function extractText(msg: SessionMessage): string {
@@ -208,7 +245,13 @@ function getMessageSignature(msg: SessionMessage | undefined): string {
 }
 
 export const AutoReviewPlugin: Plugin = async ({ client, directory }: PluginInput) => {
-  initDebugLogger(directory)
+  const config = await configPromise
+  const REVIEW_MODEL = config.model || process.env.AUTO_REVIEW_MODEL || ""
+  const REVIEW_REASONING = config.reasoning || process.env.AUTO_REVIEW_REASONING || ""
+  const MIN_TOOL_CALLS = config.minToolCalls ?? 3
+  const DEBUG_ENABLED = config.debug ?? process.env.AUTO_REVIEW_DEBUG === "1"
+
+  if (DEBUG_ENABLED) initDebugLogger(directory, true)
 
   const active = new Set<string>()
   const reviewSessionIDs = new Set<string>()
@@ -280,7 +323,38 @@ export const AutoReviewPlugin: Plugin = async ({ client, directory }: PluginInpu
       }
 
       const workModel = resolveWorkModel(lastAssistant)
-      const reviewModels = inferReviewModels(workModel)
+
+      // Fetch available models dynamically from the SDK
+      let availableModels: ModelSpec[] = []
+      try {
+        const { data } = await client.config.providers({ query: { directory: sessionDirectory } })
+        const providersData = data as { providers?: Array<{ id: string; models: Record<string, { id: string }> }> } | undefined
+        if (providersData?.providers) {
+          for (const provider of providersData.providers) {
+            for (const modelKey of Object.keys(provider.models || {})) {
+              const model = provider.models[modelKey]
+              if (model?.id) {
+                availableModels.push({ providerID: provider.id, modelID: model.id })
+              }
+            }
+          }
+        }
+      } catch (error) {
+        debug("config.providers failed, using empty list", error)
+      }
+
+      // If model is configured, use it exclusively (format: "provider/model")
+      let reviewModels: ModelSpec[]
+      if (REVIEW_MODEL) {
+        const forced = parseModelSpec(REVIEW_MODEL)
+        reviewModels = forced ? [forced] : []
+      } else {
+        reviewModels = inferReviewModels(workModel, availableModels)
+      }
+      if (reviewModels.length === 0) {
+        debug("No review model candidates found", parentSessionID)
+        return
+      }
       const workModelText = formatModelSpec(workModel) || "unknown"
       const reviewSignature = lastUserSig || getMessageSignature(lastAssistant)
 
@@ -308,6 +382,7 @@ export const AutoReviewPlugin: Plugin = async ({ client, directory }: PluginInpu
             query: { directory: sessionDirectory },
             body: {
               model: reviewModel,
+              ...(REVIEW_REASONING ? { variant: REVIEW_REASONING } : {}),
               parts: [{ type: "text", text: reviewPrompt }],
             },
           })

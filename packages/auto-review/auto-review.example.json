@@ -1,0 +1,6 @@
+{
+  "model": "github-copilot/gpt-5.5",
+  "reasoning": "xhigh",
+  "minToolCalls": 3,
+  "debug": true
+}

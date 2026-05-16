@@ -30,6 +30,7 @@ This plugin adds a **judge layer** that automatically evaluates task completion 
 | Plugin | Description |
 |--------|-------------|
 | **reflection-3.ts** | Judge layer that verifies task completion and forces agent to continue if incomplete |
+| **[auto-review](./packages/auto-review/)** | Cross-model review — spawns a child session with a different model to validate completed work |
 | **tts.ts** | Text-to-speech + Telegram notifications with two-way communication |
 | **worktree-status.ts** | Git worktree status tool for checking dirty state, branch, and active sessions |
 
@@ -102,6 +103,43 @@ cd ~/.config/opencode && \
 ```
 
 **Note:** `telegram.ts` is a helper module (not a standalone plugin) that provides Telegram notification functions used by `tts.ts`.
+
+---
+
+## Auto-Review Plugin
+
+Cross-model review that spawns a child session with a **different AI model** to validate completed work. Unlike reflection (which uses the same model for self-assessment), auto-review provides independent verification from a different model family.
+
+### Install
+
+```bash
+cp packages/auto-review/auto-review.ts ~/.config/opencode/plugin/
+cp packages/auto-review/auto-review.example.json ~/.config/opencode/plugin/auto-review.json
+```
+
+### Configure
+
+Edit `~/.config/opencode/plugin/auto-review.json`:
+
+```json
+{
+  "model": "github-copilot/gpt-5.5",
+  "reasoning": "xhigh",
+  "minToolCalls": 3,
+  "debug": true
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `model` | *(auto-select)* | Review model, e.g. `github-copilot/gpt-5.5`, `anthropic/claude-opus-4.6` |
+| `reasoning` | *(none)* | Reasoning effort: `low`, `medium`, `high`, `xhigh` |
+| `minToolCalls` | `3` | Minimum tool calls to trigger review |
+| `debug` | `false` | Log to `.reflection/debug.log` |
+
+When `model` is not set, it auto-selects a different model family from the one that did the work.
+
+See [packages/auto-review/README.md](./packages/auto-review/README.md) for full docs.
 
 ---
 
