@@ -51,6 +51,28 @@ This downloads all plugins to `~/.config/opencode/plugin/`, installs dependencie
 
 **Prerequisites:** [bun](https://bun.sh) (install with `curl -fsSL https://bun.sh/install | bash`)
 
+## Agent Skills
+
+This repo also provides [Agent Skills](https://agentskills.io) — reusable capabilities for AI coding agents.
+
+[![skills.sh](https://skills.sh/b/dzianisv/opencode-plugins)](https://skills.sh/dzianisv/opencode-plugins)
+
+### Install skills
+
+```bash
+npx skills add dzianisv/opencode-plugins
+```
+
+### Available skills
+
+| Skill | Description |
+|-------|-------------|
+| **opencode-session-db** | Read OpenCode sessions and messages directly from the SQLite database |
+| **agent-evaluation** | Evaluate GenAI agent task execution using LLM-as-judge |
+| **feature-workflow** | Standard workflow for developing features from planning through PR merge |
+| **plugin-testing** | Verify plugin spec requirements with actionable test cases |
+| **readiness-check** | Verify all OpenCode plugin services are healthy and ready |
+
 <details>
 <summary>Manual install</summary>
 

@@ -1,4 +1,4 @@
-name: Validate Skills
+name: Skills
 
 on:
   push:
@@ -27,7 +27,6 @@ jobs:
               continue
             fi
             name=$(basename "$dir")
-            # Check frontmatter
             if ! head -20 "$skill_file" | grep -q "^name:"; then
               echo "❌ $skill_file missing 'name:' in frontmatter"
               errors=$((errors + 1))
@@ -36,7 +35,6 @@ jobs:
               echo "❌ $skill_file missing 'description:' in frontmatter"
               errors=$((errors + 1))
             fi
-            # Check name matches directory
             fm_name=$(grep "^name:" "$skill_file" | head -1 | sed 's/^name: *//')
             if [ "$fm_name" != "$name" ]; then
               echo "❌ $skill_file: name '$fm_name' doesn't match directory '$name'"
@@ -54,3 +52,17 @@ jobs:
           find skills -name "*.sh" -type f | while read script; do
             bash -n "$script" && echo "✓ $script" || exit 1
           done
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Publish skills to skills.sh
+        run: npx -y skills add dzianisv/opencode-plugins -y -g
