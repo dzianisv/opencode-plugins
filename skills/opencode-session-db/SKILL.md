@@ -177,6 +177,101 @@ Use `scripts/query.sh` for quick lookups:
 ./scripts/query.sh stats <session-id>
 ```
 
+## Full-Text Search (FTS5)
+
+The `sqlite3` CLI ships with FTS5 enabled by default. Since we open the DB read-only, use a **temp virtual table** to build an in-memory FTS index at query time.
+
+### CLI Required
+
+Just `sqlite3` (version 3.9+ with FTS5 compiled in — verify with):
+```bash
+sqlite3 :memory: "CREATE VIRTUAL TABLE t USING fts5(x); SELECT 'fts5 ok';"
+```
+
+### Search message/part text content
+
+```bash
+DB=~/.local/share/opencode/opencode.db
+QUERY="hubspot token expired"
+
+sqlite3 -readonly "$DB" "
+-- Build temp FTS index from part text
+CREATE VIRTUAL TABLE temp.search USING fts5(session_id, part_id, content);
+INSERT INTO temp.search(session_id, part_id, content)
+  SELECT p.session_id, p.id, json_extract(p.data, '$.text')
+  FROM part p
+  WHERE json_extract(p.data, '$.type') IN ('text', 'reasoning')
+    AND json_extract(p.data, '$.text') IS NOT NULL;
+
+-- Search
+SELECT s.title, search.session_id, snippet(search, 2, '>>>', '<<<', '...', 40) as match
+FROM temp.search search
+JOIN session s ON s.id = search.session_id
+WHERE search MATCH '$QUERY'
+ORDER BY rank
+LIMIT 20;
+"
+```
+
+### Search with date filter
+
+```bash
+sqlite3 -readonly "$DB" "
+CREATE VIRTUAL TABLE temp.search USING fts5(session_id, part_id, content);
+INSERT INTO temp.search(session_id, part_id, content)
+  SELECT p.session_id, p.id, json_extract(p.data, '$.text')
+  FROM part p
+  JOIN message m ON m.id = p.message_id
+  WHERE json_extract(p.data, '$.type') = 'text'
+    AND json_extract(p.data, '$.text') IS NOT NULL
+    AND m.time_created > (strftime('%s','2025-05-01') * 1000);
+
+SELECT s.title, search.session_id, snippet(search, 2, '>>>', '<<<', '...', 40) as match
+FROM temp.search search
+JOIN session s ON s.id = search.session_id
+WHERE search MATCH 'invalid AND token'
+ORDER BY rank LIMIT 10;
+"
+```
+
+### Search tool outputs
+
+```bash
+sqlite3 -readonly "$DB" "
+CREATE VIRTUAL TABLE temp.tools USING fts5(session_id, part_id, tool_name, output);
+INSERT INTO temp.tools(session_id, part_id, tool_name, output)
+  SELECT p.session_id, p.id,
+         json_extract(p.data, '$.tool'),
+         json_extract(p.data, '$.output')
+  FROM part p
+  WHERE json_extract(p.data, '$.type') = 'tool'
+    AND json_extract(p.data, '$.output') IS NOT NULL;
+
+SELECT t.tool_name, s.title, snippet(tools, 3, '>>>', '<<<', '...', 30) as match
+FROM temp.tools tools
+JOIN session s ON s.id = tools.session_id
+WHERE tools MATCH 'error OR timeout'
+ORDER BY rank LIMIT 20;
+"
+```
+
+### FTS5 query syntax quick reference
+
+| Pattern | Meaning |
+|---------|---------|
+| `hello world` | Both terms (implicit AND) |
+| `hello OR world` | Either term |
+| `"exact phrase"` | Phrase match |
+| `hello NOT world` | Exclude term |
+| `hel*` | Prefix match |
+| `NEAR(hello world, 5)` | Within 5 tokens |
+
+### Performance notes
+
+- Building the temp FTS index scans the full `part` table — expect 2-10s on large DBs (100k+ parts).
+- For repeated searches in one session, keep the sqlite3 process open interactively or use a script.
+- For very large DBs, filter by `session_id` or time range in the INSERT to reduce index size.
+
 ## Tips
 
 - Timestamps are Unix milliseconds. Use `datetime(ts/1000, 'unixepoch')` for display.
