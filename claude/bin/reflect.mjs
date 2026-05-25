@@ -21,6 +21,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { classifyStop } from '../lib/judge.mjs';
+import { buildFeedback, INJECT_CATEGORIES } from '../lib/feedback.mjs';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -423,31 +425,51 @@ async function main() {
   );
 
   // ── 5. JUDGE LLM CALL ─────────────────────────────────────────────────────
-  // TODO(task-11): import judge from '../lib/judge.mjs', call it with ctx,
-  // receive verdict: { label, severity, inject, feedback }
-  // Classifier labels: complete | working | waiting_for_user_legitimate |
-  //   tool_available_punt | summary_drift_stop | genuinely_stuck
-  //
-  // Example (task-11 will replace this block):
-  //   const verdict = await judge(ctx);
-  //   writeVerdict(session_id, verdict, cwd);
+  let verdict;
+  try {
+    verdict = await classifyStop(ctx);
+  } catch (e) {
+    debug({ msg: 'judge_threw', err: String(e?.message ?? e) }, cwd);
+    verdict = { category: 'API_ERROR', reason: String(e?.message ?? e), confidence: 0 };
+  }
+
+  debug({ msg: 'verdict', category: verdict.category, confidence: verdict.confidence }, cwd);
+
+  const nextAttempt = attempts + 1;
+  const verdictRecord = {
+    ...verdict,
+    session_id,
+    attempt: nextAttempt,
+    timestamp: new Date().toISOString(),
+    injected: false,
+  };
 
   // ── 6. INJECT DECISION ───────────────────────────────────────────────────
-  // TODO(task-13): if verdict.inject === true:
-  //   writeAttemptCounter(session_id, attempts + 1, cwd);
-  //   import { buildFeedback } from '../lib/feedback.mjs';
-  //   const feedback = buildFeedback(verdict, ctx);
-  //   process.stdout.write(JSON.stringify({
-  //     decision: 'block',
-  //     reason: verdict.label,
-  //     hookSpecificOutput: {
-  //       hookEventName: 'Stop',
-  //       additionalContext: feedback,
-  //     },
-  //   }));
-  //   process.exit(0);
+  if (INJECT_CATEGORIES.has(verdict.category)) {
+    const fb = buildFeedback(verdict.category, ctx, nextAttempt);
+    if (fb.shouldInject) {
+      writeAttemptCounter(session_id, nextAttempt, cwd);
+      verdictRecord.injected = true;
+      verdictRecord.feedback_reason = fb.reason;
+      writeVerdict(session_id, verdictRecord, cwd);
 
-  // SKELETON: no inject yet — just exit cleanly.
+      const out = {
+        decision: 'block',
+        reason: fb.reason,
+        hookSpecificOutput: {
+          hookEventName: 'Stop',
+          additionalContext: fb.additionalContext,
+        },
+      };
+      process.stdout.write(JSON.stringify(out));
+      debug({ msg: 'inject_sent', category: verdict.category, attempt: nextAttempt, reason: fb.reason }, cwd);
+      process.exit(0);
+    }
+  }
+
+  // No inject: write verdict, exit clean.
+  writeVerdict(session_id, verdictRecord, cwd);
+  debug({ msg: 'no_inject', category: verdict.category, attempt: nextAttempt }, cwd);
   process.exit(0);
 }
 
