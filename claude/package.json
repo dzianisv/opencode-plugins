@@ -11,7 +11,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test --test-force-exit test/*.mjs"
   },
   "author": "dzianisv",
   "license": "MIT"
