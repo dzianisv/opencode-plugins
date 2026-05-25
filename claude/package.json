@@ -1,0 +1,18 @@
+{
+  "name": "@opencode-plugins/reflection-cc",
+  "version": "0.1.0",
+  "description": "Re-prompts Claude Code when it stops prematurely due to failure modes like summary-drift-stop or tool-available-punt",
+  "type": "module",
+  "main": "bin/reflect.mjs",
+  "bin": {
+    "reflect": "bin/reflect.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "author": "dzianisv",
+  "license": "MIT"
+}
