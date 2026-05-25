@@ -41,6 +41,27 @@ const CATEGORIES = [
 ];
 
 // ---------------------------------------------------------------------------
+// Error sanitization
+// ---------------------------------------------------------------------------
+
+/**
+ * Strips credentials from response bodies / error text before it lands in
+ * Error.message or debug logs. Truncates to 200 chars.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function sanitizeError(text) {
+  if (typeof text !== 'string') text = String(text ?? '');
+  let s = text;
+  s = s.replace(/Bearer\s+[^\s"',}]+/gi, 'Bearer <REDACTED>');
+  s = s.replace(/"authorization"\s*:\s*"[^"]*"/gi, '"authorization":"<REDACTED>"');
+  s = s.replace(/"x-api-key"\s*:\s*"[^"]*"/gi, '"x-api-key":"<REDACTED>"');
+  if (s.length > 200) s = s.slice(0, 200);
+  return s;
+}
+
+// ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
 
@@ -262,7 +283,7 @@ export async function classifyStop(stopContext, opts = {}) {
         confidence: 0,
       };
     }
-    throw new Error(`judge: fetch failed: ${err.message}`);
+    throw new Error(`judge: fetch failed: ${sanitizeError(err.message)}`);
   } finally {
     clearTimeout(timerId);
   }
@@ -270,14 +291,14 @@ export async function classifyStop(stopContext, opts = {}) {
   if (!res.ok) {
     let body;
     try { body = await res.text(); } catch { body = ''; }
-    throw new Error(`judge: api ${res.status}: ${body.slice(0, 200)}`);
+    throw new Error(`judge: api ${res.status}: ${sanitizeError(body)}`);
   }
 
   let json;
   try {
     json = await res.json();
   } catch (err) {
-    throw new Error(`judge: failed to parse api response: ${err.message}`);
+    throw new Error(`judge: failed to parse api response: ${sanitizeError(err.message)}`);
   }
 
   const rawText = json.content?.[0]?.text ?? '';

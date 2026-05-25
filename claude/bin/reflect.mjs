@@ -20,7 +20,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 import { classifyStop } from '../lib/judge.mjs';
 import { buildFeedback, INJECT_CATEGORIES } from '../lib/feedback.mjs';
 
@@ -87,6 +86,29 @@ export function debug(obj, cwd) {
 }
 
 // ---------------------------------------------------------------------------
+// cwd sanitization
+// ---------------------------------------------------------------------------
+
+/**
+ * Validates the `cwd` field from a Stop hook payload before any fs writes.
+ * Requires an absolute path that survives normalization unchanged (no `..`).
+ *
+ * @param {string} cwd
+ * @returns {string} normalized absolute cwd
+ * @throws {Error} "reflect: invalid cwd"
+ */
+export function sanitizeCwd(cwd) {
+  if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) {
+    throw new Error('reflect: invalid cwd');
+  }
+  const resolved = path.resolve(cwd);
+  if (resolved !== cwd) {
+    throw new Error('reflect: invalid cwd');
+  }
+  return resolved;
+}
+
+// ---------------------------------------------------------------------------
 // Loop guard
 // ---------------------------------------------------------------------------
 
@@ -117,11 +139,17 @@ export function loopGuard(stopPayload) {
  */
 export function readAttempts(session_id, cwd) {
   const file = path.join(cwd, '.reflection', `${session_id}_attempts.json`);
+  let raw;
   try {
-    const raw = fs.readFileSync(file, 'utf8');
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return 0;
+  }
+  try {
     const parsed = JSON.parse(raw);
     return typeof parsed.count === 'number' ? parsed.count : 0;
   } catch {
+    debug({ msg: 'attempts_file_corrupt', file }, cwd);
     return 0;
   }
 }
@@ -138,7 +166,23 @@ export function writeAttemptCounter(session_id, n, cwd) {
   const dir = path.join(cwd, '.reflection');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${session_id}_attempts.json`);
-  fs.writeFileSync(file, JSON.stringify({ count: n, last_iso: new Date().toISOString() }), 'utf8');
+
+  // Concurrency guard: if file exists, only write when newCount > existingCount.
+  // Ensures max-of-attempts wins across racing Stop hooks on same session.
+  let existingCount = 0;
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.count === 'number') existingCount = parsed.count;
+  } catch {
+    // missing or corrupt — treat as 0
+  }
+  if (n <= existingCount) return;
+
+  // Atomic write: write to tmp + rename (POSIX rename is atomic).
+  const tmp = path.join(dir, `${session_id}_attempts.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, JSON.stringify({ count: n, last_iso: new Date().toISOString() }), 'utf8');
+  fs.renameSync(tmp, file);
 }
 
 // ---------------------------------------------------------------------------
@@ -397,7 +441,10 @@ async function main() {
     process.exit(0);
   }
 
-  const { session_id, cwd = process.cwd(), transcript_path } = payload;
+  const { session_id, transcript_path } = payload;
+  // Sanitize cwd from payload before any fs writes — throws on invalid input.
+  // uncaughtException handler exits 0 (fail-safe: no inject, no fs ops).
+  const cwd = sanitizeCwd(payload?.cwd ?? process.cwd());
 
   // ── 2. ATTEMPT CAP ────────────────────────────────────────────────────────
   const attempts = readAttempts(session_id, cwd);

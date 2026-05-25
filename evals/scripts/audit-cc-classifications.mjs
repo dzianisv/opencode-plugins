@@ -31,7 +31,13 @@ function redact(s) {
   out = out.replace(/\bsk-ant-[A-Za-z0-9_\-]{20,}/g, "<REDACTED:token>");
   out = out.replace(/\bghp_[A-Za-z0-9]{20,}/g, "<REDACTED:token>");
   out = out.replace(/\bgho_[A-Za-z0-9]{20,}/g, "<REDACTED:token>");
-  out = out.replace(/\bAccept-Bearer\s+[A-Za-z0-9._\-]{20,}/g, "Authorization: Bearer <REDACTED:token>");
+  out = out.replace(/\bauthorization\s*:\s*bearer\s+[A-Za-z0-9._\-]{20,}/gi, "Authorization: Bearer <REDACTED:token>");
+  out = out.replace(/\bx-api-key\s*:\s*[A-Za-z0-9_\-]{20,}/gi, "x-api-key: <REDACTED:token>");
+  out = out.replace(/\b(sk|pk|rk)_(test|live)_[A-Za-z0-9]{20,}/g, "<REDACTED:stripe>");
+  out = out.replace(/\bAKIA[0-9A-Z]{16}\b/g, "<REDACTED:aws-access-key>");
+  // JWT-shaped tokens: three dot-separated base64url segments.
+  // Must run BEFORE the long-secret \b...\b regex (dots break word boundaries).
+  out = out.replace(/\b[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]{10,}\b/g, "<REDACTED:jwt>");
   // long alphanumeric likely-secrets (40+ chars no spaces)
   out = out.replace(/\b[A-Za-z0-9_\-]{40,}\b/g, m => {
     // skip if it looks like a UUID (will keep), or hex hash > 60
