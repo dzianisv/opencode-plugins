@@ -3,6 +3,8 @@
 !.agents/**
 !.github
 !.github/**
+!claude/.claude-plugin
+!claude/.claude-plugin/**
 .tts
 .reflection
 .opencode/
@@ -28,9 +30,18 @@ test/mocks/
 evals/results/
 evals/evals/
 
+# Raw CC stop datasets (contain real user session data — never commit)
+evals/datasets/cc-stop-candidates-raw.jsonl
+evals/datasets/cc-stop-candidates-filtered.jsonl
+evals/datasets/cc-stop-classified.jsonl
+# Allow committing the redacted gold set only
+!evals/datasets/cc-stop-labeled-gold-redacted.jsonl
+
 # E2E eval reports
 .eval/
 .eval-tmp/
 
 # Working notes
 plan.md
+# Added by code-review-graph
+.code-review-graph/
