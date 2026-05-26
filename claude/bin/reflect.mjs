@@ -454,10 +454,28 @@ async function main() {
   }
 
   // ── 3. TRANSCRIPT TAIL ───────────────────────────────────────────────────
-  const tail = transcript_path ? readTranscriptTail(transcript_path) : [];
+  // CC's Stop hook fires before the transcript flush of the final assistant
+  // turn completes on some paths. Poll briefly for an assistant entry with
+  // text content to appear before classifying. Bail-out conditions:
+  //   - we already have a usable ctx (assistant text non-empty)
+  //   - poll budget exhausted (~1s total)
+  let tail = transcript_path ? readTranscriptTail(transcript_path) : [];
+  let ctx = buildStopContext(payload, tail);
+  const FLUSH_POLL_MS = 100;
+  const FLUSH_POLL_MAX = 10;
+  for (let i = 0; i < FLUSH_POLL_MAX && !ctx.final_assistant_text; i++) {
+    await new Promise((r) => setTimeout(r, FLUSH_POLL_MS));
+    tail = transcript_path ? readTranscriptTail(transcript_path) : [];
+    ctx = buildStopContext(payload, tail);
+  }
 
-  // ── 4. STOP CONTEXT ──────────────────────────────────────────────────────
-  const ctx = buildStopContext(payload, tail);
+  // Fail-safe: if we STILL have no final assistant text after polling, the
+  // transcript probably hasn't flushed and we cannot classify reliably.
+  // Skip rather than risk a false-positive inject.
+  if (!ctx.final_assistant_text) {
+    debug({ msg: 'no_assistant_text_after_poll', session_id, tail_len: tail.length }, cwd);
+    process.exit(0);
+  }
 
   debug(
     {
@@ -500,13 +518,16 @@ async function main() {
       verdictRecord.feedback_reason = fb.reason;
       writeVerdict(session_id, verdictRecord, cwd);
 
+      // Stop hook payload shape (per CC v2.x hookify rule_engine.py +
+      // empirical test 2026-05-26): { decision: "block", reason }.
+      // `reason` is the text CC injects as the agent's next-turn instruction
+      // (rendered as `Stop hook feedback:\n<reason>`). `systemMessage` is
+      // accepted but appears to be dropped from the conversation in v2.1.150,
+      // so we put the full guidance in `reason`. `hookSpecificOutput` /
+      // `additionalContext` is rejected as Invalid input by Stop.
       const out = {
         decision: 'block',
-        reason: fb.reason,
-        hookSpecificOutput: {
-          hookEventName: 'Stop',
-          additionalContext: fb.additionalContext,
-        },
+        reason: fb.additionalContext || fb.reason,
       };
       process.stdout.write(JSON.stringify(out));
       debug({ msg: 'inject_sent', category: verdict.category, attempt: nextAttempt, reason: fb.reason }, cwd);

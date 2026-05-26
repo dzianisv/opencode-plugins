@@ -11,7 +11,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test --test-force-exit test/*.mjs"
+    "test:e2e": "node test/e2e-cc.mjs"
   },
   "author": "dzianisv",
   "license": "MIT"
