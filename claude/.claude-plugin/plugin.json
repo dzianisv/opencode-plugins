@@ -1,0 +1,13 @@
+{
+  "name": "reflection-cc",
+  "version": "0.1.0",
+  "description": "Re-prompts Claude Code when it stops prematurely due to failure modes like summary-drift-stop or tool-available-punt",
+  "author": "dzianisv",
+  "license": "MIT",
+  "hooks": {
+    "stop": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/reflect.mjs",
+      "timeout": 30000
+    }
+  }
+}

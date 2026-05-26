@@ -1,0 +1,8 @@
+{
+  "hooks": {
+    "stop": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/reflect.mjs",
+      "timeout": 30000
+    }
+  }
+}

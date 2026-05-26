@@ -4,6 +4,9 @@
 ## @reflection-3.ts - push opencode agent to reflect on the task, useful for continuous interrupted runs
 <img width="1472" height="972" alt="image" src="https://github.com/user-attachments/assets/40f3a752-4b84-4151-93f4-2614330ac653" />
 
+## @claude/ - Claude Code reflection plugin (experimental)
+Port of the reflection idea to Claude Code as a `Stop` hook. Classifies the last assistant turn into one of six categories (complete, working, waiting_for_user_legitimate, tool_available_punt, summary_drift_stop, genuinely_stuck) with Claude Haiku 4.5, and re-prompts the agent when it punted to the user, drifted into "summary + next step + stop", or halted mid-thought. Honors `stop_hook_active` loop guard and caps at 3 inject cycles per session. Install with `claude --plugin-dir ./claude` for dev or via the marketplace once published. See [`claude/README.md`](claude/README.md). Baseline classifier accuracy and dataset are tracked in [`evals/datasets/README.md`](evals/datasets/README.md) and follow-up [#138](https://github.com/dzianisv/opencode-plugins/issues/138).
+
 ## @telegram.ts - integrates with Telegram over [t.me/OpencodeMgrBot](@OpenCodeMgrBot) bot
 <img width="1019" height="734" alt="image" src="https://github.com/user-attachments/assets/6f120c14-dba5-431b-a458-0f51f360f561" />
 @tts.ts - uses coqui TTS to read the opencode agent response. Useful to run a few agents on macOS and be notified when one finishes a task. 
