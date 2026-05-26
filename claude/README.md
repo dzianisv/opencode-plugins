@@ -4,16 +4,42 @@ Re-prompts Claude Code when it stops prematurely due to failure modes like summa
 
 ## Install
 
-**Development**: `claude-code --plugin-dir /path/to/opencode-plugins/claude`
+**Recommended (works today, CC v2.x):** add the Stop hook directly to `~/.claude/settings.json`:
 
-**Global**: Add to `~/.claude/settings.json`:
 ```json
 {
-  "plugins": [
-    "~/.claude/plugins/reflection-cc"
-  ]
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/absolute/path/to/opencode-plugins/claude/bin/reflect.mjs",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
 }
 ```
+
+The plugin manifest under `.claude-plugin/` is included for future marketplace publication, but in CC v2.1.150 `--plugin-dir` and the `enabledPlugins` config path do NOT activate `Stop` hooks for headless `-p` sessions. The settings-based install above is the authoritative path until that gap closes.
+
+**One-session try:** `claude --settings '<json above>'` ... or write the JSON to a file and pass `--settings ./reflect-settings.json`.
+
+## Failure Categories
+
+The classifier maps each Stop into one of these categories (only the first three trigger an inject):
+
+| Category | Inject? | Description |
+|----------|---------|-------------|
+| `summary_drift_stop` | **yes** | Agent wrote a plan with a "next step" then stopped before doing it |
+| `tool_available_punt` | **yes** | Agent asked the user about something an available tool could resolve |
+| `genuinely_stuck` | **yes** | Agent halted mid-thought, no question, no plan |
+| `complete` | no | Task finished |
+| `working` | no | Mid-action narration (rare at Stop) |
+| `waiting_for_user_legitimate` | no | Agent legitimately needs user input |
 
 ## How it works
 
@@ -22,16 +48,16 @@ Re-prompts Claude Code when it stops prematurely due to failure modes like summa
 3. **Verdict**: Judge decides to re-prompt with recovery instructions or accept the stop
 4. **Session Guards**: Loop prevention via attempt counter (max 3 cycles per session)
 
-## Failure Categories
+## Testing
 
-| Category | Description |
-|----------|-------------|
-| `tool_available_punt` | Agent stops despite available tools that could solve the task |
-| `summary_drift_stop` | Agent creates summary before completion, loses task context |
-| `genuinely_stuck` | Agent cannot progress; re-prompting won't help |
-| `context_exhaustion` | Token limit reached; recovery unlikely |
-| `decision_paralysis` | Agent unable to choose between valid options |
-| `false_completion` | Agent claims task done when it isn't |
+`node claude/test/e2e-cc.mjs` runs 4 real E2E scenarios:
+
+- `explicit_wait_negative` — user asked "wait" → plugin must not inject.
+- `complete_negative` — trivial Q&A → plugin must not inject.
+- `attempt_cap_respected` — multi-file task → cap honored.
+- `direct_pipe_summary_drift` — synthetic drift transcript piped to `reflect.mjs` → verifies the inject pathway end-to-end including schema-correct stdout.
+
+Real `claude -p` headless sessions + real Anthropic API. No stubs. Costs roughly $0.05–0.20 per scenario via Haiku 4.5 over your Max-subscription OAuth. Out of CI (auth + cost). Run before any change to the hook payload format.
 
 ## Configuration
 
