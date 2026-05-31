@@ -1,16 +1,17 @@
 # OpenCode Plugins
 
 ## Project Overview
-This repository contains OpenCode CLI plugins that extend sessions with reflection, text-to-speech, and Telegram notifications.
+This repository contains OpenCode CLI plugins that extend sessions with reflection, text-to-speech, Telegram notifications, and automatic cross-model code review.
 
 Primary plugins:
-- `reflection.ts` (reflection-3): validates task completion and workflow requirements.
+- `reflection-3.ts`: validates task completion and workflow requirements. Exposes a `set_reflection` tool for agents to supply custom guidance.
 - `tts.ts`: reads the final assistant response aloud (macOS or Coqui server).
 - `telegram.ts`: posts completion notifications to Telegram and accepts replies.
+- `packages/auto-review/auto-review.ts`: cross-model review after each non-trivial turn.
 
 ## Plugin Summaries
 
-### reflection.ts (reflection-3)
+### reflection-3.ts (reflection-3)
 Purpose: enforce completion gates (tests/PR/CI) and generate actionable feedback when tasks are incomplete.
 
 Flow summary:
@@ -25,6 +26,7 @@ Key behavior:
 - Requires PR and CI check evidence; no direct push to `main`/`master`.
 - If `needs_user_action` is set, it shows a toast and does not push feedback.
 - Any utility sessions created by `reflection-3.ts` (judge, routing classifier, etc.) must be deleted after use.
+- Exposes a `set_reflection` tool: agents call it to register custom reflection guidance (a concise plan/checklist and evidence expectations) before starting complex work. Call with `clear: true` to remove it.
 
 Documentation:
 - `docs/reflection.md`
@@ -49,6 +51,35 @@ Flow summary:
 
 Documentation:
 - `docs/telegram.md`
+
+### packages/auto-review/auto-review.ts
+Purpose: cross-model review after each non-trivial task turn to catch missed edge cases and incomplete work.
+
+Flow summary:
+1. Listens on `session.idle`.
+2. Waits 1.5s to confirm the session was not aborted (ESC).
+3. Skips trivial turns (fewer than `minToolCalls` tool calls, default 3).
+4. Skips child/review/reflection sessions to prevent loops.
+5. Creates a child review session with a model from a **different family** than the one that did the work.
+6. Sends a structured prompt: task context + conversation → PASS/FAIL checklist.
+7. Review session is deleted after use.
+
+Config file: `~/.config/opencode/plugin/auto-review.json`
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `model` | *(auto-select)* | Force a review model, e.g. `github-copilot/gpt-5.5` |
+| `reasoning` | *(none)* | Reasoning effort: `low`, `medium`, `high`, `xhigh` |
+| `minToolCalls` | `3` | Minimum tool calls to trigger review |
+| `debug` | `false` | Debug logging to `.reflection/debug.log` |
+
+Install:
+```bash
+npm run install:auto-review
+```
+
+Documentation:
+- `packages/auto-review/README.md`
 
 ## Reflection Evaluation
 Reflection uses two paths:
@@ -99,3 +130,4 @@ npm run eval:judge
 - `docs/reflection.md`
 - `docs/tts.md`
 - `docs/telegram.md`
+- `packages/auto-review/README.md`
