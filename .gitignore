@@ -34,3 +34,6 @@ evals/evals/
 
 # Working notes
 plan.md
+
+# Mined session dataset (may contain personal data)
+.dataset/
