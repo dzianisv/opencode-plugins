@@ -43,5 +43,9 @@ evals/datasets/cc-stop-classified.jsonl
 
 # Working notes
 plan.md
+
 # Added by code-review-graph
 .code-review-graph/
+
+# Mined session dataset (may contain personal data)
+.dataset/
