@@ -181,6 +181,40 @@ Evaluates task completion after each agent response and provides feedback if wor
 4. **Verdict**: PASS → toast notification | FAIL → feedback injected into chat
 5. **Continuation**: Agent receives feedback and continues working
 
+### Relation to Reflexion (Weng 2023 / Shinn et al. 2023)
+
+This plugin is, in the taxonomy of Lilian Weng's [*LLM Powered Autonomous Agents*](https://lilianweng.github.io/posts/2023-06-23-agent/),
+a **Reflexion**-style self-improvement loop — not ReAct, Chain-of-Hindsight, or
+Algorithm Distillation. The mapping is almost one-to-one:
+
+| Reflexion concept (Weng / Shinn et al.) | This plugin |
+| --- | --- |
+| **Actor** — the policy LLM that acts | The coding agent (OpenCode / Claude Code) itself |
+| **Evaluator** — scores the trajectory | The LLM-as-judge self-assessment (`buildSelfAssessmentPrompt` / `classifyStop`), run in an unbiased hidden session |
+| **Self-reflection** — verbal feedback added to memory for the next attempt | The feedback string injected back into the chat / the Stop-hook `block` reason — natural-language, not a scalar reward |
+| **Heuristic: "inefficient" trajectory (too long without success)** | `PLANNING_LOOP` detector — many tool calls with a near-zero write ratio (`PLANNING_LOOP_MIN_TOOL_CALLS`, `PLANNING_LOOP_WRITE_RATIO_THRESHOLD`) |
+| **Heuristic: "hallucination" = consecutive identical actions → same observation** | `ACTION_LOOP` detector — repeated identical commands above `ACTION_LOOP_REPETITION_THRESHOLD` |
+| **"Up to three reflections stored in working memory"** | `MAX_ATTEMPTS = 3` — at most three feedback injections per task before giving up |
+| **Reset the environment to start a new trial** | Re-prompt the *same* session to continue (no env reset — agentic coding has no episodic reset) |
+
+**Where it differs from textbook Reflexion:**
+
+- **Trigger granularity.** Classic Reflexion evaluates at the end of an episode
+  / on a failed trajectory. This plugin fires on the `session.idle` (OpenCode) or
+  `Stop` (Claude Code) boundary — i.e. *every time the agent thinks it's done* —
+  so its primary job is catching **premature stops**, not just failed runs.
+- **Evaluator design.** Reflexion's evaluator is a task-specific heuristic (and
+  sometimes an LLM). Here the evaluator is primarily an **LLM-as-judge** whose
+  rubric is **mined from 227 real agent stops** (78% were premature), layered on
+  top of the two Reflexion-style heuristics above.
+- **Verbal, not numeric.** Like Reflexion (and unlike RLHF/CoH), the feedback is
+  natural language fed straight back into context — no fine-tuning, no reward
+  model, no gradient updates.
+
+In short: **Reflexion = actor + evaluator + verbal self-reflection with a small
+bounded memory of retries**, and that is exactly the shape of this plugin, with
+the evaluator specialized toward detecting premature task abandonment.
+
 ### State Graph
 
 ```
