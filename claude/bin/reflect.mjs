@@ -357,9 +357,10 @@ export function buildStopContext(stopPayload, transcriptTail) {
     }
   }
 
-  // Derive final assistant text: prefer CC's `response` field (it IS the last turn),
-  // fall back to the last assistant entry's text content from the tail.
-  let final_assistant_text = (stopPayload?.response ?? '').trim();
+  // Derive final assistant text: prefer CC's `last_assistant_message` field (the
+  // documented Stop hook field name as of CC v2.x — NOT `response`), fall back
+  // to the last assistant entry's text content from the transcript tail.
+  let final_assistant_text = (stopPayload?.last_assistant_message ?? stopPayload?.response ?? '').trim();
   if (!final_assistant_text) {
     // Walk tail in reverse, find last assistant entry with a text block
     for (let i = transcriptTail.length - 1; i >= 0; i--) {
