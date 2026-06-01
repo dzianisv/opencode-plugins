@@ -17,8 +17,9 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -66,9 +67,49 @@ function sanitizeError(text) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Reads the Claude Code OAuth credentials JSON from its platform store.
+ * On macOS, Claude Code keeps credentials in the login keychain (generic
+ * password "Claude Code-credentials"), NOT in a file — so the file read on
+ * darwin almost always fails and the keychain is the real source. On
+ * Linux/Windows the credentials live at ~/.claude/.credentials.json.
+ *
+ * Returns the parsed object ({ claudeAiOauth: { accessToken, ... } }) or null
+ * if no source is available / parseable.
+ *
+ * @returns {object | null}
+ */
+function readOauthCredentials() {
+  // 1. File (Linux/Windows, and macOS installs that opted out of keychain).
+  const credPath = join(homedir(), '.claude', '.credentials.json');
+  try {
+    return JSON.parse(readFileSync(credPath, 'utf8'));
+  } catch {
+    /* fall through to keychain on macOS */
+  }
+
+  // 2. macOS keychain.
+  if (platform() === 'darwin') {
+    try {
+      const out = execFileSync(
+        'security',
+        ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
+        { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] },
+      );
+      return JSON.parse(out.trim());
+    } catch {
+      /* no keychain item, or not parseable */
+    }
+  }
+
+  return null;
+}
+
+/**
  * Loads auth credentials for the Anthropic API, trying sources in order:
  *   1. ANTHROPIC_API_KEY env var (x-api-key header, no beta header needed)
- *   2. OAuth token from ~/.claude/.credentials.json (Bearer + oauth-2025-04-20 beta)
+ *   2. OAuth token from ~/.claude/.credentials.json (Linux/Windows) or the
+ *      macOS login keychain ("Claude Code-credentials") — Bearer +
+ *      oauth-2025-04-20 beta.
  *
  * Returns { type: 'apikey' | 'oauth', value: string }.
  * Throws a sentinel error (prefixed "judge:") if neither is available.
@@ -82,25 +123,18 @@ function loadAuth() {
     return { type: 'apikey', value: apiKey.trim() };
   }
 
-  // 2. OAuth token from credentials file
-  const credPath = join(homedir(), '.claude', '.credentials.json');
-  let raw;
-  try {
-    raw = readFileSync(credPath, 'utf8');
-  } catch (err) {
-    throw new Error(`judge: no ANTHROPIC_API_KEY set and cannot read credentials file: ${err.message}`);
-  }
-
-  let obj;
-  try {
-    obj = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(`judge: credentials file is not valid JSON: ${err.message}`);
+  // 2. OAuth token from credentials file or macOS keychain
+  const obj = readOauthCredentials();
+  if (!obj) {
+    throw new Error(
+      'judge: no ANTHROPIC_API_KEY set and no Claude Code OAuth credentials found ' +
+      '(checked ~/.claude/.credentials.json and the macOS keychain)',
+    );
   }
 
   const token = obj?.claudeAiOauth?.accessToken;
   if (!token) {
-    throw new Error('judge: no ANTHROPIC_API_KEY env var and no claudeAiOauth.accessToken in ~/.claude/.credentials.json');
+    throw new Error('judge: OAuth credentials present but missing claudeAiOauth.accessToken');
   }
   return { type: 'oauth', value: token };
 }
