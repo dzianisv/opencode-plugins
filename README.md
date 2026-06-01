@@ -57,7 +57,33 @@ This plugin adds a **judge layer** that automatically evaluates task completion 
 - **Local TTS** - Hear responses read aloud (Coqui VCTK/VITS, Chatterbox, macOS)
 - **Voice-to-text** - Reply to Telegram with voice messages, transcribed by local Whisper
 
-## Quick Install
+## Install via opencode.json (preferred)
+
+Add the reflection plugin to the `plugin` array in your `opencode.json` (project-level or `~/.config/opencode/opencode.json` for global):
+
+**Published npm package:**
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-reflection"]
+}
+```
+
+**Local path (from a clone of this repo):**
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["/absolute/path/to/opencode-plugins/packages/reflection"]
+}
+```
+
+OpenCode resolves the entry point from `package.json` `exports`, imports the default export (a `Plugin` function), and calls it automatically at startup. No manual file copying or `bun install` required — OpenCode handles dependency installation.
+
+Restart OpenCode after editing `opencode.json` to activate.
+
+---
+
+## Quick Install (copy-script method)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/install.sh | bash

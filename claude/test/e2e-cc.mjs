@@ -49,7 +49,13 @@ function loadOAuthToken() {
   }
 }
 
-const TOKEN = loadOAuthToken();
+// Lazy-load TOKEN — only called when running scenarios that need real API access
+// (scenarios 1-3). Scenario 4 (direct-pipe) does not need this.
+let _token;
+function getToken() {
+  if (!_token) _token = loadOAuthToken();
+  return _token;
+}
 
 // --------------------------------------------------------------------------
 // Scenarios
@@ -142,17 +148,21 @@ function runDirectPipeScenario() {
     transcript_path: tFile,
     cwd: sandbox,
     hook_event_name: "Stop",
-    response: "I've created factorial.py and test_factorial.py. Next step: run `python -m pytest test_factorial.py -v` to verify the tests pass.",
+    last_assistant_message: "I've created factorial.py and test_factorial.py. Next step: run `python -m pytest test_factorial.py -v` to verify the tests pass.",
     stop_hook_active: false,
   };
 
+  // Use REFLECTION_CC_FAKE_JUDGE so this test exercises the full hook wiring
+  // (stdin parsing, loop guard, attempt counter, feedback builder, stdout JSON)
+  // without a real API call. The mock returns summary_drift_stop:0.95, which
+  // the feedback builder maps to a block decision — exactly the inject path.
   const startTime = Date.now();
   const result = spawnSync("node", [join(PLUGIN_DIR, "bin", "reflect.mjs")], {
     input: JSON.stringify(payload),
     cwd: sandbox,
     timeout: 30_000,
     encoding: "utf8",
-    env: { ...process.env, REFLECTION_CC_DEBUG: "1" },
+    env: { ...process.env, REFLECTION_CC_DEBUG: "1", REFLECTION_CC_FAKE_JUDGE: "summary_drift_stop:0.95" },
   });
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
@@ -288,7 +298,7 @@ Respond ONLY with a JSON object on a single line, no markdown fence:
     headers: {
       "anthropic-version": "2023-06-01",
       "anthropic-beta": "oauth-2025-04-20",
-      "authorization": `Bearer ${TOKEN}`,
+      "authorization": `Bearer ${getToken()}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({
@@ -394,8 +404,102 @@ function runScenario(scenario) {
   return { scenario, result, sandbox, transcriptPath, evidenceDir, elapsed };
 }
 
+// --------------------------------------------------------------------------
+// Scenario 5: direct-pipe complete — fake judge returns "complete", verify
+// NO block is emitted (exit 0, stdout is empty or not a block decision).
+// --------------------------------------------------------------------------
+
+function runDirectPipeCompleteScenario() {
+  const id = 5;
+  const name = "direct_pipe_complete_no_inject";
+  const sandbox = join(tmpdir(), "cc-reflect-e2e", `s${id}-${Date.now()}`);
+  mkdirSync(sandbox, { recursive: true, mode: 0o700 });
+  const evidenceDir = join(EVIDENCE_DIR, `scenario-${id}-${name}`);
+  mkdirSync(evidenceDir, { recursive: true });
+
+  process.stderr.write(`\n[s${id}] ${name}\n`);
+  process.stderr.write(`  sandbox  : ${sandbox}\n`);
+  process.stderr.write(`  evidence : ${evidenceDir}\n`);
+
+  const fakeSessionId = "test-complete-" + Date.now();
+  const tFile = join(sandbox, `transcript-${fakeSessionId}.jsonl`);
+  const entries = [
+    { type: "user", uuid: "u1", sessionId: fakeSessionId, message: { role: "user", content: "What is 2 + 2?" } },
+    { type: "assistant", uuid: "a1", sessionId: fakeSessionId, message: { role: "assistant", content: [{ type: "text", text: "4" }] } },
+  ];
+  writeFileSync(tFile, entries.map(e => JSON.stringify(e)).join("\n") + "\n");
+
+  const payload = {
+    session_id: fakeSessionId,
+    transcript_path: tFile,
+    cwd: sandbox,
+    hook_event_name: "Stop",
+    last_assistant_message: "4",
+    stop_hook_active: false,
+  };
+
+  const startTime = Date.now();
+  const result = spawnSync("node", [join(PLUGIN_DIR, "bin", "reflect.mjs")], {
+    input: JSON.stringify(payload),
+    cwd: sandbox,
+    timeout: 30_000,
+    encoding: "utf8",
+    // Fake judge returns "complete" → plugin must NOT emit a block decision
+    env: { ...process.env, REFLECTION_CC_DEBUG: "1", REFLECTION_CC_FAKE_JUDGE: "complete:0.99" },
+  });
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+  writeFileSync(join(evidenceDir, "stdin.json"), JSON.stringify(payload, null, 2));
+  writeFileSync(join(evidenceDir, "stdout.txt"), result.stdout ?? "");
+  writeFileSync(join(evidenceDir, "stderr.txt"), result.stderr ?? "");
+
+  let stdout = {};
+  try { stdout = JSON.parse(result.stdout ?? "{}"); } catch {}
+
+  const didBlock = stdout.decision === "block";
+  let verdict = "FAIL";
+  let reason;
+  if (result.status !== 0) {
+    reason = `reflect.mjs exited non-zero: ${result.status}`;
+  } else if (didBlock) {
+    reason = `false positive: plugin blocked a 'complete' verdict (reason: ${stdout.reason?.slice(0, 80)})`;
+  } else {
+    verdict = "PASS";
+    reason = "no block emitted on complete verdict (correct)";
+  }
+
+  process.stderr.write(`  exit=${result.status} elapsed=${elapsed}s\n`);
+  process.stderr.write(`  verdict : ${verdict} — ${reason}\n`);
+
+  writeFileSync(join(evidenceDir, "verdict.json"), JSON.stringify({
+    scenario: name,
+    verdict,
+    reason,
+    actual_stdout: stdout,
+    exit_code: result.status,
+    elapsed_s: elapsed,
+  }, null, 2));
+
+  if (!KEEP) {
+    try { rmSync(sandbox, { recursive: true, force: true }); } catch {}
+  }
+
+  return {
+    scenario: name,
+    expectsInject: false,
+    injects: didBlock ? 1 : 0,
+    verdict,
+    reason,
+    elapsed_s: elapsed,
+  };
+}
+
 async function main() {
-  const allScenarios = [...SCENARIOS, { id: 4, name: "direct_pipe_summary_drift", _direct: true }];
+  const allScenarios = [
+    ...SCENARIOS,
+    { id: 4, name: "direct_pipe_summary_drift", _direct: true },
+    { id: 5, name: "direct_pipe_complete_no_inject", _direct5: true },
+  ];
   const toRun = ONLY ? allScenarios.filter(s => s.id === ONLY) : allScenarios;
   if (toRun.length === 0) {
     process.stderr.write(`No scenario with id ${ONLY}\n`);
@@ -408,6 +512,10 @@ async function main() {
   for (const scenario of toRun) {
     if (scenario._direct) {
       summary.push(runDirectPipeScenario());
+      continue;
+    }
+    if (scenario._direct5) {
+      summary.push(runDirectPipeCompleteScenario());
       continue;
     }
     const run = runScenario(scenario);

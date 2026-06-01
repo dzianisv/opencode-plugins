@@ -4,7 +4,28 @@ Re-prompts Claude Code when it stops prematurely due to failure modes like summa
 
 ## Install
 
-**Recommended (works today, CC v2.x):** add the Stop hook directly to `~/.claude/settings.json`:
+### Via `/plugin` marketplace (recommended)
+
+```bash
+# 1. Register the marketplace (one-time per machine)
+/plugin marketplace add dzianisv/opencode-plugins
+
+# 2. Install the plugin
+/plugin install reflection-cc
+```
+
+Or in one step using the CLI:
+
+```bash
+claude plugin marketplace add dzianisv/opencode-plugins
+claude plugin install reflection-cc
+```
+
+This uses the `marketplace.json` at the repo root (`.claude-plugin/marketplace.json`) which points the `./claude` subdirectory as the plugin source.
+
+### Manual (settings-based install — always works)
+
+Add the Stop hook directly to `~/.claude/settings.json`:
 
 ```json
 {
@@ -24,9 +45,9 @@ Re-prompts Claude Code when it stops prematurely due to failure modes like summa
 }
 ```
 
-The plugin manifest under `.claude-plugin/` is included for future marketplace publication, but in CC v2.1.150 `--plugin-dir` and the `enabledPlugins` config path do NOT activate `Stop` hooks for headless `-p` sessions. The settings-based install above is the authoritative path until that gap closes.
+**One-session try:** write the JSON above to a file and pass `--settings ./reflect-settings.json`.
 
-**One-session try:** `claude --settings '<json above>'` ... or write the JSON to a file and pass `--settings ./reflect-settings.json`.
+> Note: the Stop hook event name is `"Stop"` (capital S) — lowercase `"stop"` is silently ignored by Claude Code.
 
 ## Failure Categories
 
