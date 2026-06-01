@@ -15,11 +15,12 @@ prompts:
   - file://prompts/task-verification.txt
 
 providers:
-  # Use Azure OpenAI (Chat Completions API) from ~/.env.d/codex.env
-  - id: azureopenai:chat:gpt-5
-    label: azure-gpt-5
+  # Azure OpenAI (Chat Completions API). Deployment + key/base-url come from CI secrets
+  # (AZURE_OPENAI_API_KEY / AZURE_OPENAI_BASE_URL) or local ~/.env.d/azure-dev.env.
+  - id: azureopenai:chat:gpt-5.1
+    label: azure-gpt-5.1
     config:
-      apiVersion: 2024-02-15-preview
+      apiVersion: 2024-12-01-preview
       apiKeyEnvar: AZURE_OPENAI_API_KEY
       reasoning_effort: low
       max_completion_tokens: 2048
@@ -510,7 +511,9 @@ tests:
 
   - description: "Multi-step with partial verification - INCOMPLETE (missing browser E2E)"
     vars:
-      task: "Continue if you have next steps"
+      task: |
+        Ship the pending fixes. Per AGENTS.md, verification requires BOTH the voice E2E
+        suite AND the browser E2E suite to run and pass before this is complete.
       tools_used: |
         bash: {command: 'cd frontend && npm run build'}
         bash: {command: 'git add -A && git commit -m "fix: Zod version conflict"'}
@@ -607,7 +610,7 @@ tests:
   - description: "Agent asks clarifying question before acting - INCOMPLETE (waiting for input)"
     vars:
       task: |
-        Plan the inter-agent communication system for Slack.
+        Build the inter-agent communication system for Slack. Plan it, then implement the phases:
         - Phase 1: Multi-agent K8s deployment
         - Phase 2: Agent-to-agent @mentions
         - Phase 3: Handoff context preservation
