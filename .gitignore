@@ -3,6 +3,8 @@
 !.agents/**
 !.github
 !.github/**
+!.claude-plugin
+!.claude-plugin/**
 !claude/.claude-plugin
 !claude/.claude-plugin/**
 .tts
