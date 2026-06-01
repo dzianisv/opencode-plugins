@@ -1135,7 +1135,13 @@ Rules:
 - If you need user action (auth, 2FA, credentials, access requests, uploads, approvals), list it in needs_user_action.
 - PLANNING LOOP CHECK: If the task requires code changes (fix, implement, add, create, build, refactor, update) but the "Tool Commands Run" section shows ONLY read operations (read, glob, grep, git log, git status, git diff, webfetch, task/explore) and NO write operations (edit, write, bash with build/test/commit, github_create_pull_request, etc.), then the task is NOT complete. Set status to "in_progress", set stuck to true, and list "Implement the actual code changes" in remaining_work. Analyzing and recommending changes is not the same as making them.
 - If you are repeating the same actions (deploy, test, build) without making progress, set "stuck": true.
-- Do not retry the same failing approach more than twice — try something different or report stuck.`
+- Do not retry the same failing approach more than twice — try something different or report stuck.
+
+PREMATURE-STOP ANTIPATTERNS (mined from 227 real agent stops where the user replied; 78% were premature — the user said "go"/"continue"/"yes do it" or corrected the agent). If the agent's last response matches one of these AND executable work remains, the task is NOT complete — set status "in_progress", and put the concrete next action in remaining_work and next_steps:
+- PERMISSION-SEEKING (most common, ~40%): the response ends by asking to do work it can already do — "Want me to…?", "Would you like me to…?", "Should I…?", "Shall I proceed?", or "Try running it now"/"Please run X and confirm" (deferring a check it could run itself). DECISIVE TEST: if the final turn is a yes/no or "want me to X?" question AND X is something the agent can do with its own tools AND X carries no irreversible risk, the stop is premature — it should have just done X. Asking is only legitimate before a destructive/irreversible action (delete prod data, force-push, send an irreversible external message).
+- STOPPED-WITH-TODOS (~30%): the response lists "Remaining Tasks"/"Next steps"/"Still TODO"/"What I did NOT do" or names a verify/run/check/create-PR step as "next" — then stops without doing it. Listing remaining work does not complete it; a self-contained named step must be DONE before stopping. Set status "in_progress" with that work in remaining_work.
+- FALSE-COMPLETE: claims "done"/"complete"/"ready"/"all tasks complete" but the CORE requested action never happened, a required check was skipped, or there is no evidence. An empty/no-text response, or a response with no write/tool evidence on an action task, is NEVER complete.
+- LEGITIMATE STOP (do NOT flag): genuine human-only block (OAuth consent, 2FA code, credential/API-key retrieval, captcha) → status "waiting_for_user" with the item in needs_user_action. Genuine completion WITH evidence (commands+output, tests passing, PR/CI verified) → status "complete"; do not invent missing work.`
 }
 
 function parseSelfAssessmentJson(text: string | null | undefined): SelfAssessment | null {
@@ -1390,6 +1396,11 @@ Rules:
 - If user action is required (auth/2FA/credentials), set requires_human_action true.
 - If agent is stuck, require alternate approach and continued work.
 - PLANNING LOOP: If the task requires code changes (fix, implement, add, create, build, refactor) but the Tool Signals show ONLY read operations (read, glob, grep, git log/status/diff, webfetch) and NO write operations (edit, write, bash with build/test/commit, PR creation), set complete to false and add "Implement actual code changes" to missing. Analysis alone does not fulfill an implementation task.
+- PREMATURE-STOP ANTIPATTERNS (78% of real agent stops were premature). Set complete false, requires_human_action false, and put the concrete work in next_actions when the agent's response matches:
+  - PERMISSION-SEEKING: ends asking to do work it can already do ("Want me to…?", "Should I…?", "Try running it now", "Please run X and confirm"). DECISIVE TEST: final-turn yes/no question about something the agent can do with its own tools and no irreversible risk = premature; it should have done it. Asking is legitimate only before destructive/irreversible actions.
+  - STOPPED-WITH-TODOS: lists "Remaining Tasks"/"Next steps"/"What I did NOT do" or names a verify/run/check step as next, then stops. Listing ≠ doing.
+  - FALSE-COMPLETE: claims done/ready/"all tasks complete" but the core action never happened, a required check was skipped, or no evidence. Empty/no-tool response on an action task is never complete.
+- LEGITIMATE STOP (do NOT penalize): genuine human-only block (OAuth consent, 2FA, credential/API-key retrieval, captcha) → complete false, requires_human_action true. Genuine completion WITH evidence → complete true; do not invent missing work.
 
 Return JSON only:
 {
