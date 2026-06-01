@@ -4,6 +4,19 @@
 ## @reflection-3.ts - push opencode agent to reflect on the task, useful for continuous interrupted runs
 <img width="1472" height="972" alt="image" src="https://github.com/user-attachments/assets/40f3a752-4b84-4151-93f4-2614330ac653" />
 
+**Task:** Add real-data antipatterns to the reflection plugin's self-assessment judge prompt, tuned via an eval loop (issue #140).
+
+**Why:** The reflection plugin decides whether an agent's work is actually done or whether it stopped prematurely. It was missing the most common real failure modes, so it let premature stops slide. We mined real OpenCode + Claude Code sessions to find what those failures actually look like.
+
+**How:**
+1. **Mined ground truth** — extracted 143 local sessions (OpenCode SQLite + Claude jsonl), built turn-granular `.dataset/*.xml` (634 real user-follow-up examples). Gotcha caught: tool_result carries `role=user`, inflating follow-ups 8x — fixed with `compact()`.
+2. **Classified stops** — 227 cases where agent stopped *and* user replied. Haiku 3x majority-vote labeled them: **177/227 (78%) were premature** — 91 permission-seeking, 68 stopped-with-todos.
+3. **Wrote antipatterns** from that data into the **production** prompts (`buildSelfAssessmentPrompt` + `analyzeSelfAssessmentWithLLM` in `reflection-3.ts`), not just the eval mirror — plus the test-helpers copy that had drifted. Key rule: final-turn yes/no question about something the agent can do itself = premature.
+4. **Eval loop** — fixed dead infra (`~/.env.d/azure-dev.env` has live **gpt-5.1**), updated CI secrets, ran the real promptfoo judge: **34/34, 0 errors**.
+5. **Shipped** — PR #141 squash-merged (`c4dd7bc`), both CI checks green, prod-verified on main, issue #140 closed.
+
+Done and verified through the real channel. Nothing pending except the optional follow-up: stuck/compression/agent eval suites were bumped to gpt-5.1 but only run on manual dispatch — not separately re-verified.
+
 ## @claude/ - Claude Code reflection plugin (experimental)
 Port of the reflection idea to Claude Code as a `Stop` hook. Classifies the last assistant turn into one of six categories (complete, working, waiting_for_user_legitimate, tool_available_punt, summary_drift_stop, genuinely_stuck) with Claude Haiku 4.5, and re-prompts the agent when it punted to the user, drifted into "summary + next step + stop", or halted mid-thought. Honors `stop_hook_active` loop guard and caps at 3 inject cycles per session. Install with `claude --plugin-dir ./claude` for dev or via the marketplace once published. See [`claude/README.md`](claude/README.md). Baseline classifier accuracy and dataset are tracked in [`evals/datasets/README.md`](evals/datasets/README.md) and follow-up [#138](https://github.com/dzianisv/opencode-plugins/issues/138).
 
