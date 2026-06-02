@@ -58,11 +58,11 @@ Implements [Reflexion](https://lilianweng.github.io/posts/2023-06-23-agent/) (Sh
 - **Local TTS** - Hear responses read aloud (Coqui VCTK/VITS, Chatterbox, macOS)
 - **Voice-to-text** - Reply to Telegram with voice messages, transcribed by local Whisper
 
-## Install via opencode.json (preferred)
+## OpenCode Install
 
-Add the reflection plugin to the `plugin` array in your `opencode.json` (project-level or `~/.config/opencode/opencode.json` for global):
+Add `"opencode-reflection"` to the `plugin` array in `opencode.json`.
 
-**Published npm package:**
+**Global** (`~/.config/opencode/opencode.json` — applies to every project):
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
@@ -70,7 +70,15 @@ Add the reflection plugin to the `plugin` array in your `opencode.json` (project
 }
 ```
 
-**Local path (from a clone of this repo):**
+**Per-project** (create `opencode.json` at repo root):
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-reflection"]
+}
+```
+
+**From a local clone** (dev / pin-to-commit):
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
@@ -78,21 +86,74 @@ Add the reflection plugin to the `plugin` array in your `opencode.json` (project
 }
 ```
 
-OpenCode resolves the entry point from `package.json` `exports`, imports the default export (a `Plugin` function), and calls it automatically at startup. No manual file copying or `bun install` required — OpenCode handles dependency installation.
+OpenCode resolves the entry point from `package.json` `exports`, imports the default export (a `Plugin` function), and calls it at startup. No manual `bun install` needed — OpenCode handles deps.
 
 Restart OpenCode after editing `opencode.json` to activate.
 
 ---
 
-## Quick Install (copy-script method)
+## Claude Code Install
+
+### Via `/plugin` marketplace (recommended)
+
+Inside a Claude Code session:
+
+```
+/plugin marketplace add dzianisv/opencode-plugins
+/plugin install reflection-cc
+```
+
+Or from the CLI directly:
+
+```bash
+claude plugin marketplace add dzianisv/opencode-plugins
+claude plugin install reflection-cc
+```
+
+This registers the marketplace from `dzianisv/opencode-plugins` (`.claude-plugin/marketplace.json`) and installs the `reflection-cc` Stop hook into your Claude Code settings. No npm deps required — `reflect.mjs` is self-contained.
+
+### Manual install (always works)
+
+Add the Stop hook to `~/.claude/settings.json` (global) or `.claude/settings.json` (project-level):
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /absolute/path/to/opencode-plugins/claude/bin/reflect.mjs",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+> **Note:** the event name is `"Stop"` (capital S) — lowercase `"stop"` is silently ignored.
+
+**Verify it's running:**
+```bash
+echo '{"session_id":"test","transcript_path":"/dev/null","stop_hook_active":false}' \
+  | node /path/to/opencode-plugins/claude/bin/reflect.mjs
+# → exits 0 (no transcript = approve by default)
+```
+
+---
+
+## Quick Install (copy-script method — OpenCode only)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/install.sh | bash
 ```
 
-This downloads all plugins to `~/.config/opencode/plugin/`, installs dependencies, and you're ready to go. Restart OpenCode to activate.
+Downloads all plugins to `~/.config/opencode/plugin/`, installs dependencies, ready to go. Restart OpenCode after.
 
-**Prerequisites:** [bun](https://bun.sh) (install with `curl -fsSL https://bun.sh/install | bash`)
+**Prerequisites:** [bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`)
 
 ## Agent Skills
 
