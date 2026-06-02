@@ -447,6 +447,13 @@ async function main() {
   // uncaughtException handler exits 0 (fail-safe: no inject, no fs ops).
   const cwd = sanitizeCwd(payload?.cwd ?? process.cwd());
 
+  // ── 1.5. DISABLED FLAG ───────────────────────────────────────────────────
+  const disabledFlag = path.join(cwd, '.reflection', 'disabled');
+  if (fs.existsSync(disabledFlag)) {
+    debug({ msg: 'disabled_by_flag' }, cwd);
+    process.exit(0);
+  }
+
   // ── 2. ATTEMPT CAP ────────────────────────────────────────────────────────
   const attempts = readAttempts(session_id, cwd);
   if (attempts >= MAX_ATTEMPTS) {

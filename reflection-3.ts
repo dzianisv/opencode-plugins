@@ -1585,7 +1585,25 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
     return msg
   }
 
+  // reflection on/off toggle tool
+  const reflectionToggleDescription = "Enable or disable the reflection judge for this project. Use 'off' to stop reflection from firing on session.idle; 'on' to re-enable it. State persists via .reflection/disabled flag file."
+  const executeReflectionToggle = async (args: { action: "on" | "off" }) => {
+    const flagPath = join(directory, '.reflection', 'disabled')
+    if (args.action === "off") {
+      await mkdir(join(directory, '.reflection'), { recursive: true })
+      await writeFile(flagPath, '')
+      return "Reflection disabled for this project. Touch .reflection/disabled to re-disable, or call this tool with action=on."
+    } else {
+      try {
+        const { unlink } = await import("fs/promises")
+        await unlink(flagPath)
+      } catch {}
+      return "Reflection enabled. The judge will fire on the next session.idle."
+    }
+  }
+
   let setReflectionTool: any = null
+  let reflectionToggleTool: any = null
   try {
     const { tool } = await import("@opencode-ai/plugin/tool")
     setReflectionTool = tool({
@@ -1595,6 +1613,13 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         clear: tool.schema.boolean().optional().describe("Set true to clear the current tool-provided reflection guidance.")
       },
       execute: executeSetReflection
+    })
+    reflectionToggleTool = tool({
+      description: reflectionToggleDescription,
+      args: {
+        action: tool.schema.string().describe("'on' to enable reflection, 'off' to disable it for this project.")
+      },
+      execute: executeReflectionToggle as any
     })
   } catch {
     try {
@@ -1607,14 +1632,26 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         },
         execute: executeSetReflection
       }
+      reflectionToggleTool = {
+        description: reflectionToggleDescription,
+        args: {
+          action: z.enum(["on", "off"]).describe("'on' to enable reflection, 'off' to disable it for this project.")
+        },
+        execute: executeReflectionToggle
+      }
     } catch {
       setReflectionTool = null
+      reflectionToggleTool = null
     }
   }
 
   async function runReflection(sessionId: string): Promise<void> {
       debug("runReflection called for session:", sessionId.slice(0, 8))
       if (activeReflections.has(sessionId)) return
+
+      // Disabled flag: `touch .reflection/disabled` (project) disables reflection
+      try { await stat(join(directory, '.reflection', 'disabled')); return } catch {}
+
       activeReflections.add(sessionId)
 
       try {
@@ -1924,7 +1961,10 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
     config: async (_config) => {
       return
     },
-    tool: setReflectionTool ? { set_reflection: setReflectionTool } : undefined,
+    tool: (setReflectionTool || reflectionToggleTool) ? {
+      ...(setReflectionTool ? { set_reflection: setReflectionTool } : {}),
+      ...(reflectionToggleTool ? { reflection: reflectionToggleTool } : {}),
+    } : undefined,
     event: async ({ event }: { event: { type: string; properties?: any } }) => {
       debug("event received:", event.type)
       if (event.type === "session.error") {
