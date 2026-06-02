@@ -1,47 +1,48 @@
 # OpenCode Plugins
-<img width="1428" height="926" alt="Screenshot 2026-02-08 at 09 13 26" src="https://github.com/user-attachments/assets/1f507538-be9e-43a4-a1da-cb328e8e1878" />
 
-## @reflection-3.ts - push opencode agent to reflect on the task, useful for continuous interrupted runs
-<img width="1472" height="972" alt="image" src="https://github.com/user-attachments/assets/40f3a752-4b84-4151-93f4-2614330ac653" />
-
-**Task:** Add real-data antipatterns to the reflection plugin's self-assessment judge prompt, tuned via an eval loop (issue #140).
-
-**Why:** The reflection plugin decides whether an agent's work is actually done or whether it stopped prematurely. It was missing the most common real failure modes, so it let premature stops slide. We mined real OpenCode + Claude Code sessions to find what those failures actually look like.
-
-**How:**
-1. **Mined ground truth** — extracted 143 local sessions (OpenCode SQLite + Claude jsonl), built turn-granular `.dataset/*.xml` (634 real user-follow-up examples). Gotcha caught: tool_result carries `role=user`, inflating follow-ups 8x — fixed with `compact()`.
-2. **Classified stops** — 227 cases where agent stopped *and* user replied. Haiku 3x majority-vote labeled them: **177/227 (78%) were premature** — 91 permission-seeking, 68 stopped-with-todos.
-3. **Wrote antipatterns** from that data into the **production** prompts (`buildSelfAssessmentPrompt` + `analyzeSelfAssessmentWithLLM` in `reflection-3.ts`), not just the eval mirror — plus the test-helpers copy that had drifted. Key rule: final-turn yes/no question about something the agent can do itself = premature.
-4. **Eval loop** — fixed dead infra (`~/.env.d/azure-dev.env` has live **gpt-5.1**), updated CI secrets, ran the real promptfoo judge: **34/34, 0 errors**.
-5. **Shipped** — PR #141 squash-merged (`c4dd7bc`), both CI checks green, prod-verified on main, issue #140 closed.
-
-Done and verified through the real channel. Nothing pending except the optional follow-up: stuck/compression/agent eval suites were bumped to gpt-5.1 but only run on manual dispatch — not separately re-verified.
-
-## @claude/ - Claude Code reflection plugin (experimental)
-Port of the reflection idea to Claude Code as a `Stop` hook. Classifies the last assistant turn into one of six categories (complete, working, waiting_for_user_legitimate, tool_available_punt, summary_drift_stop, genuinely_stuck) with Claude Haiku 4.5, and re-prompts the agent when it punted to the user, drifted into "summary + next step + stop", or halted mid-thought. Honors `stop_hook_active` loop guard and caps at 3 inject cycles per session. Install with `claude --plugin-dir ./claude` for dev or via the marketplace once published. See [`claude/README.md`](claude/README.md). Baseline classifier accuracy and dataset are tracked in [`evals/datasets/README.md`](evals/datasets/README.md) and follow-up [#138](https://github.com/dzianisv/opencode-plugins/issues/138).
-
-## @telegram.ts - integrates with Telegram over [t.me/OpencodeMgrBot](@OpenCodeMgrBot) bot
-<img width="1019" height="734" alt="image" src="https://github.com/user-attachments/assets/6f120c14-dba5-431b-a458-0f51f360f561" />
-@tts.ts - uses coqui TTS to read the opencode agent response. Useful to run a few agents on macOS and be notified when one finishes a task. 
-
+**78% of AI coding agent stops are premature.** This is a judge layer that catches them.
 
 [![Tests](https://github.com/dzianisv/opencode-plugins/actions/workflows/test.yml/badge.svg)](https://github.com/dzianisv/opencode-plugins/actions/workflows/test.yml)
+[![npm](https://img.shields.io/npm/v/opencode-reflection.svg)](https://www.npmjs.com/package/opencode-reflection)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![OpenCode](https://img.shields.io/badge/OpenCode-v1.0+-blue.svg)](https://github.com/sst/opencode)
 
-**Make your AI coding assistant actually finish the job.** Self-reflection and task verification for [OpenCode](https://github.com/sst/opencode) - the open-source AI coding agent.
+We measured it: 143 real OpenCode + Claude Code sessions, 227 stops classified. **177/227 (78%) were premature** — 91 stopped to ask "Want me to run the tests?" when they had Bash, 68 listed "Next: create PR" and stopped without doing it.
 
-## The Problem
+`Reflection-3` fires after every agent turn, classifies the stop as complete or premature, and re-prompts with targeted feedback if the agent quit early. It enforces workflow gates: tests must run and pass, PR must be created, CI must be green.
 
-AI coding assistants often:
-- Stop before the task is truly complete
-- Miss edge cases or skip steps
-- Say "done" when tests are failing
-- Require constant human supervision
+**Works on OpenCode and Claude Code.**
 
-## The Solution
+```json
+// opencode.json — add one line
+{ "plugin": ["opencode-reflection"] }
+```
 
-This plugin adds a **judge layer** that automatically evaluates task completion and forces the agent to continue until the work is actually done. Plus, get notified on Telegram when long-running tasks finish - and reply back via text or voice.
+```
+# Claude Code
+/plugin marketplace add dzianisv/opencode-plugins
+/plugin install reflection-cc
+```
+
+<img width="1428" height="926" alt="Reflection plugin in action" src="https://github.com/user-attachments/assets/1f507538-be9e-43a4-a1da-cb328e8e1878" />
+
+---
+
+| Plugin | What it does |
+|--------|-------------|
+| **reflection-3.ts** | Judge layer — re-prompts agent when it stops prematurely |
+| **tts.ts** | TTS + Telegram notifications with two-way voice communication |
+| **worktree-status.ts** | Git worktree status tool |
+
+## The problem in detail
+
+Your coding agent says "Want me to run the tests?" — it has Bash. It writes "Next step: create PR" and stops. It claims "done" without running CI. These aren't rare edge cases. We measured 78%.
+
+The reflection plugin catches this by running a judge after every idle event. The judge's rubric is mined from real sessions, not hand-written heuristics:
+- **PERMISSION-SEEKING**: final turn is a yes/no question about something the agent can do itself → premature
+- **STOPPED-WITH-TODOS**: response lists "remaining tasks" and stops → premature
+- **FALSE-COMPLETE**: claims done but no test commands ran → premature
+
+Implements [Reflexion](https://lilianweng.github.io/posts/2023-06-23-agent/) (Shinn et al. 2023): actor = coding agent, evaluator = LLM judge, verbal feedback injected back into context, max 3 retries. See [`docs/reflection.blog.md`](docs/reflection.blog.md) for the full technical writeup.
 
 | Plugin | Description |
 |--------|-------------|
