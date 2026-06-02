@@ -447,12 +447,26 @@ async function main() {
   // uncaughtException handler exits 0 (fail-safe: no inject, no fs ops).
   const cwd = sanitizeCwd(payload?.cwd ?? process.cwd());
 
-  // ── 1.5. DISABLED FLAG ───────────────────────────────────────────────────
-  const disabledFlag = path.join(cwd, '.reflection', 'disabled');
-  if (fs.existsSync(disabledFlag)) {
-    debug({ msg: 'disabled_by_flag' }, cwd);
-    process.exit(0);
-  }
+  // ── 1.5. SESSION-SCOPED DISABLED CHECK ──────────────────────────────────
+  // Write current session ID so agents can reference it without knowing it upfront:
+  //   cat .reflection/current_session
+  // Disable this session:
+  //   echo "SESSION_ID" >> .reflection/disabled
+  // Enable:
+  //   grep -v "SESSION_ID" .reflection/disabled > .reflection/disabled.tmp && mv .reflection/disabled.tmp .reflection/disabled
+  const reflDir = path.join(cwd, '.reflection');
+  fs.mkdirSync(reflDir, { recursive: true });
+  fs.writeFileSync(path.join(reflDir, 'current_session'), session_id, 'utf8');
+
+  const disabledFlag = path.join(reflDir, 'disabled');
+  try {
+    const disabledIds = fs.readFileSync(disabledFlag, 'utf8')
+      .split('\n').map(l => l.trim()).filter(Boolean);
+    if (disabledIds.includes(session_id)) {
+      debug({ msg: 'disabled_for_session', session_id }, cwd);
+      process.exit(0);
+    }
+  } catch { /* file absent = not disabled */ }
 
   // ── 2. ATTEMPT CAP ────────────────────────────────────────────────────────
   const attempts = readAttempts(session_id, cwd);

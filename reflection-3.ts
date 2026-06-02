@@ -1565,6 +1565,31 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
   const recentlyAbortedSessions = new Map<string, number>()
   const attempts = new Map<string, number>()
   let toolReflectionPrompt: string | null = null
+  let currentSessionId: string | null = null  // tracks most recent active session for the toggle tool
+
+  const disabledFlagPath = join(directory, '.reflection', 'disabled')
+
+  async function isSessionDisabled(sessionId: string): Promise<boolean> {
+    try {
+      const content = await readFile(disabledFlagPath, 'utf8')
+      return content.split('\n').map(l => l.trim()).filter(Boolean).includes(sessionId)
+    } catch { return false }
+  }
+
+  async function setSessionDisabled(sessionId: string, disabled: boolean): Promise<void> {
+    let lines: string[] = []
+    try {
+      const content = await readFile(disabledFlagPath, 'utf8')
+      lines = content.split('\n').map(l => l.trim()).filter(Boolean)
+    } catch {}
+    if (disabled) {
+      if (!lines.includes(sessionId)) lines.push(sessionId)
+    } else {
+      lines = lines.filter(l => l !== sessionId)
+    }
+    await mkdir(join(directory, '.reflection'), { recursive: true })
+    await writeFile(disabledFlagPath, lines.join('\n') + (lines.length ? '\n' : ''))
+  }
 
   const setReflectionDescription = "Use this for difficult or complex tasks to set reflection guidance with a plan/checklist. Provide concrete steps and verification checks so reflection can validate completion quality and catch missed work."
   const executeSetReflection = async (args: { guidance?: string; clear?: boolean }) => {
@@ -1585,21 +1610,15 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
     return msg
   }
 
-  // reflection on/off toggle tool
-  const reflectionToggleDescription = "Enable or disable the reflection judge for this project. Use 'off' to stop reflection from firing on session.idle; 'on' to re-enable it. State persists via .reflection/disabled flag file."
+  // reflection on/off toggle tool (session-scoped: only affects the current session's ID)
+  const reflectionToggleDescription = "Enable or disable the reflection judge for the current session. 'off' adds this session's ID to .reflection/disabled so the judge skips it; 'on' removes it. Other sessions and other running instances are unaffected."
   const executeReflectionToggle = async (args: { action: "on" | "off" }) => {
-    const flagPath = join(directory, '.reflection', 'disabled')
-    if (args.action === "off") {
-      await mkdir(join(directory, '.reflection'), { recursive: true })
-      await writeFile(flagPath, '')
-      return "Reflection disabled for this project. Touch .reflection/disabled to re-disable, or call this tool with action=on."
-    } else {
-      try {
-        const { unlink } = await import("fs/promises")
-        await unlink(flagPath)
-      } catch {}
-      return "Reflection enabled. The judge will fire on the next session.idle."
-    }
+    const sid = currentSessionId
+    if (!sid) return "No active session tracked yet — wait for the first session.idle event, then try again."
+    await setSessionDisabled(sid, args.action === "off")
+    return args.action === "off"
+      ? `Reflection disabled for session ${sid.slice(0, 8)}… (added to .reflection/disabled).`
+      : `Reflection enabled for session ${sid.slice(0, 8)}… (removed from .reflection/disabled).`
   }
 
   let setReflectionTool: any = null
@@ -1649,8 +1668,11 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
       debug("runReflection called for session:", sessionId.slice(0, 8))
       if (activeReflections.has(sessionId)) return
 
-      // Disabled flag: `touch .reflection/disabled` (project) disables reflection
-      try { await stat(join(directory, '.reflection', 'disabled')); return } catch {}
+      currentSessionId = sessionId
+      if (await isSessionDisabled(sessionId)) {
+        debug("Reflection disabled for session:", sessionId.slice(0, 8))
+        return
+      }
 
       activeReflections.add(sessionId)
 
