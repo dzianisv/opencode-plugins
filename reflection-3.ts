@@ -7,7 +7,7 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
-import { readFile, writeFile, mkdir, stat, appendFile } from "fs/promises"
+import { readFile, writeFile, mkdir, stat, appendFile, readdir } from "fs/promises"
 import { join } from "path"
 import { homedir } from "os"
 
@@ -60,6 +60,104 @@ async function loadConfiguredMaxAttempts(): Promise<number | undefined> {
     }
   } catch {}
   return undefined
+}
+
+// ---------------------------------------------------------------------------
+// Supervisor per-session persistence (supervisorStore)
+//
+// Stores goal + retry state at <directory>/.reflection/supervisor/<sessionId>.json
+// so supervisor decisions survive across tool invocations within a session.
+// ---------------------------------------------------------------------------
+
+export interface SupervisorGoal {
+  condition: string
+  status: "active" | "paused" | "achieved" | "cleared" | "exhausted"
+  attempts: number
+  tokenBaseline: number
+  startedAt: number
+  deadline: number
+  lastReason: string
+}
+
+export interface SupervisorState {
+  maxAttempts?: number       // /supervisor:retry override (optional)
+  goal?: SupervisorGoal
+}
+
+function supervisorDir(directory: string): string {
+  return join(directory, ".reflection", "supervisor")
+}
+
+function supervisorPath(directory: string, sessionId: string): string {
+  return join(supervisorDir(directory), `${sessionId}.json`)
+}
+
+export const supervisorStore = {
+  async load(directory: string, sessionId: string): Promise<SupervisorState> {
+    try {
+      const content = await readFile(supervisorPath(directory, sessionId), "utf-8")
+      return JSON.parse(content) as SupervisorState
+    } catch {
+      return {}
+    }
+  },
+
+  async save(directory: string, sessionId: string, state: SupervisorState): Promise<void> {
+    const dir = supervisorDir(directory)
+    await mkdir(dir, { recursive: true })
+    await writeFile(supervisorPath(directory, sessionId), JSON.stringify(state, null, 2), { mode: 0o600 })
+  },
+
+  async setGoal(
+    directory: string,
+    sessionId: string,
+    condition: string,
+    opts?: { tokenBaseline?: number; now?: number; maxDurationMs?: number }
+  ): Promise<SupervisorState> {
+    const state = await supervisorStore.load(directory, sessionId)
+    const now = opts?.now ?? Date.now()
+    const maxDurationMs = opts?.maxDurationMs ?? 1800000
+    state.goal = {
+      condition,
+      status: "active",
+      attempts: 0,
+      tokenBaseline: opts?.tokenBaseline ?? 0,
+      startedAt: now,
+      deadline: now + maxDurationMs,
+      lastReason: "",
+    }
+    await supervisorStore.save(directory, sessionId, state)
+    return state
+  },
+
+  async clearGoal(directory: string, sessionId: string): Promise<SupervisorState> {
+    const state = await supervisorStore.load(directory, sessionId)
+    delete state.goal
+    await supervisorStore.save(directory, sessionId, state)
+    return state
+  },
+
+  async setRetry(directory: string, sessionId: string, n: number): Promise<SupervisorState> {
+    const state = await supervisorStore.load(directory, sessionId)
+    state.maxAttempts = n
+    await supervisorStore.save(directory, sessionId, state)
+    return state
+  },
+
+  async list(directory: string): Promise<string[]> {
+    try {
+      const dir = supervisorDir(directory)
+      const entries = await readdir(dir)
+      // Build result in a local array to ensure consistent realm in ESM environments
+      const ids: string[] = []
+      for (const name of entries) {
+        if (name.endsWith(".json")) ids.push(name.slice(0, -".json".length))
+      }
+      return ids
+    } catch {
+      return []
+    }
+  },
 }
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,46 @@ import assert from "node:assert"
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt, buildJudgePrompt, resolveMaxAttempts, buildEscalatingFeedback } from "../reflection-3.ts"
+import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt, buildJudgePrompt, resolveMaxAttempts, buildEscalatingFeedback, supervisorStore } from "../reflection-3.ts"
+
+describe("supervisorStore", () => {
+  it("saves and loads goal + retry, clears goal but keeps retry", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sup-"))
+    await supervisorStore.setRetry(dir, "s1", 12)
+    await supervisorStore.setGoal(dir, "s1", "tests pass", { now: 1000, maxDurationMs: 5000 })
+    let st = await supervisorStore.load(dir, "s1")
+    assert.strictEqual(st.maxAttempts, 12)
+    assert.strictEqual(st.goal?.status, "active")
+    assert.strictEqual(st.goal?.condition, "tests pass")
+    assert.strictEqual(st.goal?.deadline, 6000)
+    await supervisorStore.clearGoal(dir, "s1")
+    st = await supervisorStore.load(dir, "s1")
+    assert.strictEqual(st.goal, undefined)
+    assert.strictEqual(st.maxAttempts, 12) // retry survives goal clear
+  })
+  it("load returns {} for missing/corrupt files", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sup-"))
+    assert.deepStrictEqual(await supervisorStore.load(dir, "nope"), {})
+    mkdirSync(join(dir, ".reflection", "supervisor"), { recursive: true })
+    writeFileSync(join(dir, ".reflection", "supervisor", "bad.json"), "{not json")
+    assert.deepStrictEqual(await supervisorStore.load(dir, "bad"), {})
+  })
+  it("list returns session ids with state", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sup-"))
+    assert.deepStrictEqual(await supervisorStore.list(dir), [])
+    await supervisorStore.setRetry(dir, "alpha", 4)
+    await supervisorStore.setRetry(dir, "beta", 4)
+    const ids = (await supervisorStore.list(dir)).sort()
+    assert.deepStrictEqual(ids, ["alpha", "beta"])
+  })
+  it("writes files with 0600 perms", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sup-"))
+    await supervisorStore.setRetry(dir, "s1", 4)
+    const { statSync } = await import("node:fs")
+    const mode = statSync(join(dir, ".reflection", "supervisor", "s1.json")).mode & 0o777
+    assert.strictEqual(mode, 0o600)
+  })
+})
 
 describe("supervisor: resolveMaxAttempts", () => {
   it("session override > config > default 16", () => {
