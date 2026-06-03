@@ -2187,8 +2187,12 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         // (budget exhaustion FIRST, then achievement, then continuation). An
         // exhausted goal pauses the loop WITHOUT injecting a continuation; an
         // achieved goal is persisted and falls through to the normal complete
-        // bookkeeping; a continuing goal persists attempts+1 and lets the existing
-        // feedback injection proceed unchanged.
+        // bookkeeping; a continuing goal must ONLY burn budget (attempts+1) when a
+        // continuation is actually injected — so we defer that persist until after
+        // the feedback prompt succeeds (see pendingGoalContinue below). This avoids
+        // silently losing budget on interrupted passes (human-action, new-message,
+        // abort, or per-message max-attempts rechecks that early-return).
+        let pendingGoalContinue: SupervisorState | null = null
         if (goal) {
           const t = decideGoalTransition({
             goal,
@@ -2210,10 +2214,16 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
             debug("Goal budget exhausted, pausing without continuation")
             return
           }
-          // achieved | continue: persist the new goal state. For "achieved", the
-          // existing analysis.complete branch below handles the bookkeeping +
-          // return; for "continue", the existing feedback injection proceeds.
-          await supervisorStore.save(directory, sessionId, { ...sup, goal: t.goal })
+          if (t.action === "achieved") {
+            // Persist the achieved status now; the existing analysis.complete
+            // branch below handles the bookkeeping + return. No attempts increment.
+            await supervisorStore.save(directory, sessionId, { ...sup, goal: t.goal })
+          } else {
+            // "continue": DO NOT persist the attempts++ here. Stash it and only
+            // write it after a continuation is actually injected (post-promptAsync
+            // success). Any early-return below leaves goal.attempts unchanged.
+            pendingGoalContinue = { ...sup, goal: t.goal }
+          }
         }
 
         let crossReview: { modelSpec: string; response: string } | null = null
@@ -2347,6 +2357,12 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         // session.idle (triggered by the agent responding to feedback) does not
         // start another reflection cycle for the same user message.
         lastReflectedMsgId.set(sessionId, lastUserMsgId)
+
+        // Goal budget is burned ONLY here, after a continuation was actually
+        // injected. If any earlier recheck early-returned (or promptAsync above
+        // threw and returned), pendingGoalContinue was never set / never reached,
+        // so goal.attempts stays unchanged — no silent budget loss.
+        if (pendingGoalContinue) await supervisorStore.save(directory, sessionId, pendingGoalContinue)
 
         debug("Reflection pushed continuation")
 

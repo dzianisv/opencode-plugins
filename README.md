@@ -286,7 +286,9 @@ maxAttempts: 32
 /supervisor:retry         # show current effective value (config → default: 16)
 ```
 
-The value is clamped to 1–100. Secondary safety caps (`goalMaxTokens`, `goalMaxDurationMs`) are also configurable in `reflection.yaml` and terminate the loop on spend or wall-clock time regardless of attempt count.
+The value is clamped to 1–100. In addition to the attempt cap, an active goal also terminates on a **fixed 30-minute wall-clock timeout** (the current goal timeout; not yet configurable).
+
+> **Note:** per-goal `goalMaxTokens` (token-spend cap) and a configurable `goalMaxDurationMs` are **planned but not yet wired** — they are not read from `reflection.yaml` today. The goal timeout is currently the hardcoded 30 minutes above, and there is no token-based cap yet.
 
 ### Session goals (`/supervisor:goal`)
 
