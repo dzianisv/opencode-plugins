@@ -56,7 +56,7 @@ describe("reflection-3 unit", () => {
     assert.ok(prompt.includes("Return JSON only"))
     assert.ok(prompt.includes("Local tests required"))
     assert.ok(prompt.includes("Direct pushes"))
-    assert.ok(prompt.includes("Provide a PR URL"))
+    assert.ok(prompt.includes("verify CI checks"))
   })
 
   it("self-assessment prompt includes premature-stop antipatterns", () => {

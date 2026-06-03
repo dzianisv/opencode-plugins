@@ -2,7 +2,7 @@ import assert from "node:assert"
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt } from "../reflection-3.ts"
+import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt, buildJudgePrompt } from "../reflection-3.ts"
 
 describe("supervisor: rubric", () => {
   it("DEFAULT_RUBRIC has both sections and the mined antipatterns", () => {
@@ -57,5 +57,31 @@ describe("supervisor: buildSelfAssessmentPrompt rubric interpolation", () => {
     const prompt = buildSelfAssessmentPrompt(ctx, "AGENTS", "last response", 0, { patterns: "PP-RULE", antipatterns: "ZZ-RULE" })
     assert.match(prompt, /ZZ-RULE/)
     assert.match(prompt, /PP-RULE/)
+  })
+})
+
+describe("supervisor: buildJudgePrompt rubric interpolation", () => {
+  it("buildJudgePrompt interpolates a custom rubric's patterns and antipatterns", () => {
+    const ctx = {
+      taskSummary: "Fix the login bug", taskType: "coding",
+      requiresTests: true, requiresBuild: false, requiresPR: false, requiresCI: false,
+      requiresLocalTests: false,
+      toolsSummary: "npm test → pass",
+    } as any
+    const prompt = buildJudgePrompt(ctx, "assessment text", null, { patterns: "PP-RULE", antipatterns: "ZZ-RULE" })
+    assert.match(prompt, /PP-RULE/, "custom patterns must appear in judge prompt")
+    assert.match(prompt, /ZZ-RULE/, "custom antipatterns must appear in judge prompt")
+  })
+
+  it("buildJudgePrompt uses DEFAULT_RUBRIC when no rubric is provided", () => {
+    const ctx = {
+      taskSummary: "Fix the login bug", taskType: "coding",
+      requiresTests: false, requiresBuild: false, requiresPR: false, requiresCI: false,
+      requiresLocalTests: false,
+      toolsSummary: "(none)",
+    } as any
+    const prompt = buildJudgePrompt(ctx, "assessment text")
+    assert.match(prompt, /PERMISSION-SEEKING/, "default rubric antipatterns must be present")
+    assert.match(prompt, /STOPPED-WITH-TODOS/, "default rubric antipatterns must be present")
   })
 })

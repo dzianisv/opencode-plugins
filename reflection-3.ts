@@ -1406,25 +1406,14 @@ function evaluateSelfAssessment(assessment: SelfAssessment, context: TaskContext
   }
 }
 
-async function analyzeSelfAssessmentWithLLM(
-  client: any,
-  directory: string,
+export function buildJudgePrompt(
   context: TaskContext,
   selfAssessment: string,
-  judgeSessionIds: Set<string>,
   toolReflectionPrompt?: string | null,
   rubric?: Rubric
-): Promise<ReflectionAnalysis | null> {
+): string {
   const rb = rubric ?? parseRubric(DEFAULT_RUBRIC)
-  const modelList = await loadReflectionModelList()
-  const preferredModel = await loadPreferredModelSpec(directory)
-  const attempts = modelList.length
-    ? modelList
-    : preferredModel && !isBlockedJudgeModel(preferredModel)
-      ? [preferredModel]
-      : [""]
-
-  const prompt = `ANALYZE REFLECTION-3
+  return `ANALYZE REFLECTION-3
 
 You are validating an agent's self-assessment against workflow requirements.
 
@@ -1462,6 +1451,26 @@ Return JSON only:
   "next_actions": ["actions to take"],
   "requires_human_action": true/false
 }`
+}
+
+async function analyzeSelfAssessmentWithLLM(
+  client: any,
+  directory: string,
+  context: TaskContext,
+  selfAssessment: string,
+  judgeSessionIds: Set<string>,
+  toolReflectionPrompt?: string | null,
+  rubric?: Rubric
+): Promise<ReflectionAnalysis | null> {
+  const modelList = await loadReflectionModelList()
+  const preferredModel = await loadPreferredModelSpec(directory)
+  const attempts = modelList.length
+    ? modelList
+    : preferredModel && !isBlockedJudgeModel(preferredModel)
+      ? [preferredModel]
+      : [""]
+
+  const prompt = buildJudgePrompt(context, selfAssessment, toolReflectionPrompt, rubric)
 
   for (const modelSpec of attempts) {
     let judgeSession: any
