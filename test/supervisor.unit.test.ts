@@ -2,7 +2,7 @@ import assert from "node:assert"
 import { mkdtempSync, writeFileSync, mkdirSync, chmodSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt, buildJudgePrompt, resolveMaxAttempts, buildEscalatingFeedback, supervisorStore, parseSupervisorCommand } from "../reflection-3.ts"
+import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt, buildJudgePrompt, resolveMaxAttempts, buildEscalatingFeedback, supervisorStore, parseSupervisorCommand, buildGoalRequirementSection } from "../reflection-3.ts"
 
 describe("supervisorStore", () => {
   it("saves and loads goal + retry, clears goal but keeps retry", async () => {
@@ -250,5 +250,23 @@ describe("supervisor: parseSupervisorCommand", () => {
   })
   it("unknown command name", () => {
     assert.deepStrictEqual(parseSupervisorCommand("frobnicate", "x"), { kind: "unknown", name: "frobnicate" })
+  })
+})
+
+describe("supervisor: buildGoalRequirementSection", () => {
+  it("embeds the condition and a mandatory marker + evidence rule", () => {
+    const s = buildGoalRequirementSection("all tests in test/auth pass")
+    assert.match(s, /MANDATORY/)
+    assert.match(s, /all tests in test\/auth pass/)
+    assert.match(s, /evidence/i)
+  })
+  it("trims the condition", () => {
+    const s = buildGoalRequirementSection("   do X   ")
+    assert.match(s, /do X/)
+    assert.ok(!s.includes("   do X   "))
+  })
+  it("returns empty string for blank condition", () => {
+    assert.strictEqual(buildGoalRequirementSection("   "), "")
+    assert.strictEqual(buildGoalRequirementSection(""), "")
   })
 })

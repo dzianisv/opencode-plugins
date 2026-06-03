@@ -213,6 +213,37 @@ export function parseSupervisorCommand(name: string, args: string): SupervisorCo
 }
 
 // ---------------------------------------------------------------------------
+// buildGoalRequirementSection — prompt fragment for active session goals
+//
+// Appended to the judge/self-assessment rubric when a goal is active. Pure,
+// no I/O. Returns an empty string for blank conditions (caller should skip
+// appending in that case).
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a prompt fragment that tells the evaluator a user-set goal condition
+ * is a MANDATORY completion requirement, additional to the existing workflow
+ * gates. A claim that the condition is met must be backed by transcript
+ * evidence (commands + output / tests actually run).
+ *
+ * @param condition - the goal condition string (will be trimmed)
+ * @returns a labeled prompt block, or "" if condition is blank
+ */
+export function buildGoalRequirementSection(condition: string): string {
+  const trimmed = condition.trim()
+  if (!trimmed) return ""
+  return `## GOAL (mandatory completion requirement)
+
+MANDATORY: The following user-set goal condition MUST be demonstrably met before the task can be considered complete:
+
+  "${trimmed}"
+
+This is an ADDITIONAL requirement on top of the existing workflow gates (tests, build, PR, CI checks) — it does not replace them. The task is NOT complete until this condition is satisfied AND all normal completion criteria are met.
+
+Evidence rule: a claim that this goal condition is met must be backed by evidence already surfaced in the transcript — commands run and their output, tests actually executed, artefacts produced. A bare assertion that the condition is satisfied does NOT count as evidence.`
+}
+
+// ---------------------------------------------------------------------------
 // Supervisor rubric (configurable patterns/antipatterns)
 //
 // The judge's positive completion rules ("Patterns") and the mined
