@@ -231,6 +231,89 @@ cd ~/.config/opencode && \
 
 ---
 
+## Supervisor Mode
+
+`reflection-3` v3+ ships a **supervisor control surface** layered on top of the always-on reflection engine: a configurable rubric, a configurable retry budget, and a session-scoped goal command. All three features share the same independent-judge loop that already drives reflection — no new evaluator model, no separate feedback channel.
+
+> **Status:** The engine and state layer (`supervisorStore`, rubric loader, goal-loop integration) are implemented in `reflection-3.ts`. The slash-command surface (`/supervisor:goal`, `/supervisor:retry`) is being finalized — the `.opencode/command/supervisor/` command files are not yet shipped. The sections below describe the intended UX.
+
+### Configurable rubric (`rubric.md`)
+
+The judge's completion rules are no longer hardcoded. They live in a single Markdown file with two sections:
+
+- `## Patterns` — what "done" looks like (positive completion criteria)
+- `## Antipatterns` — the mined premature-stop rules: PERMISSION-SEEKING, STOPPED-WITH-TODOS, FALSE-COMPLETE, and others
+
+The plugin ships an embedded default (seeded from the 227-session dataset), so the single-file install path keeps working with no extra files to manage. Create a `rubric.md` only when you want to tune the judge for your workflow.
+
+**Resolution order (first found wins):**
+
+| Priority | Path |
+|----------|------|
+| 1 | `.reflection/rubric.md` (project-level) |
+| 2 | `~/.config/opencode/supervisor/rubric.md` (global) |
+| 3 | Embedded default |
+
+A file missing either `## Patterns` or `## Antipatterns` is treated as malformed and the embedded default is used in full — the judge never runs with an empty rubric.
+
+**Minimal override example** (project-level):
+
+```markdown
+## Patterns
+- All acceptance criteria in the task description are addressed with evidence
+- Any modified code has a corresponding test that was run after the change
+
+## Antipatterns
+- PERMISSION-SEEKING: agent asks "should I run X?" when it has the tool to do so
+- STOPPED-WITH-TODOS: response ends with a "next steps" list and no further action
+- FALSE-COMPLETE: claims done but no test run appears in the tool calls
+```
+
+### Configurable retry budget
+
+The default retry cap is **16** (raised from 3). This governs all reflection re-prompts — both the always-on judge and the goal loop when active.
+
+**Global default** — add `maxAttempts` to `~/.config/opencode/reflection.yaml`:
+
+```yaml
+maxAttempts: 32
+```
+
+**Per-session override** (once command files are shipped):
+
+```
+/supervisor:retry 24      # set the cap for this session
+/supervisor:retry         # show current effective value (config → default: 16)
+```
+
+The value is clamped to 1–100. Secondary safety caps (`goalMaxTokens`, `goalMaxDurationMs`) are also configurable in `reflection.yaml` and terminate the loop on spend or wall-clock time regardless of attempt count.
+
+### Session goals (`/supervisor:goal`)
+
+Set a session-scoped completion condition. The independent judge then keeps the agent working until **both** the condition is met **and** all applicable workflow gates pass. A docs-only task won't require a PR or green CI; a coding task will.
+
+| Command | Effect |
+|---------|--------|
+| `/supervisor:goal <condition>` | Set (or replace) the session goal and start working toward it (≤ 4000 chars) |
+| `/supervisor:goal` | Show status: condition, attempts used / budget, last judge reason |
+| `/supervisor:goal clear` | Clear the active goal (aliases: `stop`, `off`, `reset`, `none`, `cancel`) |
+
+The goal is layered **on top of** the rubric as a mandatory completion requirement — it does not replace the workflow gates. Completion auto-clears the goal. Exhausting the retry budget pauses it; no further auto-continuation fires until the user re-sets the goal or raises the budget.
+
+**Example:**
+
+```
+/supervisor:goal all tests in test/auth/ pass and the PR is open with green CI
+```
+
+The judge evaluates: "do the applicable gates pass **and** is this condition met with evidence?" A bare "condition met" claim with no evidence (tests not run, no PR URL) yields `complete=false` and the loop continues.
+
+### Provider note for long unattended runs
+
+For extended autonomous or overnight runs, prefer the **`anthropic`** provider for the main agent session. The `github-copilot` provider rejects assistant-message prefill with a 400 error, which can silently break auto-continuation in some OpenCode internals. The supervisor's continuation mechanism injects a **user turn** via `promptAsync` — this is provider-safe by design — but the note stands as a general best practice for unattended work.
+
+---
+
 ## Reflection Plugin
 
 Evaluates task completion after each agent response and provides feedback if work is incomplete.
