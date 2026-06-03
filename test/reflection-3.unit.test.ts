@@ -714,11 +714,12 @@ describe("buildEscalatingFeedback", () => {
     assert.ok(!result.includes("Some feedback"))
   })
 
-  it("escalates to final attempt message after attempt 2", () => {
+  it("escalates to final attempt message at the penultimate attempt relative to cap", () => {
     const verdict = { missing: ["Run tests", "Create PR", "Check CI", "Update docs"] }
-    const result = buildEscalatingFeedback(3, "high", verdict, false)
+    // With default cap (16), attempt 15 is the final attempt (15 >= 16-1)
+    const result = buildEscalatingFeedback(15, "high", verdict, false)
     assert.ok(result.includes("Final Attempt"))
-    assert.ok(result.includes("3/16"))
+    assert.ok(result.includes("15/16"))
     // Should truncate to first 3 missing items
     assert.ok(result.includes("Run tests"))
     assert.ok(result.includes("Create PR"))
@@ -727,6 +728,24 @@ describe("buildEscalatingFeedback", () => {
     // Should include give-up guidance
     assert.ok(result.includes("LAST chance"))
     assert.ok(result.includes("needs_user_action"))
+  })
+
+  it("escalates to final attempt when custom cap makes attemptCount the penultimate", () => {
+    const verdict = { missing: ["Run tests", "Create PR", "Check CI", "Update docs"] }
+    // With cap=4, attempt 3 is final (3 >= 4-1)
+    const result = buildEscalatingFeedback(3, "high", verdict, false, false, 4)
+    assert.ok(result.includes("Final Attempt"))
+    assert.ok(result.includes("3/4"))
+    assert.ok(result.includes("Run tests"))
+    assert.ok(result.includes("LAST chance"))
+  })
+
+  it("stays in Task Incomplete tier when below penultimate attempt", () => {
+    const verdict = { missing: ["Run tests"] }
+    // With default cap (16), attempt 3 is still in early tier (3 < 15)
+    const result = buildEscalatingFeedback(3, "high", verdict, false)
+    assert.ok(result.includes("Task Incomplete"))
+    assert.ok(!result.includes("Final Attempt"))
   })
 
   it("handles verdict with empty arrays", () => {

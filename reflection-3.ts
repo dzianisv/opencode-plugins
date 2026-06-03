@@ -51,8 +51,11 @@ async function loadConfiguredMaxAttempts(): Promise<number | undefined> {
       if (!line || line.startsWith("#")) continue
       const match = line.match(/^maxAttempts\s*:\s*(\S+)/)
       if (match) {
-        const value = parseInt(match[1], 10)
-        if (Number.isFinite(value)) return value
+        const raw = match[1].trim()
+        if (/^\d+$/.test(raw)) {
+          const value = parseInt(raw, 10)
+          if (Number.isFinite(value)) return value
+        }
       }
     }
   } catch {}
@@ -484,12 +487,14 @@ export function buildEscalatingFeedback(
   severity: string,
   verdict: { feedback?: string; missing?: string[]; next_actions?: string[] } | undefined | null,
   isPlanningLoop: boolean,
-  isActionLoop?: boolean
+  isActionLoop?: boolean,
+  maxAttempts?: number
 ): string {
   const safeVerdict = verdict ?? {}
   const missingItems = Array.isArray(safeVerdict.missing) ? safeVerdict.missing : []
   const nextActionItems = Array.isArray(safeVerdict.next_actions) ? safeVerdict.next_actions : []
   const feedbackStr = safeVerdict.feedback || ""
+  const effectiveCap = maxAttempts ?? DEFAULT_MAX_ATTEMPTS
   if (isPlanningLoop) {
     return `${FEEDBACK_MARKER} STOP: Planning Loop Detected
 
@@ -508,7 +513,7 @@ Start coding NOW. No more planning.`
   }
 
   if (isActionLoop) {
-    return `${FEEDBACK_MARKER} STOP: Action Loop Detected (attempt ${attemptCount}/${DEFAULT_MAX_ATTEMPTS})
+    return `${FEEDBACK_MARKER} STOP: Action Loop Detected (attempt ${attemptCount}/${effectiveCap})
 
 You are repeating the same commands without making progress. Running the same deploy/test/build cycle again will produce the same result.
 
@@ -520,7 +525,7 @@ STOP and do ONE of these:
 Do NOT re-run the same command hoping for a different result.`
   }
 
-  if (attemptCount <= 2) {
+  if (attemptCount < effectiveCap - 1) {
     const missing = missingItems.length
       ? `\n### Missing\n${missingItems.map((m) => `- ${m}`).join("\n")}`
       : ""
@@ -538,7 +543,7 @@ Please address these issues and continue.`
   const missingBrief = missingItems.length
     ? `Still missing: ${missingItems.slice(0, 3).join(", ")}.`
     : ""
-  return `${FEEDBACK_MARKER} Final Attempt (${attemptCount}/${DEFAULT_MAX_ATTEMPTS})
+  return `${FEEDBACK_MARKER} Final Attempt (${attemptCount}/${effectiveCap})
 
 ${missingBrief}
 
@@ -1161,7 +1166,8 @@ export function buildSelfAssessmentPrompt(
   agents: string,
   lastAssistantText?: string,
   attemptCount?: number,
-  rubric?: Rubric
+  rubric?: Rubric,
+  maxAttempts?: number
 ): string {
   const safeContext = {
     ...context,
@@ -1183,9 +1189,10 @@ export function buildSelfAssessmentPrompt(
     : ""
 
   const rb = rubric ?? parseRubric(DEFAULT_RUBRIC)
+  const effectiveCap = maxAttempts ?? DEFAULT_MAX_ATTEMPTS
   const currentAttempt = attemptCount || 0
   const attemptSection = currentAttempt > 0
-    ? `\n## Reflection History\n- This is reflection attempt ${currentAttempt + 1}/${DEFAULT_MAX_ATTEMPTS} for this task.\n- Previous reflections found the task incomplete.\n- If you are repeating the same actions without progress, set "stuck": true and explain what is blocking you.\n`
+    ? `\n## Reflection History\n- This is reflection attempt ${currentAttempt + 1}/${effectiveCap} for this task.\n- Previous reflections found the task incomplete.\n- If you are repeating the same actions without progress, set "stuck": true and explain what is blocking you.\n`
     : ""
   return `SELF-ASSESS REFLECTION-3
 
@@ -1808,12 +1815,14 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         const agents = await getAgentsFile(directory)
         const rubric = await loadRubric(directory)
         const currentAttemptCount = attempts.get(attemptKey) || 0
+        const effectiveMaxAttempts = resolveMaxAttempts({ sessionOverride: undefined, config: await loadConfiguredMaxAttempts() })
         const defaultReflectionPrompt = buildSelfAssessmentPrompt(
           context,
           agents,
           lastAssistantText,
           currentAttemptCount,
-          rubric
+          rubric,
+          effectiveMaxAttempts
         )
         const resolvedPrompt = resolveReflectionPromptPrecedence(customPrompt, toolReflectionPrompt, defaultReflectionPrompt)
         const reflectionPrompt = resolvedPrompt.prompt
@@ -2018,7 +2027,6 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           return
         }
 
-        const effectiveMaxAttempts = resolveMaxAttempts({ sessionOverride: undefined, config: await loadConfiguredMaxAttempts() })
         const nextAttemptCount = (attempts.get(attemptKey) || 0) + 1
         attempts.set(attemptKey, nextAttemptCount)
         if (nextAttemptCount >= effectiveMaxAttempts) {
@@ -2040,7 +2048,8 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
             next_actions: analysis.nextActions
           },
           usePlanningLoopMessage,
-          actionLoopCheck.detected
+          actionLoopCheck.detected,
+          effectiveMaxAttempts
         )
 
         // Apply task-based model routing to feedback injection
