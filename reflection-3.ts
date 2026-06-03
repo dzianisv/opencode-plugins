@@ -7,7 +7,7 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
-import { readFile, writeFile, mkdir, stat, appendFile, readdir } from "fs/promises"
+import { readFile, writeFile, mkdir, stat, appendFile, readdir, chmod } from "fs/promises"
 import { join } from "path"
 import { homedir } from "os"
 
@@ -23,6 +23,7 @@ async function reportError(err: unknown, context?: Record<string, string>): Prom
 const SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
 const FEEDBACK_MARKER = "## Reflection-3:"
 const DEFAULT_MAX_ATTEMPTS = 16
+const DEFAULT_MAX_GOAL_DURATION_MS = 30 * 60 * 1000
 
 /**
  * Pure function: resolve the effective max attempts from opts (no I/O).
@@ -88,6 +89,13 @@ function supervisorDir(directory: string): string {
   return join(directory, ".reflection", "supervisor")
 }
 
+/** Guard against path-traversal attacks via a malformed sessionId. */
+function assertSafeSessionId(sessionId: string): void {
+  if (!sessionId || sessionId.includes("/") || sessionId.includes("\\") || sessionId.includes("..")) {
+    throw new Error(`Invalid sessionId: ${JSON.stringify(sessionId)}`)
+  }
+}
+
 function supervisorPath(directory: string, sessionId: string): string {
   return join(supervisorDir(directory), `${sessionId}.json`)
 }
@@ -103,9 +111,12 @@ export const supervisorStore = {
   },
 
   async save(directory: string, sessionId: string, state: SupervisorState): Promise<void> {
+    assertSafeSessionId(sessionId)
     const dir = supervisorDir(directory)
     await mkdir(dir, { recursive: true })
-    await writeFile(supervisorPath(directory, sessionId), JSON.stringify(state, null, 2), { mode: 0o600 })
+    const filePath = supervisorPath(directory, sessionId)
+    await writeFile(filePath, JSON.stringify(state, null, 2), { mode: 0o600 })
+    await chmod(filePath, 0o600)
   },
 
   async setGoal(
@@ -116,7 +127,7 @@ export const supervisorStore = {
   ): Promise<SupervisorState> {
     const state = await supervisorStore.load(directory, sessionId)
     const now = opts?.now ?? Date.now()
-    const maxDurationMs = opts?.maxDurationMs ?? 1800000
+    const maxDurationMs = opts?.maxDurationMs ?? DEFAULT_MAX_GOAL_DURATION_MS
     state.goal = {
       condition,
       status: "active",
@@ -147,11 +158,11 @@ export const supervisorStore = {
   async list(directory: string): Promise<string[]> {
     try {
       const dir = supervisorDir(directory)
-      const entries = await readdir(dir)
+      const entries = await readdir(dir, { withFileTypes: true })
       // Build result in a local array to ensure consistent realm in ESM environments
       const ids: string[] = []
-      for (const name of entries) {
-        if (name.endsWith(".json")) ids.push(name.slice(0, -".json".length))
+      for (const e of entries) {
+        if (e.isFile() && e.name.endsWith(".json")) ids.push(e.name.slice(0, -".json".length))
       }
       return ids
     } catch {
