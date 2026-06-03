@@ -2,7 +2,20 @@ import assert from "node:assert"
 import { mkdtempSync, writeFileSync, mkdirSync, chmodSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt, buildJudgePrompt, resolveMaxAttempts, buildEscalatingFeedback, supervisorStore, parseSupervisorCommand, buildGoalRequirementSection } from "../reflection-3.ts"
+import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt, buildJudgePrompt, resolveMaxAttempts, buildEscalatingFeedback, supervisorStore, parseSupervisorCommand, buildGoalRequirementSection, decideGoalTransition } from "../reflection-3.ts"
+
+function mkGoal(over: Partial<any> = {}): any {
+  return {
+    condition: "do X",
+    status: "active",
+    attempts: 0,
+    tokenBaseline: 0,
+    startedAt: 1000,
+    deadline: 10000,
+    lastReason: "",
+    ...over,
+  }
+}
 
 describe("supervisorStore", () => {
   it("saves and loads goal + retry, clears goal but keeps retry", async () => {
@@ -268,5 +281,77 @@ describe("supervisor: buildGoalRequirementSection", () => {
   it("returns empty string for blank condition", () => {
     assert.strictEqual(buildGoalRequirementSection("   "), "")
     assert.strictEqual(buildGoalRequirementSection(""), "")
+  })
+  it("states the goal is ADDITIONAL to the gates and that they still apply", () => {
+    const s = buildGoalRequirementSection("do X")
+    assert.match(s, /ADDITIONAL/)
+    assert.match(s, /does not replace/)
+    assert.match(s, /workflow gates/)
+  })
+})
+
+describe("supervisor: decideGoalTransition", () => {
+  it("attempts at cap (complete=false) → exhausted, not continue", () => {
+    const goal = mkGoal({ attempts: 16 })
+    const t = decideGoalTransition({ goal, complete: false, now: 5000, maxAttempts: 16, reason: "still failing" })
+    assert.strictEqual(t.action, "exhausted")
+    assert.strictEqual(t.goal.status, "exhausted")
+    assert.strictEqual(t.goal.lastReason, "still failing")
+    // attempts not incremented on exhaustion
+    assert.strictEqual(t.goal.attempts, 16)
+  })
+
+  it("attempts over cap → exhausted even if complete", () => {
+    const goal = mkGoal({ attempts: 20 })
+    const t = decideGoalTransition({ goal, complete: true, now: 5000, maxAttempts: 16 })
+    assert.strictEqual(t.action, "exhausted")
+    assert.strictEqual(t.goal.status, "exhausted")
+  })
+
+  it("deadline exceeded with attempts under cap → exhausted", () => {
+    const goal = mkGoal({ attempts: 2, deadline: 4000 })
+    const t = decideGoalTransition({ goal, complete: false, now: 5000, maxAttempts: 16, reason: "timed out" })
+    assert.strictEqual(t.action, "exhausted")
+    assert.strictEqual(t.goal.status, "exhausted")
+    assert.strictEqual(t.goal.lastReason, "timed out")
+  })
+
+  it("now exactly at deadline → exhausted (>=)", () => {
+    const goal = mkGoal({ attempts: 1, deadline: 5000 })
+    const t = decideGoalTransition({ goal, complete: false, now: 5000, maxAttempts: 16 })
+    assert.strictEqual(t.action, "exhausted")
+  })
+
+  it("complete and within budget → achieved", () => {
+    const goal = mkGoal({ attempts: 3 })
+    const t = decideGoalTransition({ goal, complete: true, now: 5000, maxAttempts: 16, reason: "tests pass" })
+    assert.strictEqual(t.action, "achieved")
+    assert.strictEqual(t.goal.status, "achieved")
+    assert.strictEqual(t.goal.lastReason, "tests pass")
+    assert.strictEqual(t.goal.attempts, 3, "attempts unchanged on achieved")
+  })
+
+  it("not complete and within budget → continue, attempts incremented", () => {
+    const goal = mkGoal({ attempts: 3 })
+    const t = decideGoalTransition({ goal, complete: false, now: 5000, maxAttempts: 16, reason: "missing tests" })
+    assert.strictEqual(t.action, "continue")
+    assert.strictEqual(t.goal.status, "active")
+    assert.strictEqual(t.goal.attempts, 4)
+    assert.strictEqual(t.goal.lastReason, "missing tests")
+  })
+
+  it("falls back to existing lastReason when reason omitted", () => {
+    const goal = mkGoal({ attempts: 1, lastReason: "previous" })
+    const t = decideGoalTransition({ goal, complete: false, now: 5000, maxAttempts: 16 })
+    assert.strictEqual(t.action, "continue")
+    assert.strictEqual(t.goal.lastReason, "previous")
+  })
+
+  it("does not mutate the input goal", () => {
+    const goal = mkGoal({ attempts: 1 })
+    decideGoalTransition({ goal, complete: false, now: 5000, maxAttempts: 16, reason: "x" })
+    assert.strictEqual(goal.attempts, 1)
+    assert.strictEqual(goal.status, "active")
+    assert.strictEqual(goal.lastReason, "")
   })
 })

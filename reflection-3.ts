@@ -244,6 +244,38 @@ Evidence rule: a claim that this goal condition is met must be backed by evidenc
 }
 
 // ---------------------------------------------------------------------------
+// decideGoalTransition — pure decision for an active session goal
+//
+// Given the current goal, the judge's verdict, and the budget, decide the next
+// goal state. No I/O; returns a NEW goal object (never mutates the input).
+// Applied in strict order: budget exhaustion FIRST (attempts cap or deadline),
+// then achievement, then continuation (which increments attempts).
+// ---------------------------------------------------------------------------
+
+export type GoalTransition =
+  | { action: "exhausted"; goal: SupervisorGoal }
+  | { action: "achieved"; goal: SupervisorGoal }
+  | { action: "continue"; goal: SupervisorGoal }
+
+export function decideGoalTransition(params: {
+  goal: SupervisorGoal
+  complete: boolean
+  now: number
+  maxAttempts: number
+  reason?: string
+}): GoalTransition {
+  const { goal, complete, now, maxAttempts, reason } = params
+  const lastReason = reason ?? goal.lastReason
+  if (goal.attempts >= maxAttempts || now >= goal.deadline) {
+    return { action: "exhausted", goal: { ...goal, status: "exhausted", lastReason } }
+  }
+  if (complete) {
+    return { action: "achieved", goal: { ...goal, status: "achieved", lastReason } }
+  }
+  return { action: "continue", goal: { ...goal, status: "active", attempts: goal.attempts + 1, lastReason } }
+}
+
+// ---------------------------------------------------------------------------
 // Supervisor rubric (configurable patterns/antipatterns)
 //
 // The judge's positive completion rules ("Patterns") and the mined
@@ -1996,21 +2028,43 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         const agents = await getAgentsFile(directory)
         const rubric = await loadRubric(directory)
         const currentAttemptCount = attempts.get(attemptKey) || 0
-        const effectiveMaxAttempts = resolveMaxAttempts({ sessionOverride: undefined, config: await loadConfiguredMaxAttempts() })
+        // Supervisor goal/retry state. A /supervisor:retry override applies even
+        // without a goal (sessionOverride). An active goal augments the judge
+        // rubric with a mandatory completion requirement and drives the goal loop.
+        const sup = await supervisorStore.load(directory, sessionId)
+        const goal = sup.goal && sup.goal.status === "active" ? sup.goal : null
+        const effectiveMaxAttempts = resolveMaxAttempts({ sessionOverride: sup.maxAttempts, config: await loadConfiguredMaxAttempts() })
+        // When a goal is active, its condition is the strongest stated intent and
+        // MUST compose with the existing gates: build the DEFAULT rubric prompt
+        // with the goal requirement appended, bypassing file/tool precedence.
+        const effRubric: Rubric = goal
+          ? { ...rubric, antipatterns: `${rubric.antipatterns}\n\n${buildGoalRequirementSection(goal.condition)}` }
+          : rubric
         const defaultReflectionPrompt = buildSelfAssessmentPrompt(
           context,
           agents,
           lastAssistantText,
           currentAttemptCount,
-          rubric,
+          effRubric,
           effectiveMaxAttempts
         )
-        const resolvedPrompt = resolveReflectionPromptPrecedence(customPrompt, toolReflectionPrompt, defaultReflectionPrompt)
-        const reflectionPrompt = resolvedPrompt.prompt
-        const effectiveToolReflectionPrompt = resolvedPrompt.effectiveToolReflectionPrompt
+        let reflectionPrompt: string
+        let effectiveToolReflectionPrompt: string | null
+        let promptSource: "file" | "tool" | "default" | "goal"
+        if (goal) {
+          // Goal active: use the default (goal-augmented) prompt directly.
+          reflectionPrompt = defaultReflectionPrompt
+          effectiveToolReflectionPrompt = null
+          promptSource = "goal"
+        } else {
+          const resolvedPrompt = resolveReflectionPromptPrecedence(customPrompt, toolReflectionPrompt, defaultReflectionPrompt)
+          reflectionPrompt = resolvedPrompt.prompt
+          effectiveToolReflectionPrompt = resolvedPrompt.effectiveToolReflectionPrompt
+          promptSource = resolvedPrompt.source
+        }
 
         await showToast(client, directory, "Requesting reflection self-assessment...", "info")
-        debug("Requesting reflection self-assessment (source:", resolvedPrompt.source, ")")
+        debug("Requesting reflection self-assessment (source:", promptSource, ")")
 
         // Issue #98: Run self-assessment in a separate ephemeral session instead
         // of prompting the active agent session. Asking the active session to
@@ -2115,7 +2169,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
             selfAssessment,
             judgeSessionIds,
             effectiveToolReflectionPrompt,
-            rubric
+            effRubric
           )
         }
 
@@ -2127,6 +2181,39 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         }
 
         debug("Reflection analysis completed")
+
+        // Supervisor goal loop: when an active goal exists, decide its next state
+        // (budget exhaustion FIRST, then achievement, then continuation). An
+        // exhausted goal pauses the loop WITHOUT injecting a continuation; an
+        // achieved goal is persisted and falls through to the normal complete
+        // bookkeeping; a continuing goal persists attempts+1 and lets the existing
+        // feedback injection proceed unchanged.
+        if (goal) {
+          const t = decideGoalTransition({
+            goal,
+            complete: analysis.complete,
+            now: Date.now(),
+            maxAttempts: effectiveMaxAttempts,
+            reason: analysis.reason,
+          })
+          if (t.action === "exhausted") {
+            await supervisorStore.save(directory, sessionId, { ...sup, goal: t.goal })
+            attempts.delete(attemptKey)
+            lastReflectedMsgId.set(sessionId, lastUserMsgId)
+            await showToast(
+              client,
+              directory,
+              `Goal budget exhausted (${t.goal.attempts} attempts) — paused`,
+              "warning"
+            )
+            debug("Goal budget exhausted, pausing without continuation")
+            return
+          }
+          // achieved | continue: persist the new goal state. For "achieved", the
+          // existing analysis.complete branch below handles the bookkeeping +
+          // return; for "continue", the existing feedback injection proceeds.
+          await supervisorStore.save(directory, sessionId, { ...sup, goal: t.goal })
+        }
 
         let crossReview: { modelSpec: string; response: string } | null = null
         if (analysis.complete) {
@@ -2168,6 +2255,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         if (analysis.complete) {
           attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
+          if (goal) await showToast(client, directory, `Goal achieved ✓`, "success")
           await showToast(client, directory, `Task complete ✓ (${analysis.severity})`, "success")
           debug("Reflection complete")
           return
