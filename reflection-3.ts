@@ -2037,8 +2037,9 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         // When a goal is active, its condition is the strongest stated intent and
         // MUST compose with the existing gates: build the DEFAULT rubric prompt
         // with the goal requirement appended, bypassing file/tool precedence.
-        const effRubric: Rubric = goal
-          ? { ...rubric, antipatterns: `${rubric.antipatterns}\n\n${buildGoalRequirementSection(goal.condition)}` }
+        const goalSection = goal ? buildGoalRequirementSection(goal.condition) : ""
+        const effRubric: Rubric = goalSection
+          ? { ...rubric, antipatterns: `${rubric.antipatterns}\n\n${goalSection}` }
           : rubric
         const defaultReflectionPrompt = buildSelfAssessmentPrompt(
           context,
@@ -2255,8 +2256,7 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
         if (analysis.complete) {
           attempts.delete(attemptKey)
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
-          if (goal) await showToast(client, directory, `Goal achieved ✓`, "success")
-          await showToast(client, directory, `Task complete ✓ (${analysis.severity})`, "success")
+          await showToast(client, directory, goal ? `Goal achieved ✓ (${analysis.severity})` : `Task complete ✓ (${analysis.severity})`, "success")
           debug("Reflection complete")
           return
         }
@@ -2296,6 +2296,9 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           return
         }
 
+        // When a goal is active, goal.attempts (persisted) guards the budget via
+        // decideGoalTransition above; this per-message counter still fires as the
+        // fallback cap for ordinary sessions without a goal. They coexist on purpose.
         const nextAttemptCount = (attempts.get(attemptKey) || 0) + 1
         attempts.set(attemptKey, nextAttemptCount)
         if (nextAttemptCount >= effectiveMaxAttempts) {
