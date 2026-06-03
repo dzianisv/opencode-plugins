@@ -2,7 +2,7 @@ import assert from "node:assert"
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DEFAULT_RUBRIC, parseRubric, loadRubric } from "../reflection-3.ts"
+import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt } from "../reflection-3.ts"
 
 describe("supervisor: rubric", () => {
   it("DEFAULT_RUBRIC has both sections and the mined antipatterns", () => {
@@ -42,5 +42,20 @@ describe("supervisor: rubric", () => {
     const r = await loadRubric(dir)
     assert.strictEqual(r.source, "default")
     assert.match(r.antipatterns, /FALSE-COMPLETE/)
+  })
+})
+
+describe("supervisor: buildSelfAssessmentPrompt rubric interpolation", () => {
+  it("buildSelfAssessmentPrompt interpolates the provided rubric antipatterns", () => {
+    const ctx = {
+      taskSummary: "x", taskType: "coding", agentMode: "build",
+      requiresTests: false, requiresBuild: false, requiresPR: false, requiresCI: false,
+      requiresLocalTests: false, requiresLocalTestsEvidence: false,
+      humanMessages: [], toolsSummary: "none", detectedSignals: [], recentCommands: [],
+      pushedToDefaultBranch: false,
+    } as any
+    const prompt = buildSelfAssessmentPrompt(ctx, "AGENTS", "last response", 0, { patterns: "PP-RULE", antipatterns: "ZZ-RULE" })
+    assert.match(prompt, /ZZ-RULE/)
+    assert.match(prompt, /PP-RULE/)
   })
 })
