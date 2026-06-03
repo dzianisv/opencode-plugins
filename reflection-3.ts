@@ -24,6 +24,77 @@ const SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
 const FEEDBACK_MARKER = "## Reflection-3:"
 const MAX_ATTEMPTS = 3
 
+// ---------------------------------------------------------------------------
+// Supervisor rubric (configurable patterns/antipatterns)
+//
+// The judge's positive completion rules ("Patterns") and the mined
+// premature-stop rules ("Antipatterns") were historically hardcoded inline in
+// two prompt builders. They now live in this single embedded default, which
+// users can override with a rubric.md file (see loadRubric). The embedded
+// default keeps the single-file `cp reflection-3.ts` install working.
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_RUBRIC = `## Patterns
+- If coding work is complete, confirm tests ran after the latest changes and passed.
+- If local tests are required, provide the exact commands run in this session.
+- If PR exists, verify CI checks and report status.
+- Tests cannot be skipped or marked as flaky/not important.
+- Direct pushes to main/master are not allowed; require a PR instead.
+- If stuck, propose an alternate approach.
+- If you need user action (auth, 2FA, credentials, access requests, uploads, approvals), list it in needs_user_action.
+- PLANNING LOOP CHECK: If the task requires code changes (fix, implement, add, create, build, refactor, update) but the tool commands show ONLY read operations (read, glob, grep, git log, git status, git diff, webfetch, task/explore) and NO write operations (edit, write, bash with build/test/commit, github_create_pull_request, etc.), then the task is NOT complete. Set status to "in_progress", set stuck to true, and list "Implement the actual code changes" in remaining_work. Analyzing and recommending changes is not the same as making them.
+- If you are repeating the same actions (deploy, test, build) without making progress, set "stuck": true.
+- Do not retry the same failing approach more than twice — try something different or report stuck.
+
+## Antipatterns
+PREMATURE-STOP ANTIPATTERNS (mined from 227 real agent stops where the user replied; 78% were premature — the user said "go"/"continue"/"yes do it" or corrected the agent). If the agent's last response matches one of these AND executable work remains, the task is NOT complete — set status "in_progress", and put the concrete next action in remaining_work and next_steps:
+- PERMISSION-SEEKING (most common, ~40%): the response ends by asking to do work it can already do — "Want me to…?", "Would you like me to…?", "Should I…?", "Shall I proceed?", or "Try running it now"/"Please run X and confirm" (deferring a check it could run itself). DECISIVE TEST: if the final turn is a yes/no or "want me to X?" question AND X is something the agent can do with its own tools AND X carries no irreversible risk, the stop is premature — it should have just done X. Asking is only legitimate before a destructive/irreversible action (delete prod data, force-push, send an irreversible external message).
+- STOPPED-WITH-TODOS (~30%): the response lists "Remaining Tasks"/"Next steps"/"Still TODO"/"What I did NOT do" or names a verify/run/check/create-PR step as "next" — then stops without doing it. Listing remaining work does not complete it; a self-contained named step must be DONE before stopping. Set status "in_progress" with that work in remaining_work.
+- FALSE-COMPLETE: claims "done"/"complete"/"ready"/"all tasks complete" but the CORE requested action never happened, a required check was skipped, or there is no evidence. An empty/no-text response, or a response with no write/tool evidence on an action task, is NEVER complete. For an "add a <feature/system>" task, writing files is necessary but NOT sufficient — the new code must be WIRED IN (imported/registered/routed, not orphaned modules) AND verified (test/build/run); "ready to use" with no integration is incomplete (status "in_progress").
+- LEGITIMATE STOP (do NOT flag): genuine human-only block (OAuth consent, 2FA code, credential/API-key retrieval, captcha) → status "waiting_for_user" with the item in needs_user_action. Genuine completion WITH evidence (commands+output, tests passing, PR/CI verified) → status "complete"; do not invent missing work.
+- SEVERITY/STUCK: a single recoverable technical snag mid-task (knows the fix) is not "stuck". But a policy/process violation — pushing to main when a PR was required, skipping mandated tests — is a real failure: status "in_progress" with the corrective action in remaining_work, never "complete".`
+
+export interface Rubric {
+  patterns: string
+  antipatterns: string
+}
+
+/** Split a rubric markdown doc into its `## Patterns` and `## Antipatterns` sections. */
+export function parseRubric(md: string): Rubric {
+  const section = (name: string): string => {
+    const re = new RegExp(`##\\s+${name}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, "i")
+    return (md.match(re)?.[1] ?? "").trim()
+  }
+  return { patterns: section("Patterns"), antipatterns: section("Antipatterns") }
+}
+
+/**
+ * Load the active rubric for a project. Precedence (first complete one wins):
+ *   1. project: <directory>/.reflection/rubric.md      → source "project"
+ *   2. global:  ~/.config/opencode/supervisor/rubric.md → source "global"
+ *   3. embedded DEFAULT_RUBRIC                           → source "default"
+ * An override missing either section falls through to the next source, so the
+ * judge never runs with an empty rubric.
+ */
+export async function loadRubric(
+  directory: string
+): Promise<Rubric & { source: "project" | "global" | "default" }> {
+  const candidates: Array<{ path: string; source: "project" | "global" }> = [
+    { path: join(directory, ".reflection", "rubric.md"), source: "project" },
+    { path: join(homedir(), ".config", "opencode", "supervisor", "rubric.md"), source: "global" },
+  ]
+  for (const { path, source } of candidates) {
+    try {
+      const md = await readFile(path, "utf-8")
+      const r = parseRubric(md)
+      if (r.patterns && r.antipatterns) return { ...r, source }
+    } catch {
+      /* not present / unreadable — try next */
+    }
+  }
+  return { ...parseRubric(DEFAULT_RUBRIC), source: "default" }
+}
+
 const JUDGE_BLOCKED_PATTERNS = [
   /\bhaiku\b/i,
   /\bmini\b/i,
