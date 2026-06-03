@@ -2,7 +2,7 @@ import assert from "node:assert"
 import { mkdtempSync, writeFileSync, mkdirSync, chmodSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt, buildJudgePrompt, resolveMaxAttempts, buildEscalatingFeedback, supervisorStore } from "../reflection-3.ts"
+import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt, buildJudgePrompt, resolveMaxAttempts, buildEscalatingFeedback, supervisorStore, parseSupervisorCommand } from "../reflection-3.ts"
 
 describe("supervisorStore", () => {
   it("saves and loads goal + retry, clears goal but keeps retry", async () => {
@@ -222,5 +222,33 @@ describe("supervisor: buildJudgePrompt rubric interpolation", () => {
     const prompt = buildJudgePrompt(ctx, "assessment text")
     assert.match(prompt, /PERMISSION-SEEKING/, "default rubric antipatterns must be present")
     assert.match(prompt, /STOPPED-WITH-TODOS/, "default rubric antipatterns must be present")
+  })
+})
+
+describe("supervisor: parseSupervisorCommand", () => {
+  it("goal set/status/clear + aliases", () => {
+    assert.deepStrictEqual(parseSupervisorCommand("goal", "tests pass"), { kind: "goal-set", condition: "tests pass" })
+    assert.deepStrictEqual(parseSupervisorCommand("goal", "   "), { kind: "goal-status" })
+    assert.deepStrictEqual(parseSupervisorCommand("goal", ""), { kind: "goal-status" })
+    for (const a of ["clear","stop","off","reset","none","cancel","CLEAR"," Stop "]) {
+      assert.deepStrictEqual(parseSupervisorCommand("goal", a), { kind: "goal-clear" })
+    }
+    assert.deepStrictEqual(parseSupervisorCommand("goal", "  do the thing  "), { kind: "goal-set", condition: "do the thing" })
+  })
+  it("caps condition at 4000 chars", () => {
+    const long = "x".repeat(5000)
+    const r = parseSupervisorCommand("goal", long)
+    assert.strictEqual(r.kind, "goal-set")
+    assert.strictEqual((r as any).condition.length, 4000)
+  })
+  it("retry set/status + junk", () => {
+    assert.deepStrictEqual(parseSupervisorCommand("retry", "12"), { kind: "retry-set", n: 12 })
+    assert.deepStrictEqual(parseSupervisorCommand("retry", "  7 "), { kind: "retry-set", n: 7 })
+    assert.deepStrictEqual(parseSupervisorCommand("retry", ""), { kind: "retry-status" })
+    assert.deepStrictEqual(parseSupervisorCommand("retry", "abc"), { kind: "retry-status" })
+    assert.deepStrictEqual(parseSupervisorCommand("retry", "1.5"), { kind: "retry-status" })
+  })
+  it("unknown command name", () => {
+    assert.deepStrictEqual(parseSupervisorCommand("frobnicate", "x"), { kind: "unknown", name: "frobnicate" })
   })
 })

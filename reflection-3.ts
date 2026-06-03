@@ -172,6 +172,47 @@ export const supervisorStore = {
 }
 
 // ---------------------------------------------------------------------------
+// parseSupervisorCommand — pure parser for /supervisor:* command names
+//
+// Maps a command name + its argument string to a discriminated action.
+// No I/O. Safe to call from any context.
+// ---------------------------------------------------------------------------
+
+export type SupervisorCommand =
+  | { kind: "goal-set"; condition: string }
+  | { kind: "goal-status" }
+  | { kind: "goal-clear" }
+  | { kind: "retry-set"; n: number }
+  | { kind: "retry-status" }
+  | { kind: "unknown"; name: string }
+
+const GOAL_CLEAR_ALIASES = new Set(["clear", "stop", "off", "reset", "none", "cancel"])
+
+/**
+ * Parse a supervisor slash-command into a typed action.
+ *
+ * @param name - command name, e.g. "goal" or "retry"
+ * @param args - raw argument string (may have leading/trailing whitespace)
+ */
+export function parseSupervisorCommand(name: string, args: string): SupervisorCommand {
+  const trimmed = args.trim()
+
+  if (name === "goal") {
+    if (trimmed === "") return { kind: "goal-status" }
+    if (GOAL_CLEAR_ALIASES.has(trimmed.toLowerCase())) return { kind: "goal-clear" }
+    return { kind: "goal-set", condition: trimmed.slice(0, 4000) }
+  }
+
+  if (name === "retry") {
+    if (trimmed === "") return { kind: "retry-status" }
+    if (/^\d+$/.test(trimmed)) return { kind: "retry-set", n: parseInt(trimmed, 10) }
+    return { kind: "retry-status" }
+  }
+
+  return { kind: "unknown", name }
+}
+
+// ---------------------------------------------------------------------------
 // Supervisor rubric (configurable patterns/antipatterns)
 //
 // The judge's positive completion rules ("Patterns") and the mined
