@@ -22,7 +22,42 @@ async function reportError(err: unknown, context?: Record<string, string>): Prom
 
 const SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
 const FEEDBACK_MARKER = "## Reflection-3:"
-const MAX_ATTEMPTS = 3
+const DEFAULT_MAX_ATTEMPTS = 16
+
+/**
+ * Pure function: resolve the effective max attempts from opts (no I/O).
+ * Priority: sessionOverride > config > DEFAULT_MAX_ATTEMPTS (16).
+ * Result is clamped to [1, 100]. Non-finite values (NaN, Infinity) are ignored.
+ */
+export function resolveMaxAttempts(opts: { sessionOverride?: number; config?: number }): number {
+  const candidates = [opts.sessionOverride, opts.config, DEFAULT_MAX_ATTEMPTS]
+  for (const candidate of candidates) {
+    if (candidate !== undefined && Number.isFinite(candidate)) {
+      return Math.min(100, Math.max(1, Math.floor(candidate)))
+    }
+  }
+  return DEFAULT_MAX_ATTEMPTS
+}
+
+/**
+ * Read the top-level `maxAttempts:` integer from ~/.config/opencode/reflection.yaml.
+ * Returns undefined if the file is missing, the key is absent, or the value is invalid.
+ */
+async function loadConfiguredMaxAttempts(): Promise<number | undefined> {
+  try {
+    const content = await readFile(REFLECTION_CONFIG_PATH, "utf-8")
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim()
+      if (!line || line.startsWith("#")) continue
+      const match = line.match(/^maxAttempts\s*:\s*(\S+)/)
+      if (match) {
+        const value = parseInt(match[1], 10)
+        if (Number.isFinite(value)) return value
+      }
+    }
+  } catch {}
+  return undefined
+}
 
 // ---------------------------------------------------------------------------
 // Supervisor rubric (configurable patterns/antipatterns)
@@ -473,7 +508,7 @@ Start coding NOW. No more planning.`
   }
 
   if (isActionLoop) {
-    return `${FEEDBACK_MARKER} STOP: Action Loop Detected (attempt ${attemptCount}/${MAX_ATTEMPTS})
+    return `${FEEDBACK_MARKER} STOP: Action Loop Detected (attempt ${attemptCount}/${DEFAULT_MAX_ATTEMPTS})
 
 You are repeating the same commands without making progress. Running the same deploy/test/build cycle again will produce the same result.
 
@@ -503,7 +538,7 @@ Please address these issues and continue.`
   const missingBrief = missingItems.length
     ? `Still missing: ${missingItems.slice(0, 3).join(", ")}.`
     : ""
-  return `${FEEDBACK_MARKER} Final Attempt (${attemptCount}/${MAX_ATTEMPTS})
+  return `${FEEDBACK_MARKER} Final Attempt (${attemptCount}/${DEFAULT_MAX_ATTEMPTS})
 
 ${missingBrief}
 
@@ -1150,7 +1185,7 @@ export function buildSelfAssessmentPrompt(
   const rb = rubric ?? parseRubric(DEFAULT_RUBRIC)
   const currentAttempt = attemptCount || 0
   const attemptSection = currentAttempt > 0
-    ? `\n## Reflection History\n- This is reflection attempt ${currentAttempt + 1}/${MAX_ATTEMPTS} for this task.\n- Previous reflections found the task incomplete.\n- If you are repeating the same actions without progress, set "stuck": true and explain what is blocking you.\n`
+    ? `\n## Reflection History\n- This is reflection attempt ${currentAttempt + 1}/${DEFAULT_MAX_ATTEMPTS} for this task.\n- Previous reflections found the task incomplete.\n- If you are repeating the same actions without progress, set "stuck": true and explain what is blocking you.\n`
     : ""
   return `SELF-ASSESS REFLECTION-3
 
@@ -1983,11 +2018,12 @@ export const Reflection3Plugin: Plugin = async ({ client, directory }) => {
           return
         }
 
+        const effectiveMaxAttempts = resolveMaxAttempts({ sessionOverride: undefined, config: await loadConfiguredMaxAttempts() })
         const nextAttemptCount = (attempts.get(attemptKey) || 0) + 1
         attempts.set(attemptKey, nextAttemptCount)
-        if (nextAttemptCount >= MAX_ATTEMPTS) {
+        if (nextAttemptCount >= effectiveMaxAttempts) {
           lastReflectedMsgId.set(sessionId, lastUserMsgId)
-          await showToast(client, directory, `Max attempts (${MAX_ATTEMPTS}) reached`, "warning")
+          await showToast(client, directory, `Max attempts (${effectiveMaxAttempts}) reached`, "warning")
           debug("Max attempts reached for", sessionId.slice(0, 8))
           return
         }

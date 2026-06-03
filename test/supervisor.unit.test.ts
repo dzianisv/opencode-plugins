@@ -2,7 +2,23 @@ import assert from "node:assert"
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt, buildJudgePrompt } from "../reflection-3.ts"
+import { DEFAULT_RUBRIC, parseRubric, loadRubric, buildSelfAssessmentPrompt, buildJudgePrompt, resolveMaxAttempts } from "../reflection-3.ts"
+
+describe("supervisor: resolveMaxAttempts", () => {
+  it("session override > config > default 16", () => {
+    assert.strictEqual(resolveMaxAttempts({ sessionOverride: 5, config: 30 }), 5)
+    assert.strictEqual(resolveMaxAttempts({ sessionOverride: undefined, config: 30 }), 30)
+    assert.strictEqual(resolveMaxAttempts({}), 16)
+  })
+  it("clamps to 1..100", () => {
+    assert.strictEqual(resolveMaxAttempts({ sessionOverride: 0 }), 1)
+    assert.strictEqual(resolveMaxAttempts({ sessionOverride: 999 }), 100)
+    assert.strictEqual(resolveMaxAttempts({ config: -4 }), 1)
+  })
+  it("ignores NaN/non-finite and falls through", () => {
+    assert.strictEqual(resolveMaxAttempts({ sessionOverride: NaN, config: 20 }), 20)
+  })
+})
 
 describe("supervisor: rubric", () => {
   it("DEFAULT_RUBRIC has both sections and the mined antipatterns", () => {

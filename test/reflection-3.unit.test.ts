@@ -718,7 +718,7 @@ describe("buildEscalatingFeedback", () => {
     const verdict = { missing: ["Run tests", "Create PR", "Check CI", "Update docs"] }
     const result = buildEscalatingFeedback(3, "high", verdict, false)
     assert.ok(result.includes("Final Attempt"))
-    assert.ok(result.includes("3/3"))
+    assert.ok(result.includes("3/16"))
     // Should truncate to first 3 missing items
     assert.ok(result.includes("Run tests"))
     assert.ok(result.includes("Create PR"))
@@ -753,7 +753,7 @@ describe("buildEscalatingFeedback", () => {
 
   it("action loop includes attempt count", () => {
     const result = buildEscalatingFeedback(2, "high", null, false, true)
-    assert.ok(result.includes("2/3"))
+    assert.ok(result.includes("2/16"))
   })
 
   it("action loop ignores verdict content", () => {
@@ -1097,14 +1097,14 @@ describe("buildSelfAssessmentPrompt attempt awareness", () => {
   it("includes reflection history on second attempt", () => {
     const result = buildSelfAssessmentPrompt(baseContext, "", undefined, 1)
     assert.ok(result.includes("## Reflection History"))
-    assert.ok(result.includes("reflection attempt 2/3"))
+    assert.ok(result.includes("reflection attempt 2/16"))
     assert.ok(result.includes("repeating the same actions"))
     assert.ok(result.includes('"stuck": true'))
   })
 
   it("includes reflection history on third attempt", () => {
     const result = buildSelfAssessmentPrompt(baseContext, "", undefined, 2)
-    assert.ok(result.includes("reflection attempt 3/3"))
+    assert.ok(result.includes("reflection attempt 3/16"))
   })
 
   it("includes loop-awareness rules", () => {

@@ -434,7 +434,7 @@ export function getGitHubCopilotModelForRouting(modelSpec: string | null | undef
 }
 
 const FEEDBACK_MARKER = "## Reflection-3:"
-const MAX_ATTEMPTS = 3
+const DEFAULT_MAX_ATTEMPTS = 16
 const ACTION_LOOP_MIN_COMMANDS = 4
 const ACTION_LOOP_REPETITION_THRESHOLD = 0.6
 
@@ -525,7 +525,7 @@ Start coding NOW. No more planning.`
   }
 
   if (isActionLoop) {
-    return `${FEEDBACK_MARKER} STOP: Action Loop Detected (attempt ${attemptCount}/${MAX_ATTEMPTS})
+    return `${FEEDBACK_MARKER} STOP: Action Loop Detected (attempt ${attemptCount}/${DEFAULT_MAX_ATTEMPTS})
 
 You are repeating the same commands without making progress. Running the same deploy/test/build cycle again will produce the same result.
 
@@ -555,7 +555,7 @@ Please address these issues and continue.`
   const missingBrief = missingItems.length
     ? `Still missing: ${missingItems.slice(0, 3).join(", ")}.`
     : ""
-  return `${FEEDBACK_MARKER} Final Attempt (${attemptCount}/${MAX_ATTEMPTS})
+  return `${FEEDBACK_MARKER} Final Attempt (${attemptCount}/${DEFAULT_MAX_ATTEMPTS})
 
 ${missingBrief}
 
