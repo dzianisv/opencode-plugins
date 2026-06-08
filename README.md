@@ -1,5 +1,12 @@
 # OpenCode Plugins
 
+> ⚠️ **Archived — superseded by [dzianisv/agents-supervisor](https://github.com/dzianisv/agents-supervisor).**
+> The reflection/supervisor plugin was extracted into its own repo (rebranded
+> "supervisor"): dual-runtime (Claude Code + OpenCode), one shared core, plus
+> `/supervisor:train` (learn from your sessions) and a goal loop. Use that repo.
+> This repo is kept read-only for history; branch-cleanup recovery notes live in
+> [`docs/branch-cleanup-2026-06.md`](docs/branch-cleanup-2026-06.md).
+
 **78% of AI coding agent stops are premature.** This is a judge layer that catches them.
 
 [![Tests](https://github.com/dzianisv/opencode-plugins/actions/workflows/test.yml/badge.svg)](https://github.com/dzianisv/opencode-plugins/actions/workflows/test.yml)
