@@ -1,0 +1,30 @@
+{
+  "name": "opencode-overhelm",
+  "version": "1.1.1",
+  "description": "opencode plugin: adds a short-reply, plain-English instruction to every prompt. The same instruction file feeds the Claude Code hook.",
+  "type": "module",
+  "main": "opencode/plugin.ts",
+  "exports": {
+    ".": "./opencode/plugin.ts"
+  },
+  "files": [
+    "server.ts",
+    "opencode/",
+    "hooks/"
+  ],
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "prompt",
+    "style",
+    "brevity"
+  ],
+  "author": "dzianisv",
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  }
+}

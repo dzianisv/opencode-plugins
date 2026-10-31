@@ -1,0 +1,8 @@
+{
+  "name": "overhelm",
+  "description": "Injects a short-reply, plain-English instruction into every prompt so replies don't overwhelm. Also ships an opencode plugin.",
+  "version": "1.1.1",
+  "author": {
+    "name": "Dzianis Vashchuk"
+  }
+}
