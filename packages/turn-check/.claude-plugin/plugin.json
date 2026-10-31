@@ -1,0 +1,8 @@
+{
+  "name": "turn-check",
+  "description": "When the agent stops, a cheap model audits the whole conversation against ~/.agents/AGENTS.md. Rule violations are fed back to the agent on your next message.",
+  "version": "0.5.0",
+  "author": {
+    "name": "Dzianis Vashchuk"
+  }
+}
