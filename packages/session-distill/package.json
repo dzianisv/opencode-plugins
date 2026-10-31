@@ -1,0 +1,20 @@
+{
+  "name": "opencode-session-distill",
+  "version": "0.2.1",
+  "description": "opencode plugin: after a session's work, proposes where each lesson belongs (skill, AGENTS.md, memory, hook) with approval.",
+  "type": "module",
+  "main": "opencode/plugin.ts",
+  "exports": {
+    ".": "./opencode/plugin.ts"
+  },
+  "files": ["server.ts", "opencode/", "commands/", "hooks/", "scripts/"],
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": ["opencode", "plugin", "session", "retrospective", "skills", "memory"],
+  "author": "dzianisv",
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  }
+}
