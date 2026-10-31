@@ -34,3 +34,24 @@ jobs:
 
       - name: Run unit tests
         run: npm test
+
+  slack-bridge:
+    name: Slack bridge (Node 22)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check bridge syntax
+        working-directory: slack-bridge
+        run: node --check bridge.mjs
+
+      - name: Run bridge tests
+        working-directory: slack-bridge
+        run: npm test
