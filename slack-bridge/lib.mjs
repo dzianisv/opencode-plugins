@@ -26,11 +26,14 @@ export async function getStoredSession({ state, key, fetchSession, saveState }) 
   const sessionID = state[key]
   if (!sessionID) return null
   const result = await fetchSession(sessionID)
-  if (result?.error || !result?.data?.id) {
+  if (result?.error) {
+    const status = result.error?.data?.statusCode ?? result.error?.statusCode ?? result.error?.status
+    if (status !== 404) throw new Error(`opencode session lookup failed${status ? ` (${status})` : ""}`)
     delete state[key]
     saveState()
     return null
   }
+  if (!result?.data?.id) throw new Error("opencode session lookup returned no session")
   return sessionID
 }
 
@@ -46,6 +49,40 @@ export function loadMapFromJSON(json) {
 
 export function serializeMapToJSON(map) {
   return JSON.stringify(Object.fromEntries(map), null, 2)
+}
+
+export function isPermissionPending(pending, permissionID) {
+  return pending.has(permissionID)
+}
+
+export function sessionFinished(messages) {
+  const assistant = [...messages].reverse().find((message) => message.info?.role === "assistant")
+  return Boolean(assistant && (assistant.info?.time?.completed || assistant.info?.error))
+}
+
+export function assistantText(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].info?.role !== "assistant") continue
+    const text = (messages[i].parts || [])
+      .filter((part) => part.type === "text" && part.text)
+      .map((part) => part.text)
+      .join("\n\n")
+      .trim()
+    if (text) return text
+  }
+  return ""
+}
+
+export function dedupePromise(pending, key, run) {
+  const existing = pending.get(key)
+  if (existing) return existing
+  const promise = Promise.resolve()
+    .then(run)
+    .finally(() => {
+      if (pending.get(key) === promise) pending.delete(key)
+    })
+  pending.set(key, promise)
+  return promise
 }
 
 export function parseModel(value) {
@@ -95,6 +132,7 @@ export function permissionContext(state, sessionID) {
 export function canRespondToPermission({ allowedUsers, userId, channelId, messageTs, pending, state }) {
   return Boolean(
     pending &&
+      pending.resolved !== true &&
       isAllowed(userId, allowedUsers) &&
       channelId === pending.channel &&
       messageTs === pending.messageTs &&

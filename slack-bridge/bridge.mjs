@@ -6,10 +6,13 @@ import { App } from "@slack/bolt"
 import { createOpencodeClient } from "@opencode-ai/sdk"
 import {
   BUSY_NOTICE,
+  assistantText,
   canRespondToPermission,
   chunks,
+  dedupePromise,
   getStoredSession,
   isAllowed,
+  isPermissionPending,
   keyFor,
   loadMapFromJSON,
   parseModel,
@@ -18,6 +21,7 @@ import {
   routeAction,
   routeMessage,
   runWithSessionLock,
+  sessionFinished,
   serializeMapToJSON,
   toMrkdwn,
 } from "./lib.mjs"
@@ -58,6 +62,7 @@ const assistantMessages = new Map()
 const lastUpdate = new Map()
 const latestText = new Map()
 const pendingPermissions = loadPendingPermissions()
+const dmSessionCreates = new Map()
 let botUserId = ""
 
 function loadState() {
@@ -138,6 +143,13 @@ async function getSession(channel, thread) {
   return getSessionByKey(keyFor(channel, thread))
 }
 
+async function getOrCreateDmSession(channel, prompt) {
+  const key = `im:${channel}`
+  const existing = await getSessionByKey(key)
+  if (existing) return existing
+  return dedupePromise(dmSessionCreates, key, () => createSession(channel, "im", prompt, key))
+}
+
 async function updatePlaceholder(client, channel, ts, text) {
   const body = text.trim() || "_Working..._"
   await client.chat.update({ channel, ts, text: toMrkdwn(body).slice(0, 39000), mrkdwn: true })
@@ -205,17 +217,38 @@ async function handlePrompt({ client, channel, thread, text, userId, eventTs, se
 
 async function lastAssistantText(sessionId) {
   const r = await opencode.session.messages({ path: { id: sessionId }, query: { directory: DIRECTORY } })
-  const messages = r.data || []
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].info?.role !== "assistant") continue
-    const text = (messages[i].parts || [])
-      .filter((p) => p.type === "text" && p.text)
-      .map((p) => p.text)
-      .join("\n\n")
-      .trim()
-    if (text) return text
+  if (r.error) throw new Error("opencode session messages request failed")
+  return assistantText(r.data || [])
+}
+
+async function reconcileActiveSessions() {
+  for (const [sessionId, slot] of placeholders) {
+    try {
+      const result = await opencode.session.messages({ path: { id: sessionId }, query: { directory: DIRECTORY } })
+      if (result.error) {
+        const status = result.error?.data?.statusCode ?? result.error?.statusCode ?? result.error?.status
+        if (status !== 404) {
+          console.error(`[reconcile] session ${sessionId} lookup failed${status ? ` (${status})` : ""}`)
+          continue
+        }
+        await updatePlaceholder(app.client, slot.channel, slot.ts, "This opencode session no longer exists. Mention the bot to start a new one.")
+        const entry = Object.entries(state).find(([, id]) => id === sessionId)
+        if (entry) {
+          delete state[entry[0]]
+          saveState()
+        }
+        cleanupSession(sessionId)
+        continue
+      }
+
+      const messages = result.data || []
+      if (!sessionFinished(messages)) continue
+      await updatePlaceholder(app.client, slot.channel, slot.ts, assistantText(messages) || "_Done. No text response._")
+      cleanupSession(sessionId)
+    } catch (err) {
+      console.error(`[reconcile] session ${sessionId}`, err.message)
+    }
   }
-  return ""
 }
 
 function cleanupSession(sessionId) {
@@ -227,8 +260,8 @@ function cleanupSession(sessionId) {
   latestText.delete(sessionId)
 }
 
-async function startThread({ client, channel, thread, text, userId, eventTs, isDM }) {
-  const sessionId = await createSession(channel, isDM ? "im" : thread, text, isDM ? `im:${channel}` : keyFor(channel, thread))
+async function startThread({ client, channel, thread, text, userId, eventTs }) {
+  const sessionId = await createSession(channel, thread, text)
   await handlePrompt({ client, channel, thread, text, userId, eventTs, sessionId })
 }
 
@@ -240,7 +273,7 @@ async function onMention({ event, client }) {
   const thread = event.thread_ts || event.ts
   const existing = await getSession(event.channel, thread)
   if (!existing) {
-    await startThread({ client, channel: event.channel, thread, text, userId: event.user, eventTs: event.ts, isDM: false })
+    await startThread({ client, channel: event.channel, thread, text, userId: event.user, eventTs: event.ts })
   } else {
     await handlePrompt({ client, channel: event.channel, thread, text, userId: event.user, eventTs: event.ts, sessionId: existing })
   }
@@ -261,12 +294,8 @@ async function onMessage({ message, client }) {
   })
   const next = routeAction(route, state)
   if (route.kind === "dm") {
-    const sessionId = await getSessionByKey(route.key)
-    if (!sessionId) {
-      await startThread({ client, channel: route.channel, thread: null, text: message.text, userId: message.user, eventTs: message.ts, isDM: true })
-    } else {
-      await handlePrompt({ client, channel: route.channel, thread: null, text: message.text, userId: message.user, eventTs: message.ts, sessionId })
-    }
+    const sessionId = await getOrCreateDmSession(route.channel, message.text)
+    await handlePrompt({ client, channel: route.channel, thread: null, text: message.text, userId: message.user, eventTs: message.ts, sessionId })
     return
   }
 
@@ -277,9 +306,10 @@ async function onMessage({ message, client }) {
 }
 
 async function onPermission(perm) {
-  if (!perm?.sessionID) return
+  if (!perm?.id || !perm.sessionID) return
   const context = permissionContext(state, perm.sessionID)
   if (!context) return
+  if (!AUTO_APPROVE && isPermissionPending(pendingPermissions, perm.id)) return
   if (AUTO_APPROVE) {
     try {
       await respondToPermission(opencode, {
@@ -288,6 +318,15 @@ async function onPermission(perm) {
         response: "always",
         directory: DIRECTORY,
       })
+      pendingPermissions.set(perm.id, {
+        sessionID: perm.sessionID,
+        permissionID: perm.id,
+        key: context.key,
+        channel: context.channel,
+        resolved: true,
+        resolvedAt: Date.now(),
+      })
+      savePendingPermissions()
       return
     } catch (err) {
       console.error("[permission:auto-approve]", err.message)
@@ -356,7 +395,7 @@ function wireActions() {
         await respond({ response_type: "ephemeral", text: "Permission response failed. Try again." })
         return
       }
-      pendingPermissions.delete(a.value)
+      pendingPermissions.set(a.value, { ...pending, resolved: true, resolvedAt: Date.now() })
       savePendingPermissions()
       await respond({ replace_original: true, text: `Permission ${response}.` })
     })
@@ -432,6 +471,7 @@ async function main() {
   const auth = await app.client.auth.test()
   botUserId = auth.user_id
   console.log(`opencode-slack bridge up: team=${auth.team} bot=${auth.user_id} dir=${DIRECTORY} model=${MODEL || "server-default"}`)
+  await reconcileActiveSessions()
   subscribeEvents().catch((err) => {
     console.error("[events] stream failed:", err.message)
     process.exit(1)

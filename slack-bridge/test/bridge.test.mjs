@@ -3,10 +3,13 @@ import assert from "node:assert/strict"
 import {
   BUSY_NOTICE,
   MAX_TEXT,
+  assistantText,
   canRespondToPermission,
   chunks,
+  dedupePromise,
   getStoredSession,
   isAllowed,
+  isPermissionPending,
   keyFor,
   loadMapFromJSON,
   parseModel,
@@ -16,6 +19,7 @@ import {
   routeMessage,
   runWithSessionLock,
   serializeMapToJSON,
+  sessionFinished,
   toMrkdwn,
 } from "../lib.mjs"
 
@@ -89,18 +93,34 @@ test("permissionContext maps DM and thread session keys", () => {
   assert.equal(permissionContext({}, "missing"), null)
 })
 
-test("getStoredSession clears deleted sessions and persists the removal", async () => {
+test("getStoredSession clears confirmed deleted sessions and persists the removal", async () => {
   const state = { "im:D123": "s1" }
   let saved = false
   const session = await getStoredSession({
     state,
     key: "im:D123",
-    fetchSession: async () => ({ error: { message: "not found" } }),
+    fetchSession: async () => ({ error: { data: { statusCode: 404, message: "not found" } } }),
     saveState: () => { saved = true },
   })
   assert.equal(session, null)
   assert.deepEqual(state, {})
   assert.equal(saved, true)
+})
+
+test("getStoredSession preserves mappings on temporary API errors", async () => {
+  const state = { "im:D123": "s1" }
+  let saved = false
+  await assert.rejects(
+    getStoredSession({
+      state,
+      key: "im:D123",
+      fetchSession: async () => ({ error: { data: { statusCode: 503, message: "unavailable" } } }),
+      saveState: () => { saved = true },
+    }),
+    /503/,
+  )
+  assert.deepEqual(state, { "im:D123": "s1" })
+  assert.equal(saved, false)
 })
 
 test("getStoredSession reuses valid persisted sessions", async () => {
@@ -123,6 +143,39 @@ test("session state maps survive JSON restart and reject invalid content", () =>
   assert.deepEqual([...loadMapFromJSON("[]")], [])
 })
 
+test("session completion and final text extraction inspect latest assistant message", () => {
+  const messages = [
+    { info: { role: "assistant", time: { completed: 1 } }, parts: [{ type: "text", text: "old" }] },
+    { info: { role: "user" }, parts: [{ type: "text", text: "next" }] },
+    { info: { role: "assistant", time: { completed: 2 } }, parts: [{ type: "text", text: "final" }] },
+  ]
+  assert.equal(sessionFinished(messages), true)
+  assert.equal(assistantText(messages), "final")
+  assert.equal(sessionFinished([{ info: { role: "assistant" }, parts: [] }]), false)
+})
+
+test("dedupePromise shares concurrent session creation", async () => {
+  const pending = new Map()
+  let calls = 0
+  const run = () => {
+    calls += 1
+    return Promise.resolve("s1")
+  }
+  const results = await Promise.all([
+    dedupePromise(pending, "im:D123", run),
+    dedupePromise(pending, "im:D123", run),
+  ])
+  assert.deepEqual(results, ["s1", "s1"])
+  assert.equal(calls, 1)
+  assert.equal(pending.size, 0)
+})
+
+test("repeated permission events do not create another Slack message", () => {
+  const pending = new Map([["p1", { sessionID: "s1" }]])
+  assert.equal(isPermissionPending(pending, "p1"), true)
+  assert.equal(isPermissionPending(pending, "p2"), false)
+})
+
 test("permission actions require allowed user, same channel/message, and live session mapping", () => {
   const pending = { sessionID: "s1", key: "C123:1700.01", channel: "C123", messageTs: "1700.02" }
   const args = {
@@ -137,6 +190,7 @@ test("permission actions require allowed user, same channel/message, and live se
   assert.equal(canRespondToPermission({ ...args, userId: "U456" }), false)
   assert.equal(canRespondToPermission({ ...args, channelId: "C456" }), false)
   assert.equal(canRespondToPermission({ ...args, messageTs: "1700.03" }), false)
+  assert.equal(canRespondToPermission({ ...args, pending: { ...pending, resolved: true } }), false)
   assert.equal(canRespondToPermission({ ...args, state: { "C123:1700.01": "s2" } }), false)
 })
 

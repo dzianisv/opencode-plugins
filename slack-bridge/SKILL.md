@@ -56,7 +56,10 @@ Use tmux or a process manager for a persistent bridge. Invite the bot into each 
 - Pending permission mappings persist in `~/.local/state/opencode-slack/permissions.json`, so buttons remain usable across bridge restarts.
 - Active placeholder mappings persist in `~/.local/state/opencode-slack/active.json`, so an in-flight response can finalize after restart.
 - DM sessions are checked against opencode on every new message; a deleted session is cleared and recreated.
+- Concurrent first messages in a DM share one session creation. Temporary opencode lookup errors preserve the existing session mapping.
+- On startup, completed work with a persisted placeholder is finalized; still-running work remains locked until `session.idle`.
 - Channel messages containing a bot mention are handled only by the mention event, including when the mention is not at the start of the text.
+- Repeated `permission.asked` / `permission.updated` events for the same request reuse one Slack action message.
 - A message received while its session is busy is not queued; Slack receives a notice to resend it after the current reply.
 - Session IDs persist in `~/.local/state/opencode-slack/sessions.json`.
 
