@@ -55,7 +55,20 @@ Then check what already exists against the session: rules the session broke, sta
 flags (verify before claiming), the same rule in two places, skill descriptions that no longer
 match their body, prompts or commands repeated often enough to script.
 
-## Phase 3: choose one home per learning
+## Phase 3: scope review, in this order
+
+1. Project `.agents/` in the session's repository: read `.agents/AGENTS.md`, `.agents/MEMORY.md`
+   and `.agents/skills/*`. List what this session contradicted, invalidated or extended.
+2. Only then global `~/.agents/`: the same three surfaces. A lesson goes global only when it is
+   not specific to this repository.
+3. Apply what the review proves: repo-specific lessons go to the project files, cross-repo
+   lessons to the global ones. Back up every edited file as `<file>.bak`. Never hold the same rule
+   in both scopes; prefer the project when either could carry it.
+
+## Phase 4: one home per learning
+
+Routing follows hermes-ai: skills come first. When the session taught a procedure, a pitfall, or the user's preferences and corrections for that kind of work, record it in the skill used or built for the task, where it loads only when relevant. Memory is the narrow exception for facts that apply to every session regardless of task (who the user is, environment facts, standing conventions with no task home); it has a hard budget, so consolidate stale entries instead of skipping a save. Write memory as declarative facts, not instructions: "User prefers concise responses" not "Always respond concisely". A fact stale within a week belongs in session history; procedures and workflows belong in skills.
+
 
 Gate with threshold T: always-on files (CLAUDE.md, AGENTS.md, rules) need confidence at least T
 and two independent observations. Skills, commands, agents and hooks need at least T. Below T goes
@@ -74,7 +87,7 @@ First match wins:
 7. Fact, preference or convention: `~/.agents/memory/MEMORY.md` or USER.md for personal facts,
    project `CLAUDE.md` or `AGENTS.md` for repo rules.
 
-## Phase 4: proposals
+## Phase 5: proposals
 
 One row per learning, concrete enough to apply without questions:
 
@@ -82,7 +95,7 @@ One row per learning, concrete enough to apply without questions:
 
 For NEW give the full file. For EDIT give the exact before and after. Quote the session trigger.
 
-## Phase 5: approve and apply
+## Phase 6: approve and apply
 
 Use AskUserQuestion (multi-select) for what to apply and, where unclear, global or project scope.
 Back up each edited file as `<file>.bak`. Merge into JSON, never overwrite it. After applying, list
