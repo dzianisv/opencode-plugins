@@ -8,14 +8,17 @@ import {
   BUSY_NOTICE,
   canRespondToPermission,
   chunks,
+  getStoredSession,
   isAllowed,
   keyFor,
+  loadMapFromJSON,
   parseModel,
   permissionContext,
   respondToPermission,
   routeAction,
   routeMessage,
   runWithSessionLock,
+  serializeMapToJSON,
   toMrkdwn,
 } from "./lib.mjs"
 
@@ -34,6 +37,8 @@ const ALLOWED = new Set(
 )
 const STATE_DIR = process.env.OPENCODE_SLACK_STATE || path.join(os.homedir(), ".local/state/opencode-slack")
 const SESSIONS_FILE = path.join(STATE_DIR, "sessions.json")
+const PERMISSIONS_FILE = path.join(STATE_DIR, "permissions.json")
+const ACTIVE_FILE = path.join(STATE_DIR, "active.json")
 const UPDATE_MS = 1200
 
 if (!BOT_TOKEN || !APP_TOKEN) {
@@ -47,12 +52,12 @@ const opencode = createOpencodeClient({ baseUrl: OPENCODE_URL })
 const app = new App({ token: BOT_TOKEN, appToken: APP_TOKEN, socketMode: true })
 
 const state = loadState()
-const active = new Set()
+const placeholders = loadActiveSessions()
+const active = new Set(placeholders.keys())
 const assistantMessages = new Map()
-const placeholders = new Map()
 const lastUpdate = new Map()
 const latestText = new Map()
-const pendingPermissions = new Map()
+const pendingPermissions = loadPendingPermissions()
 let botUserId = ""
 
 function loadState() {
@@ -65,6 +70,30 @@ function loadState() {
 
 function saveState() {
   fs.writeFileSync(SESSIONS_FILE, JSON.stringify(state, null, 2), { mode: 0o600 })
+}
+
+function loadPendingPermissions() {
+  try {
+    return loadMapFromJSON(fs.readFileSync(PERMISSIONS_FILE, "utf8"))
+  } catch {
+    return new Map()
+  }
+}
+
+function savePendingPermissions() {
+  fs.writeFileSync(PERMISSIONS_FILE, serializeMapToJSON(pendingPermissions), { mode: 0o600 })
+}
+
+function loadActiveSessions() {
+  try {
+    return loadMapFromJSON(fs.readFileSync(ACTIVE_FILE, "utf8"))
+  } catch {
+    return new Map()
+  }
+}
+
+function saveActiveSessions() {
+  fs.writeFileSync(ACTIVE_FILE, serializeMapToJSON(placeholders), { mode: 0o600 })
 }
 
 function modelBody() {
@@ -96,17 +125,17 @@ async function createSession(channel, thread, prompt, stateKey = keyFor(channel,
   return r.data.id
 }
 
+async function getSessionByKey(key) {
+  return getStoredSession({
+    state,
+    key,
+    fetchSession: (id) => opencode.session.get({ path: { id }, query: { directory: DIRECTORY } }),
+    saveState,
+  })
+}
+
 async function getSession(channel, thread) {
-  const key = keyFor(channel, thread)
-  const id = state[key]
-  if (!id) return null
-  const r = await opencode.session.get({ path: { id }, query: { directory: DIRECTORY } })
-  if (r.error || !r.data?.id) {
-    delete state[key]
-    saveState()
-    return null
-  }
-  return id
+  return getSessionByKey(keyFor(channel, thread))
 }
 
 async function updatePlaceholder(client, channel, ts, text) {
@@ -114,12 +143,12 @@ async function updatePlaceholder(client, channel, ts, text) {
   await client.chat.update({ channel, ts, text: toMrkdwn(body).slice(0, 39000), mrkdwn: true })
 }
 
-async function handlePrompt({ client, channel, thread, text, userId, eventTs }) {
+async function handlePrompt({ client, channel, thread, text, userId, eventTs, sessionId: existingSessionId }) {
   const isDM = channel.startsWith("D")
   const sessionKey = isDM ? `im:${channel}` : keyFor(channel, thread)
-  const sessionId = isDM
-    ? state[sessionKey] || (await createSession(channel, `im`, text, sessionKey))
-    : await getSession(channel, thread)
+  const sessionId = existingSessionId || (isDM
+    ? await getSessionByKey(sessionKey) || (await createSession(channel, "im", text, sessionKey))
+    : await getSession(channel, thread))
 
   if (!sessionId) {
     await sayThread(client, channel, thread, "No active opencode session for this thread. Mention the bot to start one.")
@@ -143,6 +172,7 @@ async function handlePrompt({ client, channel, thread, text, userId, eventTs }) 
       if (placeholder.ok === false || !placeholder.ts) throw new Error("Slack could not create response placeholder")
       placeholderTs = placeholder.ts
       placeholders.set(sessionId, { channel, ts: placeholderTs })
+      saveActiveSessions()
       lastUpdate.set(sessionId, 0)
       latestText.delete(sessionId)
 
@@ -192,13 +222,14 @@ function cleanupSession(sessionId) {
   active.delete(sessionId)
   assistantMessages.delete(sessionId)
   placeholders.delete(sessionId)
+  saveActiveSessions()
   lastUpdate.delete(sessionId)
   latestText.delete(sessionId)
 }
 
 async function startThread({ client, channel, thread, text, userId, eventTs, isDM }) {
-  await createSession(channel, isDM ? "im" : thread, text, isDM ? `im:${channel}` : keyFor(channel, thread))
-  await handlePrompt({ client, channel, thread, text, userId, eventTs })
+  const sessionId = await createSession(channel, isDM ? "im" : thread, text, isDM ? `im:${channel}` : keyFor(channel, thread))
+  await handlePrompt({ client, channel, thread, text, userId, eventTs, sessionId })
 }
 
 async function onMention({ event, client }) {
@@ -211,7 +242,7 @@ async function onMention({ event, client }) {
   if (!existing) {
     await startThread({ client, channel: event.channel, thread, text, userId: event.user, eventTs: event.ts, isDM: false })
   } else {
-    await handlePrompt({ client, channel: event.channel, thread, text, userId: event.user, eventTs: event.ts })
+    await handlePrompt({ client, channel: event.channel, thread, text, userId: event.user, eventTs: event.ts, sessionId: existing })
   }
 }
 
@@ -226,13 +257,15 @@ async function onMessage({ message, client }) {
     channelType: message.channel_type,
     threadTs: message.thread_ts,
     text: message.text,
+    botUserId,
   })
   const next = routeAction(route, state)
   if (route.kind === "dm") {
-    if (next.kind === "start") {
+    const sessionId = await getSessionByKey(route.key)
+    if (!sessionId) {
       await startThread({ client, channel: route.channel, thread: null, text: message.text, userId: message.user, eventTs: message.ts, isDM: true })
     } else {
-      await handlePrompt({ client, channel: route.channel, thread: null, text: message.text, userId: message.user, eventTs: message.ts })
+      await handlePrompt({ client, channel: route.channel, thread: null, text: message.text, userId: message.user, eventTs: message.ts, sessionId })
     }
     return
   }
@@ -240,7 +273,7 @@ async function onMessage({ message, client }) {
   if (route.kind !== "thread" || next.kind !== "continue") return
   const sessionId = await getSession(route.channel, route.thread)
   if (!sessionId) return
-  await handlePrompt({ client, channel: route.channel, thread: route.thread, text: message.text, userId: message.user, eventTs: message.ts })
+  await handlePrompt({ client, channel: route.channel, thread: route.thread, text: message.text, userId: message.user, eventTs: message.ts, sessionId })
 }
 
 async function onPermission(perm) {
@@ -287,6 +320,7 @@ async function onPermission(perm) {
     channel: context.channel,
     messageTs: message.ts,
   })
+  savePendingPermissions()
 }
 
 function wireActions() {
@@ -323,6 +357,7 @@ function wireActions() {
         return
       }
       pendingPermissions.delete(a.value)
+      savePendingPermissions()
       await respond({ replace_original: true, text: `Permission ${response}.` })
     })
   }

@@ -5,10 +5,10 @@ export function keyFor(channel, thread) {
   return `${channel}:${thread}`
 }
 
-export function routeMessage({ channel, channelType, threadTs, text }) {
+export function routeMessage({ channel, channelType, threadTs, text, botUserId }) {
   if (!channel || !text) return { kind: "ignore" }
   const isDM = channel.startsWith("D") || channelType === "im"
-  if (!isDM && /^<@[A-Z0-9]+>/.test(text.trim())) return { kind: "ignore" }
+  if (!isDM && botUserId && text.includes(`<@${botUserId}>`)) return { kind: "ignore" }
   if (isDM) return { kind: "dm", channel, thread: null, key: `im:${channel}` }
   if (!threadTs) return { kind: "ignore" }
   return { kind: "thread", channel, thread: threadTs, key: keyFor(channel, threadTs) }
@@ -20,6 +20,32 @@ export function routeAction(route, state) {
   if (route.kind === "dm" && !sessionId) return { kind: "start" }
   if (!sessionId) return { kind: "ignore" }
   return { kind: "continue", sessionId }
+}
+
+export async function getStoredSession({ state, key, fetchSession, saveState }) {
+  const sessionID = state[key]
+  if (!sessionID) return null
+  const result = await fetchSession(sessionID)
+  if (result?.error || !result?.data?.id) {
+    delete state[key]
+    saveState()
+    return null
+  }
+  return sessionID
+}
+
+export function loadMapFromJSON(json) {
+  try {
+    const value = JSON.parse(json)
+    if (!value || typeof value !== "object" || Array.isArray(value)) return new Map()
+    return new Map(Object.entries(value).filter(([, entry]) => entry && typeof entry === "object"))
+  } catch {
+    return new Map()
+  }
+}
+
+export function serializeMapToJSON(map) {
+  return JSON.stringify(Object.fromEntries(map), null, 2)
 }
 
 export function parseModel(value) {

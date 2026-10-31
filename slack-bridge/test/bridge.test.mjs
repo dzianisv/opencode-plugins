@@ -5,14 +5,17 @@ import {
   MAX_TEXT,
   canRespondToPermission,
   chunks,
+  getStoredSession,
   isAllowed,
   keyFor,
+  loadMapFromJSON,
   parseModel,
   permissionContext,
   respondToPermission,
   routeAction,
   routeMessage,
   runWithSessionLock,
+  serializeMapToJSON,
   toMrkdwn,
 } from "../lib.mjs"
 
@@ -31,7 +34,8 @@ test("message routing starts DMs, resumes threads, and ignores unrelated channel
   assert.deepEqual(routeAction(thread, { "C123:1700.01": "s2" }), { kind: "continue", sessionId: "s2" })
   assert.deepEqual(routeAction(thread, {}), { kind: "ignore" })
   assert.deepEqual(routeMessage({ channel: "C123", channelType: "channel", text: "root message" }), { kind: "ignore" })
-  assert.deepEqual(routeMessage({ channel: "C123", channelType: "channel", threadTs: "1700.01", text: "<@U123> mention" }), { kind: "ignore" })
+  assert.deepEqual(routeMessage({ channel: "C123", channelType: "channel", threadTs: "1700.01", botUserId: "U123", text: "hey <@U123> please run" }), { kind: "ignore" })
+  assert.equal(routeMessage({ channel: "C123", channelType: "channel", threadTs: "1700.01", botUserId: "U123", text: "hey <@U456> please run" }).kind, "thread")
 })
 
 test("parseModel splits provider/model", () => {
@@ -83,6 +87,40 @@ test("permissionContext maps DM and thread session keys", () => {
     thread: "1700.01",
   })
   assert.equal(permissionContext({}, "missing"), null)
+})
+
+test("getStoredSession clears deleted sessions and persists the removal", async () => {
+  const state = { "im:D123": "s1" }
+  let saved = false
+  const session = await getStoredSession({
+    state,
+    key: "im:D123",
+    fetchSession: async () => ({ error: { message: "not found" } }),
+    saveState: () => { saved = true },
+  })
+  assert.equal(session, null)
+  assert.deepEqual(state, {})
+  assert.equal(saved, true)
+})
+
+test("getStoredSession reuses valid persisted sessions", async () => {
+  const state = { "im:D123": "s1" }
+  let fetched = null
+  const session = await getStoredSession({
+    state,
+    key: "im:D123",
+    fetchSession: async (id) => { fetched = id; return { data: { id } } },
+    saveState: () => assert.fail("valid session should not rewrite state"),
+  })
+  assert.equal(session, "s1")
+  assert.equal(fetched, "s1")
+})
+
+test("session state maps survive JSON restart and reject invalid content", () => {
+  const pending = new Map([["p1", { sessionID: "s1", permissionID: "p1", channel: "D123", messageTs: "1700.02" }]])
+  assert.deepEqual([...loadMapFromJSON(serializeMapToJSON(pending))], [...pending])
+  assert.deepEqual([...loadMapFromJSON("not-json")], [])
+  assert.deepEqual([...loadMapFromJSON("[]")], [])
 })
 
 test("permission actions require allowed user, same channel/message, and live session mapping", () => {
