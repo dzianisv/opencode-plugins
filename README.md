@@ -40,6 +40,7 @@ We measured it: 143 real OpenCode + Claude Code sessions, 227 stops classified. 
 | **tts.ts** | TTS + Telegram notifications with two-way voice communication |
 | **worktree-status.ts** | Git worktree status tool |
 | **packages/session-index** | Writes an LLM recap of each finished session into `~/.agents/sessions.csv` for cross-session lookup |
+| **packages/session-distill** | End-of-session retrospective that proposes where a fix, script or rule belongs, with approval |
 
 ## The problem in detail
 
@@ -58,6 +59,7 @@ Implements [Reflexion](https://lilianweng.github.io/posts/2023-06-23-agent/) (Sh
 | **tts.ts** | Text-to-speech + Telegram notifications with two-way communication |
 | **worktree-status.ts** | Git worktree status tool for checking dirty state, branch, and active sessions |
 | **packages/session-index** | Indexes finished sessions into `~/.agents/sessions.csv` with a short LLM recap, for lookup by later sessions |
+| **packages/session-distill** | Proposes where a session's lessons belong: new or edited skill, AGENTS.md, memory, hook, command or subagent |
 
 ### Key Features
 
