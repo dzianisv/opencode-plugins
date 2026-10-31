@@ -4,7 +4,20 @@ import path from "node:path"
 import os from "node:os"
 import { App } from "@slack/bolt"
 import { createOpencodeClient } from "@opencode-ai/sdk"
-import { chunks, keyFor, parseModel, toMrkdwn } from "./lib.mjs"
+import {
+  BUSY_NOTICE,
+  canRespondToPermission,
+  chunks,
+  isAllowed,
+  keyFor,
+  parseModel,
+  permissionContext,
+  respondToPermission,
+  routeAction,
+  routeMessage,
+  runWithSessionLock,
+  toMrkdwn,
+} from "./lib.mjs"
 
 const BOT_TOKEN = process.env.SLACK_BOT_TOKEN
 const APP_TOKEN = process.env.SLACK_APP_TOKEN
@@ -39,6 +52,7 @@ const assistantMessages = new Map()
 const placeholders = new Map()
 const lastUpdate = new Map()
 const latestText = new Map()
+const pendingPermissions = new Map()
 let botUserId = ""
 
 function loadState() {
@@ -60,6 +74,10 @@ function modelBody() {
 
 function agentBody() {
   return AGENT ? { agent: AGENT } : {}
+}
+
+function isAllowedUser(userId) {
+  return isAllowed(userId, ALLOWED)
 }
 
 async function sayThread(client, channel, thread, text) {
@@ -109,53 +127,50 @@ async function handlePrompt({ client, channel, thread, text, userId, eventTs }) 
   }
 
   if (active.has(sessionId)) {
-    await sayThread(client, channel, thread, "_Still working on the previous message..._")
+    await sayThread(client, channel, thread, BUSY_NOTICE)
     return
   }
 
-  active.add(sessionId)
-  const placeholder = await client.chat.postMessage({
-    channel,
-    ...(thread ? { thread_ts: thread } : {}),
-    text: "_Working..._",
-    mrkdwn: true,
-  })
-  const placeholderTs = placeholder.ts
-  placeholders.set(sessionId, { channel, ts: placeholderTs })
-  lastUpdate.set(sessionId, 0)
-  latestText.delete(sessionId)
+  await runWithSessionLock({ active, sessionId, cleanup: cleanupSession, run: async () => {
+    let placeholderTs
+    try {
+      const placeholder = await client.chat.postMessage({
+        channel,
+        ...(thread ? { thread_ts: thread } : {}),
+        text: "_Working..._",
+        mrkdwn: true,
+      })
+      if (placeholder.ok === false || !placeholder.ts) throw new Error("Slack could not create response placeholder")
+      placeholderTs = placeholder.ts
+      placeholders.set(sessionId, { channel, ts: placeholderTs })
+      lastUpdate.set(sessionId, 0)
+      latestText.delete(sessionId)
 
-  let pending = false
-  try {
-    const r = await opencode.session.prompt({
-      path: { id: sessionId },
-      query: { directory: DIRECTORY },
-      body: {
-        ...modelBody(),
-        ...agentBody(),
-        parts: [{ type: "text", text }],
-      },
-    })
+      const r = await opencode.session.prompt({
+        path: { id: sessionId },
+        query: { directory: DIRECTORY },
+        body: {
+          ...modelBody(),
+          ...agentBody(),
+          parts: [{ type: "text", text }],
+        },
+      })
 
-    if (r.error) throw new Error(r.error?.data?.message || JSON.stringify(r.error))
-    if (r.data?.info?.finish === "tool-calls") {
-      pending = true
-      return
+      if (r.error) throw new Error(r.error?.data?.message || JSON.stringify(r.error))
+      if (r.data?.info?.finish === "tool-calls") return { pending: true }
+      const answer = (r.data?.parts || [])
+        .filter((p) => p.type === "text" && p.text)
+        .map((p) => p.text)
+        .join("\n\n")
+        .trim()
+      await updatePlaceholder(client, channel, placeholderTs, answer || "_Done. No text response._")
+    } catch (err) {
+      const msg = `opencode error: ${err?.message || String(err)}`
+      if (placeholderTs) await updatePlaceholder(client, channel, placeholderTs, msg).catch(() => {})
+      else await sayThread(client, channel, thread, "Could not start the opencode response. Please retry.").catch(() => {})
+      console.error(`[prompt] ${sessionId} ${msg}`)
     }
-    const answer = (r.data?.parts || [])
-      .filter((p) => p.type === "text" && p.text)
-      .map((p) => p.text)
-      .join("\n\n")
-      .trim()
-    const final = answer || "_Done. No text response._"
-    await updatePlaceholder(client, channel, placeholderTs, final)
-  } catch (err) {
-    const msg = `opencode error: ${err?.message || String(err)}`
-    await updatePlaceholder(client, channel, placeholderTs, msg).catch(() => {})
-    console.error(`[prompt] ${sessionId} ${msg}`)
-  } finally {
-    if (!pending) cleanupSession(sessionId)
-  }
+  } })
 }
 
 async function lastAssistantText(sessionId) {
@@ -188,7 +203,7 @@ async function startThread({ client, channel, thread, text, userId, eventTs, isD
 
 async function onMention({ event, client }) {
   if (!event.text || !event.user) return
-  if (!isAllowed(event.user)) return
+  if (!isAllowedUser(event.user)) return
   const text = event.text.replace(/<@[A-Z0-9]+>/g, "").trim()
   if (!text) return
   const thread = event.thread_ts || event.ts
@@ -204,68 +219,73 @@ async function onMessage({ message, client }) {
   if (!message.text || !message.user) return
   if (message.bot_id || message.user === botUserId) return
   if (message.subtype && !["thread_broadcast"].includes(message.subtype)) return
-  if (!isAllowed(message.user)) return
+  if (!isAllowedUser(message.user)) return
 
-  const isDM = message.channel.startsWith("D") || message.channel_type === "im"
-  const thread = message.thread_ts || message.ts
-
-  if (!isDM && /^<@[A-Z0-9]+>/.test(message.text.trim())) return
-
-  if (isDM) {
-    const sessionId = state[`im:${message.channel}`]
-    if (!sessionId) {
-      await startThread({ client, channel: message.channel, thread: null, text: message.text, userId: message.user, eventTs: message.ts, isDM: true })
+  const route = routeMessage({
+    channel: message.channel,
+    channelType: message.channel_type,
+    threadTs: message.thread_ts,
+    text: message.text,
+  })
+  const next = routeAction(route, state)
+  if (route.kind === "dm") {
+    if (next.kind === "start") {
+      await startThread({ client, channel: route.channel, thread: null, text: message.text, userId: message.user, eventTs: message.ts, isDM: true })
     } else {
-      await handlePrompt({ client, channel: message.channel, thread: null, text: message.text, userId: message.user, eventTs: message.ts })
+      await handlePrompt({ client, channel: route.channel, thread: null, text: message.text, userId: message.user, eventTs: message.ts })
     }
     return
   }
 
-  if (!message.thread_ts) return
-  const sessionId = await getSession(message.channel, message.thread_ts)
+  if (route.kind !== "thread" || next.kind !== "continue") return
+  const sessionId = await getSession(route.channel, route.thread)
   if (!sessionId) return
-  await handlePrompt({ client, channel: message.channel, thread: message.thread_ts, text: message.text, userId: message.user, eventTs: message.ts })
-}
-
-function isAllowed(userId) {
-  return ALLOWED.size === 0 || ALLOWED.has(userId)
+  await handlePrompt({ client, channel: route.channel, thread: route.thread, text: message.text, userId: message.user, eventTs: message.ts })
 }
 
 async function onPermission(perm) {
   if (!perm?.sessionID) return
-  const entry = Object.entries(state).find(([, id]) => id === perm.sessionID)
-  if (!entry) return
+  const context = permissionContext(state, perm.sessionID)
+  if (!context) return
   if (AUTO_APPROVE) {
-    await opencode.postSessionIdPermissionsPermissionId({
-      path: { id: perm.sessionID, permissionID: perm.id },
-      query: { directory: DIRECTORY },
-      body: { response: "always" },
-    })
-    return
+    try {
+      await respondToPermission(opencode, {
+        sessionID: perm.sessionID,
+        permissionID: perm.id,
+        response: "always",
+        directory: DIRECTORY,
+      })
+      return
+    } catch (err) {
+      console.error("[permission:auto-approve]", err.message)
+    }
   }
-  const [key] = entry
-  const channel = key.startsWith("im:") ? key.slice(3) : key.split(":")[0]
-  const thread = key.startsWith("im:") ? undefined : key.split(":")[1]
   const title = perm.permission || perm.title || perm.type || "Permission request"
   const patterns = perm.patterns || perm.pattern
   const detail = patterns ? `${title}: ${Array.isArray(patterns) ? patterns.join(", ") : patterns}` : title
-  const value = `${perm.sessionID}|${perm.id}`
-
-  await app.client.chat.postMessage({
-    channel,
-    ...(thread ? { thread_ts: thread } : {}),
+  const message = await app.client.chat.postMessage({
+    channel: context.channel,
+    ...(context.thread ? { thread_ts: context.thread } : {}),
     text: `Permission required: ${detail}`,
     blocks: [
       { type: "section", text: { type: "mrkdwn", text: `*Permission required*\n${detail}` } },
       {
         type: "actions",
         elements: [
-          { type: "button", text: { type: "plain_text", text: "Allow once" }, action_id: "perm_once", value },
-          { type: "button", text: { type: "plain_text", text: "Always" }, action_id: "perm_always", value },
-          { type: "button", text: { type: "plain_text", text: "Reject" }, action_id: "perm_reject", value, style: "danger" },
+          { type: "button", text: { type: "plain_text", text: "Allow once" }, action_id: "perm_once", value: perm.id },
+          { type: "button", text: { type: "plain_text", text: "Always" }, action_id: "perm_always", value: perm.id },
+          { type: "button", text: { type: "plain_text", text: "Reject" }, action_id: "perm_reject", value: perm.id, style: "danger" },
         ],
       },
     ],
+  })
+  if (message.ok === false || !message.ts) throw new Error("Slack could not post permission request")
+  pendingPermissions.set(perm.id, {
+    sessionID: perm.sessionID,
+    permissionID: perm.id,
+    key: context.key,
+    channel: context.channel,
+    messageTs: message.ts,
   })
 }
 
@@ -275,15 +295,34 @@ function wireActions() {
     ["perm_always", "always"],
     ["perm_reject", "reject"],
   ]) {
-    app.action(action, async ({ action: a, ack, respond }) => {
+    app.action(action, async ({ action: a, ack, respond, body }) => {
       await ack()
-      const [sessionID, permissionID] = (a.value || "").split("|")
-      if (!sessionID || !permissionID) return
-      await opencode.postSessionIdPermissionsPermissionId({
-        path: { id: sessionID, permissionID },
-        query: { directory: DIRECTORY },
-        body: { response },
+      const pending = pendingPermissions.get(a.value)
+      const allowed = canRespondToPermission({
+        allowedUsers: ALLOWED,
+        userId: body.user?.id,
+        channelId: body.channel?.id,
+        messageTs: body.message?.ts,
+        pending,
+        state,
       })
+      if (!allowed) {
+        await respond({ response_type: "ephemeral", text: "This permission action is not authorized or has expired." })
+        return
+      }
+      try {
+        await respondToPermission(opencode, {
+          sessionID: pending.sessionID,
+          permissionID: pending.permissionID,
+          response,
+          directory: DIRECTORY,
+        })
+      } catch (err) {
+        console.error("[permission:response]", err.message)
+        await respond({ response_type: "ephemeral", text: "Permission response failed. Try again." })
+        return
+      }
+      pendingPermissions.delete(a.value)
       await respond({ replace_original: true, text: `Permission ${response}.` })
     })
   }
@@ -346,6 +385,7 @@ async function subscribeEvents() {
 }
 
 async function main() {
+  if (ALLOWED.size === 0) throw new Error("SLACK_ALLOWED_USERS must list authorized Slack user IDs")
   wireActions()
   app.event("app_mention", async ({ event, client }) => {
     await onMention({ event, client }).catch((err) => console.error("[mention]", err.message))

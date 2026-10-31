@@ -63,6 +63,23 @@ cp reflection-3.ts /path/to/project/.opencode/plugin/reflection.ts
 
 ```bash
 npm install
+npm test
+```
+
+`npm test` runs unit tests. Telegram tests that hit a real Supabase deployment are opt-in:
+
+```bash
+SUPABASE_URL=... \
+SUPABASE_ANON_KEY=... \
+SUPABASE_SERVICE_ROLE_KEY=... \
+npm run test:telegram:integration
+```
+
+Use a dedicated integration project. Do not put service-role keys in source files.
+
+To run the broader E2E suite:
+
+```bash
 npm run test:e2e
 ```
 
