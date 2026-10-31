@@ -39,6 +39,7 @@ We measured it: 143 real OpenCode + Claude Code sessions, 227 stops classified. 
 | **reflection-3.ts** | Judge layer — re-prompts agent when it stops prematurely |
 | **tts.ts** | TTS + Telegram notifications with two-way voice communication |
 | **worktree-status.ts** | Git worktree status tool |
+| **packages/session-index** | Writes an LLM recap of each finished session into `~/.agents/sessions.csv` for cross-session lookup |
 
 ## The problem in detail
 
@@ -56,6 +57,7 @@ Implements [Reflexion](https://lilianweng.github.io/posts/2023-06-23-agent/) (Sh
 | **reflection-3.ts** | Judge layer that verifies task completion and forces agent to continue if incomplete |
 | **tts.ts** | Text-to-speech + Telegram notifications with two-way communication |
 | **worktree-status.ts** | Git worktree status tool for checking dirty state, branch, and active sessions |
+| **packages/session-index** | Indexes finished sessions into `~/.agents/sessions.csv` with a short LLM recap, for lookup by later sessions |
 
 ### Key Features
 

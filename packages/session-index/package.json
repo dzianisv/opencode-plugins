@@ -1,0 +1,23 @@
+{
+  "name": "opencode-session-index",
+  "version": "0.1.0",
+  "description": "opencode plugin: after a session idles, write a short LLM recap into ~/.agents/sessions.csv for cross-session lookup.",
+  "type": "module",
+  "main": "opencode/plugin.ts",
+  "exports": {
+    ".": "./opencode/plugin.ts"
+  },
+  "files": [
+    "server.ts",
+    "opencode/"
+  ],
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": ["opencode", "plugin", "session", "index", "recap", "memory"],
+  "author": "dzianisv",
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  }
+}
