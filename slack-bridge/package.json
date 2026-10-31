@@ -1,0 +1,19 @@
+{
+  "name": "opencode-slack-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Slack Socket Mode bridge for a local opencode server",
+  "main": "bridge.mjs",
+  "scripts": {
+    "start": "node --env-file=$HOME/.env.d/opencode-slack.env bridge.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "1.18.18",
+    "@slack/bolt": "5.1.0"
+  },
+  "engines": {
+    "node": ">=22 <23"
+  }
+}
