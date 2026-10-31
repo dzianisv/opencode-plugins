@@ -215,7 +215,15 @@ Drain the cue queue. A record has no prompt text, only \`ts\`, \`sessionID\`, \`
 
 Then check what exists against the session: rules the session broke, stale paths or flags (read the file before claiming), duplicated rules, skill descriptions that no longer match their body, prompts repeated often enough to script.
 
-## 5. One home per learning
+## 5. Scope review, in this order
+1. Project \`.agents/\` in the session's repository: read \`.agents/AGENTS.md\`, \`.agents/MEMORY.md\` and \`.agents/skills/*\`. List what this session contradicted, invalidated or extended.
+2. Only then global \`~/.agents/\`: the same three surfaces. A lesson goes global only when it is not specific to this repository.
+3. Apply what the review proves: repo-specific lessons go to the project files, cross-repo lessons to the global ones. Back up every edited file as \`<file>.bak\`. Never hold the same rule in both scopes; prefer the project when either could carry it.
+
+## 6. One home per learning
+
+Routing follows hermes-ai: skills come first. When the session taught a procedure, a pitfall, or the user's preferences and corrections for that kind of work, record it in the skill used or built for the task, where it loads only when relevant. Memory is the narrow exception for facts that apply to every session regardless of task (who the user is, environment facts, standing conventions with no task home); it has a hard budget, so consolidate stale entries instead of skipping a save. Write memory as declarative facts, not instructions: "User prefers concise responses" not "Always respond concisely". A fact stale within a week belongs in session history; procedures and workflows belong in skills.
+
 Threshold T is \`--min-confidence\`. Always-on files (AGENTS.md, CLAUDE.md) need confidence at least T and two independent observations. Skills, commands, agents, plugins need at least T. Anything below T goes to \`~/.agents/memory/session-distill-backlog.md\` as one line. One observation never reaches an always-on file. First match wins:
 1. An existing extension underperformed: edit it in place.
 2. A script or CLI was created or reused: put it in \`scripts/\` of the skill it serves and document it in that SKILL.md. New skill only if none covers the domain.
@@ -225,12 +233,12 @@ Threshold T is \`--min-confidence\`. Always-on files (AGENTS.md, CLAUDE.md) need
 6. Verbose or parallel exploration that polluted context: agent in \`~/.config/opencode/agents\`.
 7. Fact, preference or convention: \`~/.agents/memory/\` for personal facts, project \`AGENTS.md\` for repo rules.
 
-## 6. Proposals
+## 7. Proposals
 One row per learning, concrete enough to apply without questions:
 \`# | surface | NEW/EDIT | conf | obs | target path | learning\`
 NEW: give the full file. EDIT: give the exact before and after. Quote the session trigger.
 
-## 7. Approve and apply
+## 8. Approve and apply
 Ask what to apply, and global or project scope where unclear, with the \`question\` tool (multi-select) if you have it, otherwise in plain text. Back up each edited file as \`<file>.bak\`. Merge into JSON, never overwrite. Then list created and edited paths, delete the queue file you drained, and say whether opencode needs a restart for new plugins. With \`--dry-run\`, skip this step.
 
 ## Guardrails
