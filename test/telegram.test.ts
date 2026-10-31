@@ -13,25 +13,26 @@
  * (see issues #76, #112). Notification formatting is covered by
  * unit tests in test/telegram.unit.test.ts instead.
  * 
- * These tests use REAL Supabase APIs - no mocks.
+ * These tests use a dedicated Supabase integration project - no mocks.
  * 
- * Run with: npm test
+ * Run with: npm run test:telegram:integration
  */
 
 import { createClient, SupabaseClient } from "@supabase/supabase-js"
 
-// Supabase config - real production instance
-const SUPABASE_URL = "https://slqxwymujuoipyiqscrl.supabase.co"
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNscXh3eW11anVvaXB5aXFzY3JsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxMTgwNDUsImV4cCI6MjA4MTY5NDA0NX0.cW79nLOdKsUhZaXIvgY4gGcO4Y4R0lDGNg7SE_zEfb8"
-const SUPABASE_SERVICE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNscXh3eW11anVvaXB5aXFzY3JsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NjExODA0NSwiZXhwIjoyMDgxNjk0MDQ1fQ.iXPpNU_utY2deVrUVPIfwOiz2XjQI06JZ_I_hJawR8c"
+const RUN_SUPABASE_INTEGRATION = process.env.RUN_SUPABASE_INTEGRATION === "1"
+const SUPABASE_URL = process.env.SUPABASE_URL || ""
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || ""
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || ""
 
 // Endpoints
-const SEND_NOTIFY_URL = "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/send-notify"
-const WEBHOOK_URL = "https://slqxwymujuoipyiqscrl.supabase.co/functions/v1/telegram-webhook"
+const SEND_NOTIFY_URL = process.env.SEND_NOTIFY_URL || `${SUPABASE_URL}/functions/v1/send-notify`
+const WEBHOOK_URL = process.env.TELEGRAM_WEBHOOK_URL || `${SUPABASE_URL}/functions/v1/telegram-webhook`
 
 // Test user config
-const TEST_UUID = "a0dcb5d4-30c2-4dd0-bfbe-e569a42f47bb"
-const TEST_CHAT_ID = 1916982742
+const TEST_UUID = process.env.TELEGRAM_TEST_UUID || "a0dcb5d4-30c2-4dd0-bfbe-e569a42f47bb"
+const TEST_CHAT_ID = Number(process.env.TELEGRAM_TEST_CHAT_ID || 1916982742)
+const describeSupabase = RUN_SUPABASE_INTEGRATION ? describe : describe.skip
 
 // Helper to generate unique IDs
 const uniqueId = () => `test_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
@@ -40,6 +41,10 @@ const uniqueMessageId = () => Math.floor(Math.random() * 1000000) + Date.now() %
 let supabase: SupabaseClient
 
 beforeAll(() => {
+  if (!RUN_SUPABASE_INTEGRATION) return
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_KEY) {
+    throw new Error("Set SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY for integration tests")
+  }
   supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 })
 
@@ -48,7 +53,7 @@ beforeAll(() => {
 // (Message delivery tests removed — see issues #76, #112)
 // ============================================================================
 
-describe("Text Reply Routing: Telegram -> Correct Session", () => {
+describeSupabase("Text Reply Routing: Telegram -> Correct Session", () => {
   
   it("webhook endpoint responds without authentication (--no-verify-jwt)", async () => {
     // Telegram sends webhooks WITHOUT auth headers
@@ -275,7 +280,7 @@ describe("Text Reply Routing: Telegram -> Correct Session", () => {
 // PART 2: VOICE REPLY HANDLING
 // ============================================================================
 
-describe("Voice Reply Handling", () => {
+describeSupabase("Voice Reply Handling", () => {
   jest.setTimeout(15000)
   
   it("stores voice messages with audio_base64 and metadata", async () => {
@@ -438,7 +443,7 @@ describe("Voice Reply Handling", () => {
 // PART 3: DATABASE OPERATIONS
 // ============================================================================
 
-describe("Database Operations", () => {
+describeSupabase("Database Operations", () => {
   
   it("mark_reply_processed RPC works", async () => {
     // Create a test reply
@@ -548,7 +553,7 @@ describe("Database Operations", () => {
 // PART 4: ERROR HANDLING
 // ============================================================================
 
-describe("Error Handling", () => {
+describeSupabase("Error Handling", () => {
   
   it("send-notify handles missing uuid gracefully", async () => {
     const response = await fetch(SEND_NOTIFY_URL, {
