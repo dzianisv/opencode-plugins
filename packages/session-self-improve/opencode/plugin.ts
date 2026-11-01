@@ -33,20 +33,20 @@ export const SessionReflect: Plugin = async ({ client }) => {
   }
 
   const log = (level: "info" | "error", message: string) =>
-    client.app.log({ body: { service: "session-distill", level, message } }).catch(() => {})
+    client.app.log({ body: { service: "session-self-improve", level, message } }).catch(() => {})
 
   const remind = async (sessionID: string) => {
-    const once = (process.env.SESSION_DISTILL_REMIND_ONCE ?? "1") === "1"
+    const once = (process.env.SESSION_SELF_IMPROVE_REMIND_ONCE ?? "1") === "1"
     if (once && (reminded.has(sessionID) || existsSync(markerPath(sessionID)))) return
 
     const messages = ((await client.session.messages({ path: { id: sessionID } })).data ?? []) as any[]
     const seen = tally(messages)
     const queued = queueDepth(sessionID)
-    const threshold = Number(process.env.SESSION_DISTILL_MIN_ACTIONS ?? 3)
+    const threshold = Number(process.env.SESSION_SELF_IMPROVE_MIN_ACTIONS ?? 3)
     if (seen.ranReflect || (seen.actions < threshold && !queued && !seen.newFiles)) return
 
     await client.tui.showToast({
-      body: { title: "session-distill", message: suggestion(seen, queued), variant: "info", duration: 15000 },
+      body: { title: "session-self-improve", message: suggestion(seen, queued), variant: "info", duration: 15000 },
     })
     if (!once) return
     reminded.add(sessionID)
@@ -54,7 +54,7 @@ export const SessionReflect: Plugin = async ({ client }) => {
       mkdirSync(dirname(markerPath(sessionID)), { recursive: true })
       writeFileSync(markerPath(sessionID), "shown\n")
     } catch {}
-    prune(Number(process.env.SESSION_DISTILL_TTL_DAYS ?? 7))
+    prune(Number(process.env.SESSION_SELF_IMPROVE_TTL_DAYS ?? 7))
   }
 
   return {
@@ -67,7 +67,7 @@ export const SessionReflect: Plugin = async ({ client }) => {
     },
 
     "chat.message": async (input, output) => {
-      if ((process.env.SESSION_DISTILL_CAPTURE ?? "1") !== "1") return
+      if ((process.env.SESSION_SELF_IMPROVE_CAPTURE ?? "1") !== "1") return
       const text = userText(output.parts)
       if (skipPrompt(text)) return
       const found = findCues(text)
@@ -83,7 +83,7 @@ export const SessionReflect: Plugin = async ({ client }) => {
           kinds: Object.keys(found).sort((a, b) => found[b] - found[a]),
           confidence: score,
         },
-        Number(process.env.SESSION_DISTILL_QUEUE_MAX ?? 200),
+        Number(process.env.SESSION_SELF_IMPROVE_QUEUE_MAX ?? 200),
       )
     },
 

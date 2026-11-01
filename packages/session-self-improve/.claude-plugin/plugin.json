@@ -1,5 +1,5 @@
 {
-  "name": "session-distill",
+  "name": "session-self-improve",
   "description": "End-of-session retrospective: finds scripts, CLI tools, fixes and corrections from the session and proposes the right home for each (new or edited skill, AGENTS.md/CLAUDE.md, memory, hook, command, subagent). Nothing is written without approval. Also ships an opencode plugin.",
   "version": "0.3.0",
   "author": {

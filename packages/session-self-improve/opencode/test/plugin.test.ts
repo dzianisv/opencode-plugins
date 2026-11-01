@@ -7,12 +7,12 @@ import { SessionReflect } from "../plugin"
 
 let home = ""
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), "session-distill-"))
-  process.env.SESSION_DISTILL_HOME = home
+  home = mkdtempSync(join(tmpdir(), "session-self-improve-"))
+  process.env.SESSION_SELF_IMPROVE_HOME = home
 })
 afterEach(() => {
   rmSync(home, { recursive: true, force: true })
-  for (const key of ["SESSION_DISTILL_QUEUE_MAX", "SESSION_DISTILL_REMIND_ONCE", "SESSION_DISTILL_CAPTURE"]) delete process.env[key]
+  for (const key of ["SESSION_SELF_IMPROVE_QUEUE_MAX", "SESSION_SELF_IMPROVE_REMIND_ONCE", "SESSION_SELF_IMPROVE_CAPTURE"]) delete process.env[key]
 })
 
 const text = (t: string, extra: object = {}) => ({ type: "text", text: t, ...extra })
@@ -75,7 +75,7 @@ describe("cue capture", () => {
     expect(existsSync(join(home, "queue"))).toBe(false)
   })
 
-  test("slash commands, the session-distill template, synthetic and ignored text are skipped", async () => {
+  test("slash commands, the session-self-improve template, synthetic and ignored text are skipped", async () => {
     const hooks: any = await SessionReflect({ client: fakeClient().client } as any)
     await send(hooks, "s1", "/foo from now on always use x")
     await send(hooks, "s1", `${TEMPLATE_HEADING}\n\nfrom now on always use x`)
@@ -89,8 +89,8 @@ describe("cue capture", () => {
     expect(existsSync(join(home, "queue"))).toBe(false)
   })
 
-  test("queue stops at SESSION_DISTILL_QUEUE_MAX", async () => {
-    process.env.SESSION_DISTILL_QUEUE_MAX = "2"
+  test("queue stops at SESSION_SELF_IMPROVE_QUEUE_MAX", async () => {
+    process.env.SESSION_SELF_IMPROVE_QUEUE_MAX = "2"
     const hooks: any = await SessionReflect({ client: fakeClient().client } as any)
     for (let i = 0; i < 5; i++) await send(hooks, "s1", "from now on always use x")
     expect(queueLines("s1")).toHaveLength(2)
@@ -102,8 +102,8 @@ describe("cue capture", () => {
     expect(readdirSync(join(home, "queue"))).toEqual(["etcpass.jsonl"])
   })
 
-  test("SESSION_DISTILL_CAPTURE=0 disables capture", async () => {
-    process.env.SESSION_DISTILL_CAPTURE = "0"
+  test("SESSION_SELF_IMPROVE_CAPTURE=0 disables capture", async () => {
+    process.env.SESSION_SELF_IMPROVE_CAPTURE = "0"
     const hooks: any = await SessionReflect({ client: fakeClient().client } as any)
     await send(hooks, "s1", "from now on always use x")
     expect(existsSync(join(home, "queue"))).toBe(false)
@@ -160,7 +160,7 @@ describe("reminder", () => {
     await idle(hooks)
     expect(calls.toast).toHaveLength(1)
     expect(calls.toast[0].body.message).toBe(
-      "This session has work worth keeping (3 actions). Run /session-distill to turn it into skill, AGENTS.md or memory updates.",
+      "This session has work worth keeping (3 actions). Run /session-self-improve to turn it into skill, AGENTS.md or memory updates.",
     )
     expect(existsSync(join(home, "markers", "s1.mark"))).toBe(true)
   })
@@ -213,7 +213,7 @@ describe("reminder", () => {
   })
 
   test("REMIND_ONCE=0 reminds on every idle", async () => {
-    process.env.SESSION_DISTILL_REMIND_ONCE = "0"
+    process.env.SESSION_SELF_IMPROVE_REMIND_ONCE = "0"
     const { client, calls } = fakeClient({ messages: busy })
     const hooks: any = await SessionReflect({ client } as any)
     await idle(hooks)

@@ -1,4 +1,4 @@
-"""Tests for the session-distill hooks. Run: python3 -m unittest discover -s tests"""
+"""Tests for the session-self-improve hooks. Run: python3 -m unittest discover -s tests"""
 
 import json
 import os
@@ -23,7 +23,7 @@ def run_hook(script: str, payload: dict, home: str, **env) -> subprocess.Complet
         input=json.dumps(payload),
         capture_output=True,
         text=True,
-        env={**os.environ, "SESSION_DISTILL_HOME": home, **env},
+        env={**os.environ, "SESSION_SELF_IMPROVE_HOME": home, **env},
         check=False,
     )
 
@@ -83,7 +83,7 @@ class CaptureTest(unittest.TestCase):
                     "capture.py",
                     {"session_id": "../../evil", "prompt": "don't use sed"},
                     home,
-                    SESSION_DISTILL_QUEUE_MAX="2",
+                    SESSION_SELF_IMPROVE_QUEUE_MAX="2",
                 )
             files = list((Path(home) / "queue").glob("*.jsonl"))
             self.assertEqual([f.name for f in files], ["evil.jsonl"])
@@ -91,7 +91,7 @@ class CaptureTest(unittest.TestCase):
 
     def test_disabled(self):
         with tempfile.TemporaryDirectory() as home:
-            run_hook("capture.py", {"session_id": "s", "prompt": "don't use sed"}, home, SESSION_DISTILL_CAPTURE="0")
+            run_hook("capture.py", {"session_id": "s", "prompt": "don't use sed"}, home, SESSION_SELF_IMPROVE_CAPTURE="0")
             self.assertFalse((Path(home) / "queue").exists())
 
 
@@ -136,7 +136,7 @@ class ReminderTest(unittest.TestCase):
             write_transcript(tr, self.edits(3))
             payload = {"hook_event_name": "Stop", "session_id": "s", "transcript_path": str(tr)}
             first = run_hook("reminder.py", payload, home)
-            self.assertIn("/session-distill:session-distill", json.loads(first.stdout)["systemMessage"])
+            self.assertIn("/session-self-improve:session-self-improve", json.loads(first.stdout)["systemMessage"])
             self.assertEqual(run_hook("reminder.py", payload, home).stdout, "")
 
     def test_quiet_session_stays_silent(self):
@@ -172,7 +172,7 @@ class ReminderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             res = subprocess.run(
                 [sys.executable, str(SCRIPTS / "reminder.py")], input="not json",
-                capture_output=True, text=True, env={**os.environ, "SESSION_DISTILL_HOME": home}, check=False,
+                capture_output=True, text=True, env={**os.environ, "SESSION_SELF_IMPROVE_HOME": home}, check=False,
             )
             self.assertEqual(res.returncode, 0)
 
