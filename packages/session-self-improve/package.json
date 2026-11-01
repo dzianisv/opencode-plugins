@@ -5,7 +5,8 @@
   "type": "module",
   "main": "opencode/plugin.ts",
   "exports": {
-    ".": "./opencode/plugin.ts"
+    ".": "./opencode/plugin.ts",
+    "./server": "./server.ts"
   },
   "files": [
     "server.ts",
