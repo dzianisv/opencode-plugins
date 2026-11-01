@@ -1,4 +1,4 @@
-"""State directory and hook-input helpers used by the session-distill scripts."""
+"""State directory and hook-input helpers used by the session-self-improve scripts."""
 
 import itertools
 import json
@@ -10,8 +10,8 @@ from pathlib import Path
 
 
 def state_dir() -> Path:
-    """Where queues and markers live; SESSION_DISTILL_HOME moves it (used by the tests)."""
-    return Path(os.environ.get("SESSION_DISTILL_HOME", "~/.claude/session-distill")).expanduser()
+    """Where queues and markers live; SESSION_SELF_IMPROVE_HOME moves it (used by the tests)."""
+    return Path(os.environ.get("SESSION_SELF_IMPROVE_HOME", "~/.claude/session-self-improve")).expanduser()
 
 
 def safe_session_id(raw: str) -> str:

@@ -7,9 +7,9 @@ const [providerID, ...rest] = MODEL.split("/")
 const model = { providerID, modelID: rest.join("/") }
 const root = join(dirname(import.meta.path), "..")
 const pluginURL = `file://${join(root, "plugin.ts")}`
-const workdir = "/tmp/session-distill-live"
+const workdir = "/tmp/session-self-improve-live"
 const target = join(workdir, "run.sh")
-const home = mkdtempSync(join(tmpdir(), "session-distill-live-"))
+const home = mkdtempSync(join(tmpdir(), "session-self-improve-live-"))
 const modules = join(root, "node_modules")
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const until = async (cond: () => boolean | Promise<boolean>, ms: number) => {
@@ -49,7 +49,7 @@ try {
   rmSync(workdir, { recursive: true, force: true })
   mkdirSync(workdir, { recursive: true })
   process.chdir(workdir)
-  process.env.SESSION_DISTILL_HOME = home
+  process.env.SESSION_SELF_IMPROVE_HOME = home
   process.env.SUPERVISOR_ENABLED = "0"
 
   const opened = await createOpencode({
@@ -61,9 +61,9 @@ try {
   server = opened.server
 
   const commands = ((await client.command.list()).data ?? []) as any[]
-  const command = commands.find((c) => c.name === "session-distill")
-  check("client.command.list() has session-distill", Boolean(command))
-  check("command template starts with the heading and has $ARGUMENTS", Boolean(command?.template?.startsWith("# session-distill") && command.template.includes("$ARGUMENTS")))
+  const command = commands.find((c) => c.name === "session-self-improve")
+  check("client.command.list() has session-self-improve", Boolean(command))
+  check("command template starts with the heading and has $ARGUMENTS", Boolean(command?.template?.startsWith("# session-self-improve") && command.template.includes("$ARGUMENTS")))
 
   const toasts: any[] = []
   const stream = await client.event.subscribe({ signal: abort.signal } as any)
@@ -73,7 +73,7 @@ try {
     } catch {}
   })()
 
-  const session = (await client.session.create({ body: { title: "session-distill e2e" } })).data!
+  const session = (await client.session.create({ body: { title: "session-self-improve e2e" } })).data!
   const messages = async (id: string) => (((await client.session.messages({ path: { id } })).data ?? []) as any[])
   const prompt = (id: string, text: string) =>
     client.session.prompt({ path: { id }, body: { model, parts: [{ type: "text", text }] } }).catch((e) => console.log("prompt error", String(e)))
@@ -104,9 +104,9 @@ try {
   check("record points at a real user message", userIDs.includes(record?.messageID))
   check("only one reminder toast", toasts.length === 1)
 
-  const second = (await client.session.create({ body: { title: "session-distill command" } })).data!
+  const second = (await client.session.create({ body: { title: "session-self-improve command" } })).data!
   const before = existsSync(join(home, "queue")) ? readFileSync(queueFile, "utf8") : ""
-  void client.session.command({ path: { id: second.id }, body: { command: "session-distill", arguments: "--dry-run", model: MODEL } }).catch(() => {})
+  void client.session.command({ path: { id: second.id }, body: { command: "session-self-improve", arguments: "--dry-run", model: MODEL } }).catch(() => {})
   let expanded = ""
   await until(async () => {
     const user = (await messages(second.id)).find((m) => m.info.role === "user")

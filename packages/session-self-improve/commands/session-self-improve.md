@@ -5,7 +5,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash, AskUserQuestion
 disable-model-invocation: true
 ---
 
-# /session-distill:session-distill
+# /session-self-improve:session-self-improve
 
 Look at what happened in the session and decide where each lasting lesson belongs. Prefer
 improving something that already exists over creating something new. Write nothing until the
@@ -25,7 +25,7 @@ Hooks and plugins: !`for f in .claude/settings.json ~/.claude/settings.json; do 
 
 Instruction files: !`ls -1 CLAUDE.md AGENTS.md ~/.claude/CLAUDE.md ~/.agents/AGENTS.md ~/.agents/memory/MEMORY.md ~/.agents/memory/USER.md 2>/dev/null`
 
-Capture queues: !`find ~/.claude/session-distill/queue -name '*.jsonl' -mtime -7 2>/dev/null | head`
+Capture queues: !`find ~/.claude/session-self-improve/queue -name '*.jsonl' -mtime -7 2>/dev/null | head`
 
 The transcript is `~/.claude/projects/<cwd-with-dashes>/<session-id>.jsonl`; it is the source of
 truth for tool calls. Build an inventory table: `surface | name | scope | path`.
@@ -72,7 +72,7 @@ Routing follows hermes-ai: skills come first. When the session taught a procedur
 
 Gate with threshold T: always-on files (CLAUDE.md, AGENTS.md, rules) need confidence at least T
 and two independent observations. Skills, commands, agents and hooks need at least T. Below T goes
-to `~/.claude/session-distill/backlog.md` as one line. Never let a single observation reach an
+to `~/.claude/session-self-improve/backlog.md` as one line. Never let a single observation reach an
 always-on file.
 
 First match wins:

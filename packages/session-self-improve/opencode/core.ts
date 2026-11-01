@@ -6,9 +6,9 @@ export type Part = { type: string; [key: string]: any }
 export type Msg = { info: { id?: string; role: string }; parts: Part[] }
 export type Tally = { actions: number; newFiles: number; ranReflect: boolean }
 
-export const COMMAND_NAME = "session-distill"
+export const COMMAND_NAME = "session-self-improve"
 export const COMMAND = `/${COMMAND_NAME}`
-export const TEMPLATE_HEADING = "# session-distill"
+export const TEMPLATE_HEADING = "# session-self-improve"
 export const SESSION_TOKEN = "__SESSION_ID__"
 
 export const CUES: Record<string, string[]> = {
@@ -63,9 +63,9 @@ export function safeSessionId(raw: string): string {
   return (raw ?? "").replace(/[^A-Za-z0-9_-]/g, "") || "unknown"
 }
 
-/** Where queues and markers live; SESSION_DISTILL_HOME moves it (used by the tests). */
+/** Where queues and markers live; SESSION_SELF_IMPROVE_HOME moves it (used by the tests). */
 export function stateDir(): string {
-  return process.env.SESSION_DISTILL_HOME ?? join(homedir(), ".cache", "session-distill")
+  return process.env.SESSION_SELF_IMPROVE_HOME ?? join(homedir(), ".cache", "session-self-improve")
 }
 
 /** File holding the cue records of one session. */
@@ -120,7 +120,7 @@ export function userText(parts: Part[]): string {
     .join("\n")
 }
 
-/** True when the text is a slash command, the expanded session-distill template, or empty. */
+/** True when the text is a slash command, the expanded session-self-improve template, or empty. */
 export function skipPrompt(text: string): boolean {
   const head = text.trimStart()
   return !head || head.startsWith("/") || head.startsWith(TEMPLATE_HEADING)
@@ -194,7 +194,7 @@ Run one bash command that lists what exists. Do not repeat it.
 - \`plugin\`, \`agent\` and \`command\` keys of \`~/.config/opencode/opencode.json\` and project \`opencode.json\`
 - Instructions: project \`AGENTS.md\` and \`CLAUDE.md\`, \`~/.agents/AGENTS.md\`
 - Memory: \`~/.agents/memory/\`
-- Cue queue: \`~/.cache/session-distill/queue/<session id>.jsonl\` (plus other files from the last 7 days with \`--days\`)
+- Cue queue: \`~/.cache/session-self-improve/queue/<session id>.jsonl\` (plus other files from the last 7 days with \`--days\`)
 
 Make a table: \`surface | name | scope | path\`.
 
@@ -224,7 +224,7 @@ Then check what exists against the session: rules the session broke, stale paths
 
 Routing follows hermes-ai: skills come first. When the session taught a procedure, a pitfall, or the user's preferences and corrections for that kind of work, record it in the skill used or built for the task, where it loads only when relevant. Memory is the narrow exception for facts that apply to every session regardless of task (who the user is, environment facts, standing conventions with no task home); it has a hard budget, so consolidate stale entries instead of skipping a save. Write memory as declarative facts, not instructions: "User prefers concise responses" not "Always respond concisely". A fact stale within a week belongs in session history; procedures and workflows belong in skills.
 
-Threshold T is \`--min-confidence\`. Always-on files (AGENTS.md, CLAUDE.md) need confidence at least T and two independent observations. Skills, commands, agents, plugins need at least T. Anything below T goes to \`~/.agents/memory/session-distill-backlog.md\` as one line. One observation never reaches an always-on file. First match wins:
+Threshold T is \`--min-confidence\`. Always-on files (AGENTS.md, CLAUDE.md) need confidence at least T and two independent observations. Skills, commands, agents, plugins need at least T. Anything below T goes to \`~/.agents/memory/session-self-improve-backlog.md\` as one line. One observation never reaches an always-on file. First match wins:
 1. An existing extension underperformed: edit it in place.
 2. A script or CLI was created or reused: put it in \`scripts/\` of the skill it serves and document it in that SKILL.md. New skill only if none covers the domain.
 3. Repeatable procedure that should trigger itself: skill. Only on explicit demand: command in \`~/.config/opencode/commands\`.

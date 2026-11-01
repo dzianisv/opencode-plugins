@@ -61,7 +61,7 @@ def enqueue(session_id: str, record: dict, limit: int) -> None:
 
 def main() -> int:
     """Queue a pointer record when the prompt carries a cue."""
-    if os.environ.get("SESSION_DISTILL_CAPTURE", "1") != "1":
+    if os.environ.get("SESSION_SELF_IMPROVE_CAPTURE", "1") != "1":
         return 0
     data = reflect_state.read_hook_input()
     prompt = data.get("prompt", "")
@@ -82,7 +82,7 @@ def main() -> int:
             "kinds": sorted(found, key=found.get, reverse=True),
             "confidence": score,
         },
-        int(os.environ.get("SESSION_DISTILL_QUEUE_MAX", "200")),
+        int(os.environ.get("SESSION_SELF_IMPROVE_QUEUE_MAX", "200")),
     )
     return 0
 
@@ -91,5 +91,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception as exc:  # noqa: BLE001
-        print(f"session-distill capture error: {exc}", file=sys.stderr)
+        print(f"session-self-improve capture error: {exc}", file=sys.stderr)
         sys.exit(0)

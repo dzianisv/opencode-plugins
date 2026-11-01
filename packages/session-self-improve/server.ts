@@ -32,7 +32,7 @@ const toMsgs = (items: any[]): Msg[] =>
 
 /** Proposes where a session's lessons belong; opencode v2 entry. */
 export default {
-  id: "session-distill",
+  id: "session-self-improve",
   async setup(ctx: any) {
     const injected = new Set<string>()
 
@@ -46,7 +46,7 @@ export default {
       const sessionID = String(event.sessionID)
       const text = userText(parts as any)
 
-      if ((process.env.SESSION_DISTILL_CAPTURE ?? "1") === "1" && !skipPrompt(text)) {
+      if ((process.env.SESSION_SELF_IMPROVE_CAPTURE ?? "1") === "1" && !skipPrompt(text)) {
         const found = findCues(text)
         const score = confidence(found)
         if (score >= RECORD_FROM) {
@@ -59,13 +59,13 @@ export default {
               kinds: Object.keys(found).sort((a, b) => found[b] - found[a]),
               confidence: score,
             },
-            Number(process.env.SESSION_DISTILL_QUEUE_MAX ?? 200),
+            Number(process.env.SESSION_SELF_IMPROVE_QUEUE_MAX ?? 200),
           )
         }
       }
 
       if (injected.has(sessionID)) return
-      const once = (process.env.SESSION_DISTILL_REMIND_ONCE ?? "1") === "1"
+      const once = (process.env.SESSION_SELF_IMPROVE_REMIND_ONCE ?? "1") === "1"
       if (once && existsSync(markerPath(sessionID))) return
 
       let history: any[] = []
@@ -76,7 +76,7 @@ export default {
       }
       const seen = tally(toMsgs(history))
       const queued = queueDepth(sessionID)
-      const threshold = Number(process.env.SESSION_DISTILL_MIN_ACTIONS ?? 3)
+      const threshold = Number(process.env.SESSION_SELF_IMPROVE_MIN_ACTIONS ?? 3)
       if (seen.ranReflect || (seen.actions < threshold && !queued && !seen.newFiles)) return
 
       parts.push({
@@ -90,7 +90,7 @@ export default {
         mkdirSync(dirname(markerPath(sessionID)), { recursive: true })
         writeFileSync(markerPath(sessionID), "shown\n")
       } catch {}
-      prune(Number(process.env.SESSION_DISTILL_TTL_DAYS ?? 7))
+      prune(Number(process.env.SESSION_SELF_IMPROVE_TTL_DAYS ?? 7))
     })
   },
 }
